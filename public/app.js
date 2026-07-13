@@ -257,16 +257,48 @@ async function loadTree() {
 // ── Menú contextual (click derecho + long-press mobile) ──
 function attachContextMenu(el, conv) {
   let touchTimer = null;
-  el.addEventListener('contextmenu', e => { e.preventDefault(); showConvMenu(e.clientX, e.clientY, conv); });
+  let longPressed = false;
+  let startX = 0, startY = 0;
+
+  el.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    showConvMenu(e.clientX, e.clientY, conv);
+  });
+
   el.addEventListener('touchstart', e => {
+    longPressed = false;
+    const t = e.touches[0];
+    startX = t.clientX; startY = t.clientY;
     touchTimer = setTimeout(() => {
-      const t = e.touches[0];
-      showConvMenu(t.clientX, t.clientY, conv);
+      longPressed = true;
       touchTimer = null;
+      showConvMenu(startX, startY, conv);
+      if (navigator.vibrate) { try { navigator.vibrate(30); } catch {} }
     }, 500);
   }, { passive: true });
-  el.addEventListener('touchend', () => { if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; } });
-  el.addEventListener('touchmove', () => { if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; } });
+
+  el.addEventListener('touchmove', e => {
+    if (!touchTimer) return;
+    const t = e.touches[0];
+    if (Math.abs(t.clientX - startX) > 10 || Math.abs(t.clientY - startY) > 10) {
+      clearTimeout(touchTimer);
+      touchTimer = null;
+    }
+  }, { passive: true });
+
+  el.addEventListener('touchend', () => {
+    if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
+  }, { passive: true });
+
+  // Bloquear el click sintético que dispara touchend después del long-press
+  // (si no, selecciona la conversación y cierra el menú)
+  el.addEventListener('click', e => {
+    if (longPressed) {
+      longPressed = false;
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }, { capture: true });
 }
 
 function showConvMenu(x, y, conv) {
@@ -284,10 +316,10 @@ function showConvMenu(x, y, conv) {
   menu.style.left = Math.min(x, maxX) + 'px';
   menu.style.top = Math.min(y, maxY) + 'px';
 
-  menu.onclick = async e => {
-    const action = e.target.dataset && e.target.dataset.action;
+  const doAction = async (action) => {
     menu.remove();
-    if (!action) return;
+    document.removeEventListener('click', dismiss, true);
+    document.removeEventListener('touchstart', dismiss, true);
     const patch = action === 'pin'
       ? { pinned: !conv.pinned }
       : { archived: !conv.archived };
@@ -301,11 +333,26 @@ function showConvMenu(x, y, conv) {
     } catch (err) { toast('No se pudo actualizar: ' + err.message); }
   };
 
-  const dismiss = () => { menu.remove(); document.removeEventListener('click', dismiss); document.removeEventListener('touchstart', dismiss); };
+  // Usar touchend/click en los botones directamente, con stopPropagation
+  // para que no burbujee y dispare el dismiss.
+  menu.addEventListener('click', e => {
+    e.stopPropagation();
+    const action = e.target.dataset && e.target.dataset.action;
+    if (action) doAction(action);
+  });
+  menu.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+  function dismiss(e) {
+    if (menu.contains(e.target)) return;
+    menu.remove();
+    document.removeEventListener('click', dismiss, true);
+    document.removeEventListener('touchstart', dismiss, true);
+  }
+  // Delay para saltear el click sintético del touchend que abrió el menú
   setTimeout(() => {
-    document.addEventListener('click', dismiss, { once: true });
-    document.addEventListener('touchstart', dismiss, { once: true, passive: true });
-  }, 0);
+    document.addEventListener('click', dismiss, true);
+    document.addEventListener('touchstart', dismiss, true);
+  }, 350);
 }
 
 // ── Messages ──
