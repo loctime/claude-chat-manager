@@ -79,6 +79,7 @@ function openStream(convId) {
   if (eventSource) eventSource.close();
   eventSource = new EventSource(`/api/conversations/${convId}/stream`);
   eventSource.onmessage = e => {
+    if (convId !== currentConv) return;
     const payload = JSON.parse(e.data);
     if (payload.kind === 'claude') {
       const ev = payload.event;
@@ -92,7 +93,7 @@ function openStream(convId) {
       if (payload.status === 'idle') {
         setBusy(false);
         if (payload.code !== 0 && payload.stderr) addMsg('error', 'Error del proceso claude:\n' + payload.stderr);
-        loadMessages(currentConv);
+        loadMessages(convId);
         loadTree();
       } else {
         setBusy(true);
@@ -137,12 +138,16 @@ $('conv-title').ondblclick = () => {
   el.focus();
   el.onblur = async () => {
     el.contentEditable = 'false';
-    await api(`/conversations/${currentConv}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: el.textContent.trim() }),
-    });
-    loadTree();
+    try {
+      await api(`/conversations/${currentConv}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: el.textContent.trim() }),
+      });
+      loadTree();
+    } catch (err) {
+      addMsg('error', 'No se pudo renombrar: ' + err.message);
+    }
   };
   el.onkeydown = ev => { if (ev.key === 'Enter') { ev.preventDefault(); el.blur(); } };
 };
