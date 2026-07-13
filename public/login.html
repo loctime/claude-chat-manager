@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claude Chat — Acceso</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; }
+    body { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: #111; color: #ddd; font-family: system-ui, sans-serif; }
+    .card { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 32px; width: 320px; display: flex; flex-direction: column; gap: 16px; }
+    h1 { font-size: 20px; }
+    input { width: 100%; background: #111; color: #ddd; border: 1px solid #333; border-radius: 8px; padding: 10px; font-size: 18px; letter-spacing: 4px; text-align: center; }
+    button { background: #2a6; color: #fff; border: 0; border-radius: 8px; padding: 10px; font-size: 15px; cursor: pointer; width: 100%; }
+    .error { color: #fbb; font-size: 13px; text-align: center; display: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Claude Chat</h1>
+    <input id="pin" type="password" placeholder="PIN" autocomplete="current-password" autofocus>
+    <button id="btn">Entrar</button>
+    <div class="error" id="err">PIN incorrecto</div>
+  </div>
+  <script>
+    async function tryLogin() {
+      const pin = document.getElementById('pin').value;
+      const res = await fetch('/__auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }) });
+      if (res.ok) { location.href = '/'; }
+      else { document.getElementById('err').style.display = 'block'; document.getElementById('pin').select(); }
+    }
+    document.getElementById('btn').onclick = tryLogin;
+    document.getElementById('pin').onkeydown = e => { if (e.key === 'Enter') tryLogin(); };
+  </script>
+</body>
+</html>

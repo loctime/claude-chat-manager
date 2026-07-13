@@ -7,9 +7,29 @@ const { Runner } = require('./runner');
 
 const HOST = process.env.HOST || '127.0.0.1';
 const PORT = Number(process.env.PORT || 3777);
+const ACCESS_PIN = process.env.ACCESS_PIN || '';
 
 const app = express();
 app.use(express.json());
+
+// Auth por cookie — solo si ACCESS_PIN está seteado
+if (ACCESS_PIN) {
+  app.post('/__auth', (req, res) => {
+    if ((req.body.pin || '') === ACCESS_PIN) {
+      res.cookie('ccm_auth', ACCESS_PIN, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 24 * 3600 * 1000 });
+      res.json({ ok: true });
+    } else {
+      res.status(401).json({ error: 'PIN incorrecto' });
+    }
+  });
+  app.use((req, res, next) => {
+    if (req.path === '/login.html' || req.path === '/__auth') return next();
+    const cookies = Object.fromEntries((req.headers.cookie || '').split(';').map(c => c.trim().split('=')));
+    if (cookies.ccm_auth === ACCESS_PIN) return next();
+    res.redirect('/login.html');
+  });
+}
+
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 const runner = new Runner();
