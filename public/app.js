@@ -1,6 +1,9 @@
 let currentConv = null;
 let eventSource = null;
 let tree = [];
+let treeLimit = 100;
+let treeHasMore = false;
+let treeTotal = 0;
 const drafts = new Map();
 
 const $ = id => document.getElementById(id);
@@ -177,7 +180,10 @@ function avatarChar(name) {
 }
 
 async function loadTree() {
-  tree = await api('/tree');
+  const resp = await api('/tree?limit=' + treeLimit);
+  tree = resp.tree;
+  treeHasMore = resp.hasMore;
+  treeTotal = resp.total;
   const nav = $('tree');
   nav.innerHTML = '';
   for (const proj of tree) {
@@ -206,6 +212,21 @@ async function loadTree() {
       det.appendChild(div);
     }
     nav.appendChild(det);
+  }
+
+  if (treeHasMore) {
+    const more = document.createElement('button');
+    more.id = 'load-more-btn';
+    more.className = 'load-more';
+    more.type = 'button';
+    more.textContent = `Cargar más (${treeTotal - treeLimit} restantes)`;
+    more.onclick = async () => {
+      more.disabled = true;
+      treeLimit += 100;
+      try { await loadTree(); }
+      catch (err) { toast('No se pudo cargar más: ' + err.message); more.disabled = false; }
+    };
+    nav.appendChild(more);
   }
 }
 

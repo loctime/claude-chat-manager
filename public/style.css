@@ -607,6 +607,23 @@ dialog button:hover { background: var(--border); }
   #input { padding: 9px 10px; min-width: 0; }
 }
 
+/* ── Load more button ── */
+.load-more {
+  display: block;
+  width: calc(100% - 20px);
+  margin: 12px 10px;
+  padding: 10px;
+  background: var(--input-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background .15s;
+}
+.load-more:hover:not(:disabled) { background: var(--header); }
+.load-more:disabled { opacity: .5; cursor: default; }
+
 /* ── Toasts ── */
 #toast-container {
   position: fixed;

@@ -206,6 +206,9 @@ app.get('/api/files', (req, res) => {
   fs.createReadStream(filePath).pipe(res);
 });
 
+const DEFAULT_TREE_LIMIT = 100;
+const MAX_TREE_LIMIT = 500;
+
 app.get('/api/tree', (req, res) => {
   const data = meta.load();
   const sessions = scanner.listSessions();
@@ -241,16 +244,25 @@ app.get('/api/tree', (req, res) => {
       status: runner.running.has(s.sessionId) ? 'running' : (runner.isBusy(s.sessionId) ? 'queued' : 'idle'),
     });
   }
+
+  // Ordenar flat por lastActivity desc y quedarnos con los top N; el resto queda para load-more.
+  convs.sort((a, b) => (b.lastActivity || '').localeCompare(a.lastActivity || ''));
+  const total = convs.length;
+  const requested = Number(req.query.limit) || DEFAULT_TREE_LIMIT;
+  const limit = Math.max(1, Math.min(MAX_TREE_LIMIT, requested));
+  const visible = convs.slice(0, limit);
+  const hasMore = total > limit;
+
   const groups = new Map();
-  for (const c of convs) {
+  for (const c of visible) {
     if (!groups.has(c.projectDir)) groups.set(c.projectDir, []);
     groups.get(c.projectDir).push(c);
   }
   const tree = [...groups.entries()].map(([projectDir, conversations]) => ({
     projectDir,
-    conversations: conversations.sort((a, b) => (b.lastActivity || '').localeCompare(a.lastActivity || '')),
+    conversations,
   }));
-  res.json(tree);
+  res.json({ tree, hasMore, total, limit });
 });
 
 app.get('/api/conversations/:id/messages', (req, res) => {
@@ -259,7 +271,7 @@ app.get('/api/conversations/:id/messages', (req, res) => {
   if (!conv.currentSessionId) return res.json([]);
   const file = scanner.findSessionFile(conv.currentSessionId);
   if (!file) return res.json([]);
-  res.json(scanner.toChatMessages(scanner.parseJsonl(file)));
+  res.json(scanner.getMessagesIncremental(file));
 });
 
 app.post('/api/conversations/:id/message', (req, res) => {
