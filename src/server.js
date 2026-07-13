@@ -1,6 +1,9 @@
 const express = require('express');
 const crypto = require('crypto');
 const path = require('path');
+const fs = require('fs');
+const { execFile } = require('child_process');
+const multer = require('multer');
 const scanner = require('./scanner');
 const meta = require('./meta');
 const { Runner } = require('./runner');
@@ -8,6 +11,12 @@ const { Runner } = require('./runner');
 const HOST = process.env.HOST || '127.0.0.1';
 const PORT = Number(process.env.PORT || 3777);
 const ACCESS_PIN = process.env.ACCESS_PIN || '';
+const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
+
+const UPLOAD_DIR = path.join(process.env.HOME || '/tmp', '.ccm-uploads');
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+const upload = multer({ dest: UPLOAD_DIR, limits: { fileSize: 50 * 1024 * 1024 } });
 
 const app = express();
 app.use(express.json());
@@ -23,14 +32,22 @@ if (ACCESS_PIN) {
     }
   });
   app.use((req, res, next) => {
-    if (req.path === '/login.html' || req.path === '/__auth') return next();
+    const PUBLIC = ['/login.html', '/__auth', '/sw.js', '/manifest.json', '/icon-192.png', '/icon-512.png'];
+    if (PUBLIC.includes(req.path)) return next();
     const cookies = Object.fromEntries((req.headers.cookie || '').split(';').map(c => c.trim().split('=')));
     if (cookies.ccm_auth === ACCESS_PIN) return next();
     res.redirect('/login.html');
   });
 }
 
-app.use(express.static(path.join(__dirname, '..', 'public')));
+// index.html y archivos JS/CSS nunca cacheados por el browser
+app.use(express.static(path.join(__dirname, '..', 'public'), {
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('.html') || filePath.endsWith('.js') || filePath.endsWith('.css')) {
+      res.setHeader('Cache-Control', 'no-store');
+    }
+  },
+}));
 
 const runner = new Runner();
 const sseClients = new Map(); // convId → Set<res>
@@ -42,7 +59,6 @@ function broadcast(convId, payload) {
 }
 
 runner.on('event', ({ convId, event }) => {
-  // --resume crea un session-id nuevo: al verlo, avanzar la conversación
   const sid = event.session_id;
   if (sid) {
     const data = meta.load();
@@ -56,7 +72,6 @@ runner.on('event', ({ convId, event }) => {
 
 runner.on('status', s => broadcast(s.convId, { kind: 'status', ...s }));
 
-// Conversación: entrada en meta.json, o sesión suelta de disco (convId = sessionId)
 function resolveConv(convId) {
   const data = meta.load();
   if (data.conversations[convId]) return { data, conv: data.conversations[convId] };
@@ -66,6 +81,112 @@ function resolveConv(convId) {
   data.conversations[convId] = { currentSessionId: convId, projectDir: (info && info.cwd) || process.env.HOME };
   return { data, conv: data.conversations[convId] };
 }
+
+// ── Upload de archivo adjunto (con compresión automática de imágenes) ──
+const IMAGE_COMPRESS_EXTS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif']);
+const MAX_IMAGE_BYTES = 1.5 * 1024 * 1024; // 1.5MB → comprimir
+
+app.post('/api/upload', upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'no se recibió archivo' });
+  const ext = (path.extname(req.file.originalname) || '').slice(1).toLowerCase();
+  const finalPath = req.file.path + '.' + (ext || 'bin');
+
+  const finish = (compressedPath) => {
+    res.json({ path: compressedPath, name: req.file.originalname, size: fs.statSync(compressedPath).size });
+  };
+
+  if (IMAGE_COMPRESS_EXTS.has(ext) && req.file.size > MAX_IMAGE_BYTES) {
+    // Comprimir: max 2048px ancho, calidad 82
+    const outPath = req.file.path + '_c.jpg';
+    execFile('convert', [
+      req.file.path,
+      '-resize', '2048x2048>',
+      '-quality', '82',
+      '-strip',
+      outPath,
+    ], (err) => {
+      fs.unlink(req.file.path, () => {});
+      if (err) {
+        // Fallback: usar original renombrado
+        fs.renameSync(req.file.path, finalPath);
+        return finish(finalPath);
+      }
+      finish(outPath);
+    });
+  } else {
+    fs.renameSync(req.file.path, finalPath);
+    finish(finalPath);
+  }
+});
+
+// ── Transcripción de audio vía Groq Whisper ──
+app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'no se recibió audio' });
+  if (!GROQ_API_KEY) {
+    fs.unlinkSync(req.file.path);
+    return res.status(503).json({ error: 'GROQ_API_KEY no configurada' });
+  }
+  const audioPath = req.file.path;
+  const originalName = req.file.originalname || 'audio.webm';
+  execFile('curl', [
+    '-s', '-X', 'POST',
+    'https://api.groq.com/openai/v1/audio/transcriptions',
+    '-H', `Authorization: Bearer ${GROQ_API_KEY}`,
+    '-F', 'model=whisper-large-v3',
+    '-F', 'language=es',
+    '-F', `file=@${audioPath};filename=${originalName}`,
+  ], { maxBuffer: 2 * 1024 * 1024 }, (err, stdout, stderr) => {
+    fs.unlink(audioPath, () => {});
+    if (err) return res.status(500).json({ error: 'error de transcripción: ' + (stderr || err.message) });
+    let parsed;
+    try { parsed = JSON.parse(stdout); } catch { return res.status(500).json({ error: 'respuesta inválida de Groq' }); }
+    if (parsed.error) return res.status(500).json({ error: parsed.error.message || 'error Groq' });
+    res.json({ text: parsed.text || '' });
+  });
+});
+
+// ── Thumbnail de archivos (imágenes y PDFs) ──
+const GS_AVAILABLE = (() => { try { require('child_process').execFileSync('which', ['gs']); return true; } catch { return false; } })();
+
+app.get('/api/thumbnail', (req, res) => {
+  const filePath = (req.query.path || '').trim();
+  if (!filePath || !path.isAbsolute(filePath)) return res.status(400).end();
+  if (!fs.existsSync(filePath)) return res.status(404).end();
+
+  const ext = path.extname(filePath).slice(1).toLowerCase();
+  const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'];
+  const isPdf = ext === 'pdf';
+  const isImage = IMAGE_EXTS.includes(ext);
+
+  if (!isImage && !isPdf) return res.status(404).end();
+  if (isPdf && !GS_AVAILABLE) return res.status(404).end();
+
+  res.setHeader('Content-Type', 'image/jpeg');
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+
+  let args;
+  if (isPdf) {
+    // Primera página del PDF
+    args = ['-density', '72', `${filePath}[0]`, '-resize', '200x200>', '-background', 'white', '-flatten', 'jpeg:-'];
+  } else {
+    args = [filePath, '-resize', '200x200>', '-background', '#111b21', '-flatten', 'jpeg:-'];
+  }
+
+  execFile('convert', args, { encoding: 'buffer', maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+    if (err || !stdout || stdout.length === 0) return res.status(404).end();
+    res.end(stdout);
+  });
+});
+
+// ── Descarga de archivos del filesystem ──
+app.get('/api/files', (req, res) => {
+  const filePath = (req.query.path || '').trim();
+  if (!filePath || !path.isAbsolute(filePath)) return res.status(400).json({ error: 'path inválido' });
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'archivo no encontrado' });
+  const filename = path.basename(filePath);
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  fs.createReadStream(filePath).pipe(res);
+});
 
 app.get('/api/tree', (req, res) => {
   const data = meta.load();

@@ -2,45 +2,88 @@
 <html lang="es">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Claude Chat Manager</title>
-  <link rel="stylesheet" href="style.css">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Stark</title>
+  <meta name="theme-color" content="#202c33">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Stark">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <link rel="stylesheet" href="style.css?v=5">
 </head>
 <body>
-  <aside id="sidebar">
-    <header>
-      <h1>Claude Chat</h1>
-      <button id="new-conv" title="Nueva conversación">+</button>
-    </header>
-    <nav id="tree"></nav>
-  </aside>
-  <main id="chat">
-    <header id="chat-header">
-      <span id="conv-title">Elegí una conversación</span>
-      <select id="model-select" title="Modelo de esta conversación" hidden>
-        <option value="">Modelo: default</option>
-        <option value="opus">Opus</option>
-        <option value="sonnet">Sonnet</option>
-        <option value="haiku">Haiku</option>
-      </select>
-    </header>
-    <section id="messages"></section>
-    <form id="composer">
-      <textarea id="input" rows="3" placeholder="Escribí un mensaje… (Enter envía, Shift+Enter nueva línea)" disabled></textarea>
-      <div id="composer-actions">
-        <button id="cancel-btn" type="button" hidden title="Cancelar (ESC)">✕ Cancelar</button>
-        <button id="send" type="submit" disabled>Enviar</button>
+  <div id="app">
+    <!-- Panel lista -->
+    <div id="panel-list">
+      <header id="list-header">
+        <h1>Stark</h1>
+        <button id="refresh-btn" title="Actualizar" aria-label="Actualizar">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+        </button>
+        <button id="new-conv" title="Nueva conversación" aria-label="Nueva conversación">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.17L4 17.17V4h16v12z"/></svg>
+        </button>
+      </header>
+      <div id="ptr-indicator" hidden>
+        <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+        Actualizando…
       </div>
-    </form>
-  </main>
+      <nav id="tree"></nav>
+    </div>
+
+    <!-- Panel chat -->
+    <div id="panel-chat">
+      <header id="chat-header">
+        <button id="back-btn" aria-label="Volver" title="Volver">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+        </button>
+        <div id="conv-info">
+          <span id="conv-title">Elegí una conversación</span>
+          <span id="conv-status"></span>
+        </div>
+        <select id="model-select" title="Modelo" hidden>
+          <option value="">auto</option>
+          <option value="opus">Opus</option>
+          <option value="sonnet">Sonnet</option>
+          <option value="haiku">Haiku</option>
+        </select>
+      </header>
+      <section id="messages">
+        <div id="empty-state">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="48" height="48" opacity=".2"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
+          <p>Seleccioná una conversación</p>
+        </div>
+      </section>
+      <div id="composer-attachments"></div>
+      <form id="composer">
+        <input id="file-input" type="file" hidden accept="*/*">
+        <button id="attach-btn" type="button" title="Adjuntar archivo" aria-label="Adjuntar archivo" disabled>
+          <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5a2.5 2.5 0 0 1 5 0v10.5c0 .83-.67 1.5-1.5 1.5s-1.5-.67-1.5-1.5V6H9v9.5a2.5 2.5 0 0 0 5 0V5c0-2.21-1.79-4-4-4S6 2.79 6 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>
+        </button>
+        <button id="mic-btn" type="button" title="Grabar audio" aria-label="Grabar audio" disabled>
+          <svg id="mic-icon" viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+        </button>
+        <textarea id="input" rows="1" placeholder="Mensaje…" disabled></textarea>
+        <button id="cancel-btn" type="button" hidden title="Cancelar" aria-label="Cancelar">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+        <button id="send" type="submit" disabled aria-label="Enviar">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal nueva conversación -->
   <dialog id="new-dialog">
     <form method="dialog" id="new-form">
       <h2>Nueva conversación</h2>
       <label>Proyecto
         <select id="project-select"></select>
       </label>
-      <label>U otra carpeta
-        <input id="project-custom" type="text" placeholder="/home/loctime/Proyectos/...">
+      <label>Otra carpeta
+        <input id="project-custom" type="text" placeholder="/home/loctime/Proyectos/…">
       </label>
       <label>Modelo
         <select id="new-model">
@@ -59,6 +102,20 @@
       </menu>
     </form>
   </dialog>
-  <script src="app.js"></script>
+
+  <!-- Banner instalar PWA -->
+  <div id="install-bar" hidden>
+    <span id="install-text">Instalá Stark como app</span>
+    <button id="install-btn">Instalar</button>
+    <button id="install-dismiss" aria-label="Cerrar">✕</button>
+  </div>
+
+  <!-- Tooltip iOS -->
+  <div id="ios-tip" hidden>
+    <span>Tocá <strong>Compartir</strong> → <strong>Agregar a inicio</strong> para instalar</span>
+    <button id="ios-tip-close" aria-label="Cerrar">✕</button>
+  </div>
+
+  <script src="app.js?v=5"></script>
 </body>
 </html>

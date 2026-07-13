@@ -17,5 +17,5 @@ echo "Server PID: $!"
 echo "Tunnel PID: $!"
 
 echo ""
-echo "Chat disponible en: https://chat.controlapps.ar"
+echo "Chat disponible en: https://stark.controlapps.ar"
 echo "PIN: $ACCESS_PIN"

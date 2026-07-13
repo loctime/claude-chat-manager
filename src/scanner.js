@@ -21,8 +21,19 @@ function contentToText(c) {
   return '';
 }
 
+function isChannelSession(entries) {
+  for (const e of entries) {
+    if (e.type !== 'assistant' || !Array.isArray(e.message && e.message.content)) continue;
+    for (const b of e.message.content) {
+      if (b.type === 'tool_use' && typeof b.name === 'string' && b.name.startsWith('mcp__plugin_')) return true;
+    }
+  }
+  return false;
+}
+
 function sessionInfo(filePath) {
   const entries = parseJsonl(filePath);
+  if (isChannelSession(entries)) return null;
   const msgs = entries.filter(e => (e.type === 'user' || e.type === 'assistant') && e.message && !e.isMeta);
   if (msgs.length === 0) return null;
   const firstUser = msgs.find(e => e.type === 'user' && contentToText(e.message.content).trim());

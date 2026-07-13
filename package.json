@@ -7,6 +7,7 @@
     "test": "node --test 'test/**/*.test.js'"
   },
   "dependencies": {
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "multer": "^2.2.0"
   }
 }
