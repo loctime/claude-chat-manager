@@ -1,0 +1,12 @@
+{
+  "name": "claude-chat-manager",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test 'test/**/*.test.js'"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}
