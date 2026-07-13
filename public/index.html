@@ -1,3 +1,47 @@
 <!doctype html>
-<html lang="es"><head><meta charset="utf-8"><title>Claude Chat Manager</title></head>
-<body>placeholder</body></html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claude Chat Manager</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <aside id="sidebar">
+    <header>
+      <h1>Claude Chat</h1>
+      <button id="new-conv" title="Nueva conversación">+</button>
+    </header>
+    <nav id="tree"></nav>
+  </aside>
+  <main id="chat">
+    <header id="chat-header">
+      <span id="conv-title">Elegí una conversación</span>
+    </header>
+    <section id="messages"></section>
+    <form id="composer">
+      <textarea id="input" rows="3" placeholder="Escribí un mensaje…" disabled></textarea>
+      <button id="send" type="submit" disabled>Enviar</button>
+    </form>
+  </main>
+  <dialog id="new-dialog">
+    <form method="dialog" id="new-form">
+      <h2>Nueva conversación</h2>
+      <label>Proyecto
+        <select id="project-select"></select>
+      </label>
+      <label>U otra carpeta
+        <input id="project-custom" type="text" placeholder="/home/loctime/Proyectos/...">
+      </label>
+      <label>Primer mensaje
+        <textarea id="first-message" rows="3" required></textarea>
+      </label>
+      <menu>
+        <button value="cancel">Cancelar</button>
+        <button id="create-conv" value="default">Crear</button>
+      </menu>
+    </form>
+  </dialog>
+  <script src="app.js"></script>
+</body>
+</html>
