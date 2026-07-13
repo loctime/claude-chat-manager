@@ -135,6 +135,11 @@ app.patch('/api/conversations/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+app.delete('/api/conversations/:id/message', (req, res) => {
+  const cancelled = runner.cancel(req.params.id);
+  res.json({ cancelled });
+});
+
 app.get('/api/conversations/:id/stream', (req, res) => {
   const convId = req.params.id;
   res.writeHead(200, {

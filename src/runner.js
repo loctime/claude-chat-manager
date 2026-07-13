@@ -21,6 +21,18 @@ class Runner extends EventEmitter {
     return this.running.has(convId) || this.queue.some(j => j.convId === convId);
   }
 
+  cancel(convId) {
+    const child = this.running.get(convId);
+    if (child) { child.kill('SIGTERM'); return true; }
+    const idx = this.queue.findIndex(j => j.convId === convId);
+    if (idx >= 0) {
+      const [job] = this.queue.splice(idx, 1);
+      this.emit('status', { convId: job.convId, status: 'idle', code: -1, cancelled: true });
+      return true;
+    }
+    return false;
+  }
+
   _drain() {
     while (this.running.size < this.max && this.queue.length > 0) {
       this._start(this.queue.shift());

@@ -26,8 +26,11 @@
     </header>
     <section id="messages"></section>
     <form id="composer">
-      <textarea id="input" rows="3" placeholder="Escribí un mensaje…" disabled></textarea>
-      <button id="send" type="submit" disabled>Enviar</button>
+      <textarea id="input" rows="3" placeholder="Escribí un mensaje… (Enter envía, Shift+Enter nueva línea)" disabled></textarea>
+      <div id="composer-actions">
+        <button id="cancel-btn" type="button" hidden title="Cancelar (ESC)">✕ Cancelar</button>
+        <button id="send" type="submit" disabled>Enviar</button>
+      </div>
     </form>
   </main>
   <dialog id="new-dialog">

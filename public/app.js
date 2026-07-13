@@ -73,6 +73,7 @@ async function loadMessages(convId) {
 function setBusy(busy) {
   $('input').disabled = busy || !currentConv;
   $('send').disabled = busy || !currentConv;
+  $('cancel-btn').hidden = !busy || !currentConv;
 }
 
 function openStream(convId) {
@@ -103,8 +104,12 @@ function openStream(convId) {
   };
 }
 
+const drafts = new Map(); // convId → texto en borrador
+
 async function selectConv(convId, name, model, lastModel) {
+  if (currentConv) drafts.set(currentConv, $('input').value);
   currentConv = convId;
+  $('input').value = drafts.get(convId) || '';
   $('conv-title').textContent = name;
   const defaultLabel = lastModel ? `Default (${lastModel})` : 'Default';
   $('model-select').options[0].textContent = defaultLabel;
@@ -116,12 +121,35 @@ async function selectConv(convId, name, model, lastModel) {
   loadTree();
 }
 
+$('input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    if (!$('send').disabled) $('composer').requestSubmit();
+  }
+});
+
+$('cancel-btn').onclick = async () => {
+  if (!currentConv) return;
+  try {
+    await api(`/conversations/${currentConv}/message`, { method: 'DELETE' });
+  } catch (err) {
+    addMsg('error', 'No se pudo cancelar: ' + err.message);
+  }
+};
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && currentConv && !$('cancel-btn').hidden) {
+    $('cancel-btn').click();
+  }
+});
+
 $('composer').onsubmit = async e => {
   e.preventDefault();
   const text = $('input').value.trim();
   if (!text || !currentConv) return;
   addMsg('user', text);
   $('input').value = '';
+  drafts.delete(currentConv);
   setBusy(true);
   try {
     await api(`/conversations/${currentConv}/message`, {
