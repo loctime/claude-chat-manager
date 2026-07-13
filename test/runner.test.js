@@ -75,3 +75,43 @@ test('close con código != 0 emite idle con stderr', () => {
   assert.match(idle.stderr, /explotó/);
   assert.equal(r.isBusy('c1'), false);
 });
+
+test('flushea buffer al cerrar si la última línea no tiene newline', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  const events = [];
+  r.on('event', e => events.push(e));
+  r.send({ convId: 'c1', sessionId: 's1', cwd: '/t', text: 'a' });
+  // envía JSON sin trailing newline
+  spawned[0].child.stdout.emit('data', '{"type":"result","session_id":"sX"}');
+  assert.equal(events.length, 0); // aún no emite
+  spawned[0].child.emit('close', 0);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].event.type, 'result');
+  assert.equal(events[0].event.session_id, 'sX');
+});
+
+test('child.emit("error") emite idle con code -1 y drena cola', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  const statuses = [];
+  r.on('status', s => statuses.push(s));
+  r.send({ convId: 'c1', sessionId: 's1', cwd: '/t', text: 'a' });
+  r.send({ convId: 'c2', sessionId: 's2', cwd: '/t', text: 'b' });
+  r.send({ convId: 'c3', sessionId: 's3', cwd: '/t', text: 'c' });
+  assert.equal(spawned.length, 2);
+  // emite error en c1
+  spawned[0].child.emit('error', new Error('spawn claude ENOENT'));
+  // debe liberar slot y haber iniciado c3
+  assert.equal(spawned.length, 3);
+  assert.equal(r.isBusy('c1'), false);
+  // debe emitir idle con code -1 y stderr del error
+  const idle = statuses.find(s => s.convId === 'c1' && s.status === 'idle');
+  assert.ok(idle);
+  assert.equal(idle.code, -1);
+  assert.match(idle.stderr, /ENOENT/);
+  // luego emit('close') en el mismo child no debe emitir un segundo idle
+  spawned[0].child.emit('close', 0);
+  const idles = statuses.filter(s => s.convId === 'c1' && s.status === 'idle');
+  assert.equal(idles.length, 1);
+});

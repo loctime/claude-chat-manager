@@ -36,6 +36,8 @@ class Runner extends EventEmitter {
 
     let buf = '';
     let stderr = '';
+    let done = false; // guard para no emitir idle dos veces
+
     child.stdout.on('data', d => {
       buf += d.toString();
       let i;
@@ -49,8 +51,24 @@ class Runner extends EventEmitter {
       }
     });
     child.stderr.on('data', d => { stderr += d.toString(); });
-    child.on('close', code => {
+    child.on('error', err => {
+      if (done) return;
+      done = true;
       this.running.delete(job.convId);
+      const status = { convId: job.convId, status: 'idle', code: -1, stderr: err.message };
+      this.emit('status', status);
+      this._drain();
+    });
+    child.on('close', code => {
+      if (done) return;
+      done = true;
+      this.running.delete(job.convId);
+      // flushea buf antes de cerrar
+      if (buf.trim()) {
+        let ev;
+        try { ev = JSON.parse(buf); } catch { }
+        if (ev) this.emit('event', { convId: job.convId, event: ev });
+      }
       const status = { convId: job.convId, status: 'idle', code };
       if (code !== 0) status.stderr = stderr;
       this.emit('status', status);
