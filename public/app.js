@@ -6,6 +6,7 @@ let treeHasMore = false;
 let treeTotal = 0;
 let archivedTotal = 0;
 let showArchived = false;
+let lastUserText = '';
 const drafts = new Map();
 
 const $ = id => document.getElementById(id);
@@ -583,6 +584,14 @@ function addTool(name, input, output) {
 async function loadMessages(convId) {
   messagesEl.innerHTML = '';
   const msgs = await api(`/conversations/${convId}/messages`);
+  lastUserText = '';
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'user' && (msgs[i].text || '').trim()) {
+      lastUserText = msgs[i].text;
+      break;
+    }
+  }
+  updateRetryBtn();
   if (msgs.length === 0) {
     messagesEl.innerHTML = '<div id="empty-state"><p>Sin mensajes aún</p></div>';
     return;
@@ -591,6 +600,10 @@ async function loadMessages(convId) {
     if (m.role === 'tool') addTool(m.name, m.input, m.output);
     else addMsg(m.role, m.text);
   }
+}
+
+function updateRetryBtn() {
+  $('retry-btn').hidden = !currentConv || !lastUserText;
 }
 
 // ── Status ──
@@ -893,6 +906,8 @@ $('composer').onsubmit = async e => {
   autoResize($('input'));
   drafts.delete(currentConv);
   clearAttachments();
+  lastUserText = text;
+  updateRetryBtn();
   setBusy(true);
   try {
     await api(`/conversations/${currentConv}/message`, {
@@ -903,6 +918,46 @@ $('composer').onsubmit = async e => {
   } catch (err) {
     addMsg('error', err.message);
     setBusy(false);
+  }
+};
+
+// ── Retry último mensaje ──
+$('retry-btn').onclick = async () => {
+  if (!currentConv || !lastUserText) return;
+  const btn = $('retry-btn');
+  btn.disabled = true;
+  try {
+    // Si hay una ejecución en curso, cancelar primero
+    if (!$('cancel-btn').hidden) {
+      try { await api(`/conversations/${currentConv}/message`, { method: 'DELETE' }); } catch {}
+    }
+    // Reintentar POST hasta que el runner esté libre (max 5s)
+    const deadline = Date.now() + 5000;
+    const rawUserText = lastUserText.replace(/^\[Archivo adjunto:[^\]]+\]\n*/gm, '').trim();
+    addUserMsgWithFiles(rawUserText, []);
+    setBusy(true);
+    while (Date.now() < deadline) {
+      try {
+        await api(`/conversations/${currentConv}/message`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: lastUserText }),
+        });
+        return;
+      } catch (err) {
+        if (/procesando/i.test(err.message)) {
+          await new Promise(r => setTimeout(r, 200));
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw new Error('timeout esperando que termine la ejecución anterior');
+  } catch (err) {
+    addMsg('error', 'No se pudo reintentar: ' + err.message);
+    setBusy(false);
+  } finally {
+    btn.disabled = false;
   }
 };
 
