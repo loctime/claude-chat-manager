@@ -4,6 +4,8 @@ let tree = [];
 let treeLimit = 100;
 let treeHasMore = false;
 let treeTotal = 0;
+let archivedTotal = 0;
+let showArchived = false;
 const drafts = new Map();
 
 const $ = id => document.getElementById(id);
@@ -179,11 +181,35 @@ function avatarChar(name) {
   return (name || '?').trim()[0].toUpperCase();
 }
 
+function convElement(c) {
+  const b = badge(c.status);
+  const pin = c.pinned ? '<span class="conv-pin" title="Fijada">📌</span>' : '';
+  const arch = c.archived ? '<span class="conv-arch" title="Archivada">📁</span>' : '';
+  const div = document.createElement('div');
+  div.className = 'conv' + (c.convId === currentConv ? ' active' : '') + (c.archived ? ' archived' : '');
+  div.innerHTML = `
+    <div class="conv-avatar">${avatarChar(c.name)}</div>
+    <div class="conv-body">
+      <div class="name">${pin}${arch}<span class="conv-name-text"></span></div>
+      <div class="sub"></div>
+    </div>
+    ${b ? `<span class="conv-badge">${b}</span>` : ''}
+  `;
+  div.querySelector('.conv-name-text').textContent = c.name;
+  div.querySelector('.sub').textContent = (c.lastActivity || '').slice(0, 16).replace('T', ' ');
+  div.onclick = () => selectConv(c.convId, c.name, c.model, c.lastModel);
+  attachContextMenu(div, c);
+  return div;
+}
+
 async function loadTree() {
-  const resp = await api('/tree?limit=' + treeLimit);
+  const params = new URLSearchParams({ limit: String(treeLimit) });
+  if (showArchived) params.set('archived', '1');
+  const resp = await api('/tree?' + params);
   tree = resp.tree;
   treeHasMore = resp.hasMore;
   treeTotal = resp.total;
+  archivedTotal = resp.archivedTotal || 0;
   const nav = $('tree');
   nav.innerHTML = '';
   for (const proj of tree) {
@@ -194,23 +220,7 @@ async function loadTree() {
     sum.textContent = proj.projectDir.split('/').pop() || proj.projectDir;
     sum.title = proj.projectDir;
     det.appendChild(sum);
-    for (const c of proj.conversations) {
-      const b = badge(c.status);
-      const div = document.createElement('div');
-      div.className = 'conv' + (c.convId === currentConv ? ' active' : '');
-      div.innerHTML = `
-        <div class="conv-avatar">${avatarChar(c.name)}</div>
-        <div class="conv-body">
-          <div class="name"></div>
-          <div class="sub"></div>
-        </div>
-        ${b ? `<span class="conv-badge">${b}</span>` : ''}
-      `;
-      div.querySelector('.name').textContent = c.name;
-      div.querySelector('.sub').textContent = (c.lastActivity || '').slice(0, 16).replace('T', ' ');
-      div.onclick = () => selectConv(c.convId, c.name, c.model, c.lastModel);
-      det.appendChild(div);
-    }
+    for (const c of proj.conversations) det.appendChild(convElement(c));
     nav.appendChild(det);
   }
 
@@ -228,6 +238,72 @@ async function loadTree() {
     };
     nav.appendChild(more);
   }
+
+  // Toggle archivadas
+  if (archivedTotal > 0 || showArchived) {
+    const t = document.createElement('button');
+    t.className = 'archived-toggle';
+    t.type = 'button';
+    t.textContent = showArchived
+      ? `← Volver a activas`
+      : `Ver archivadas (${archivedTotal})`;
+    t.onclick = () => { showArchived = !showArchived; treeLimit = 100; safeLoadTree(); };
+    nav.appendChild(t);
+  }
+}
+
+// ── Menú contextual (click derecho + long-press mobile) ──
+function attachContextMenu(el, conv) {
+  let touchTimer = null;
+  el.addEventListener('contextmenu', e => { e.preventDefault(); showConvMenu(e.clientX, e.clientY, conv); });
+  el.addEventListener('touchstart', e => {
+    touchTimer = setTimeout(() => {
+      const t = e.touches[0];
+      showConvMenu(t.clientX, t.clientY, conv);
+      touchTimer = null;
+    }, 500);
+  }, { passive: true });
+  el.addEventListener('touchend', () => { if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; } });
+  el.addEventListener('touchmove', () => { if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; } });
+}
+
+function showConvMenu(x, y, conv) {
+  document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  menu.innerHTML = `
+    <button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button>
+    <button data-action="archive">${conv.archived ? '📂 Desarchivar' : '📁 Archivar'}</button>
+  `;
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  const maxX = window.innerWidth - rect.width - 8;
+  const maxY = window.innerHeight - rect.height - 8;
+  menu.style.left = Math.min(x, maxX) + 'px';
+  menu.style.top = Math.min(y, maxY) + 'px';
+
+  menu.onclick = async e => {
+    const action = e.target.dataset && e.target.dataset.action;
+    menu.remove();
+    if (!action) return;
+    const patch = action === 'pin'
+      ? { pinned: !conv.pinned }
+      : { archived: !conv.archived };
+    try {
+      await api(`/conversations/${conv.convId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+      safeLoadTree();
+    } catch (err) { toast('No se pudo actualizar: ' + err.message); }
+  };
+
+  const dismiss = () => { menu.remove(); document.removeEventListener('click', dismiss); document.removeEventListener('touchstart', dismiss); };
+  setTimeout(() => {
+    document.addEventListener('click', dismiss, { once: true });
+    document.addEventListener('touchstart', dismiss, { once: true, passive: true });
+  }, 0);
 }
 
 // ── Messages ──

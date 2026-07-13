@@ -607,6 +607,49 @@ dialog button:hover { background: var(--border); }
   #input { padding: 9px 10px; min-width: 0; }
 }
 
+/* ── Archivar/Pinnear ── */
+.conv-pin, .conv-arch { margin-right: 4px; font-size: 12px; }
+.conv.archived { opacity: .55; }
+.conv.archived .conv-avatar { filter: grayscale(.6); }
+
+.archived-toggle {
+  display: block;
+  width: calc(100% - 20px);
+  margin: 8px 10px 12px;
+  padding: 8px;
+  background: transparent;
+  color: var(--text2);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 12px;
+}
+.archived-toggle:hover { background: var(--input-bg); color: var(--text); }
+
+.ctx-menu {
+  position: fixed;
+  z-index: 10000;
+  background: var(--header);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 12px rgba(0,0,0,.4);
+  padding: 4px;
+  min-width: 140px;
+}
+.ctx-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  background: transparent;
+  color: var(--text);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.ctx-menu button:hover { background: var(--input-bg); }
+
 /* ── Search dialog ── */
 #search-dialog {
   padding: 0;

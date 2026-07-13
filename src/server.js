@@ -257,6 +257,8 @@ app.get('/api/tree', (req, res) => {
       messageCount: s.messageCount || 0,
       model: c.model || null,
       lastModel: s.lastModel || null,
+      pinned: !!c.pinned,
+      archived: !!c.archived,
       status: runner.running.has(convId) ? 'running' : (runner.isBusy(convId) ? 'queued' : 'idle'),
     });
   }
@@ -271,16 +273,26 @@ app.get('/api/tree', (req, res) => {
       messageCount: s.messageCount,
       model: null,
       lastModel: s.lastModel || null,
+      pinned: false,
+      archived: false,
       status: runner.running.has(s.sessionId) ? 'running' : (runner.isBusy(s.sessionId) ? 'queued' : 'idle'),
     });
   }
 
-  // Ordenar flat por lastActivity desc y quedarnos con los top N; el resto queda para load-more.
-  convs.sort((a, b) => (b.lastActivity || '').localeCompare(a.lastActivity || ''));
-  const total = convs.length;
+  const showArchived = req.query.archived === '1';
+  const archivedTotal = convs.filter(c => c.archived).length;
+  const filtered = showArchived ? convs.filter(c => c.archived) : convs.filter(c => !c.archived);
+
+  // Sort: pinned primero, después lastActivity desc.
+  filtered.sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    return (b.lastActivity || '').localeCompare(a.lastActivity || '');
+  });
+
+  const total = filtered.length;
   const requested = Number(req.query.limit) || DEFAULT_TREE_LIMIT;
   const limit = Math.max(1, Math.min(MAX_TREE_LIMIT, requested));
-  const visible = convs.slice(0, limit);
+  const visible = filtered.slice(0, limit);
   const hasMore = total > limit;
 
   const groups = new Map();
@@ -292,7 +304,7 @@ app.get('/api/tree', (req, res) => {
     projectDir,
     conversations,
   }));
-  res.json({ tree, hasMore, total, limit });
+  res.json({ tree, hasMore, total, limit, archivedTotal });
 });
 
 app.get('/api/search', (req, res) => {
@@ -365,6 +377,8 @@ app.patch('/api/conversations/:id', (req, res) => {
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
   if ('name' in req.body) conv.name = (req.body.name || '').trim() || undefined;
   if ('model' in req.body) conv.model = (req.body.model || '').trim() || undefined;
+  if ('pinned' in req.body) conv.pinned = !!req.body.pinned;
+  if ('archived' in req.body) conv.archived = !!req.body.archived;
   meta.save(data);
   res.json({ ok: true });
 });
