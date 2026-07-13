@@ -122,17 +122,18 @@ window.addEventListener('popstate', (e) => {
   if (newDlg.open) { newDlg.close(); history.pushState({ view: 'list-guard' }, ''); return; }
   const ctxMenu = document.querySelector('.ctx-menu');
   if (ctxMenu) { ctxMenu.remove(); history.pushState({ view: 'list-guard' }, ''); return; }
-  // Estamos en la lista raíz: aviso "presione dos veces para salir"
+  // Estamos en la lista raíz: doble click atrás para salir
   const now = Date.now();
-  if (now - _lastBackPress < 2000) {
-    // 2do press dentro de la ventana — dejar salir. Ya popped a 'list';
-    // llamamos history.go(-1) para pasar la entry inicial y salir del SPA.
+  const DOUBLE_CLICK_MS = 600;
+  if (now - _lastBackPress < DOUBLE_CLICK_MS) {
+    // 2do press rápido — salir. popstate ya nos movió a 'list';
+    // history.go(-1) pasa la entry inicial y minimiza/cierra el PWA.
     setTimeout(() => { try { history.go(-1); } catch {} }, 0);
     return;
   }
   _lastBackPress = now;
   history.pushState({ view: 'list-guard' }, '');
-  toast('Presioná atrás otra vez para salir', 'info', 1800);
+  toast('Doble click atrás para salir', 'info', 1200);
 });
 
 // ── API ──
