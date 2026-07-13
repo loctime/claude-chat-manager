@@ -2,18 +2,29 @@ const express = require('express');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
-const { execFile } = require('child_process');
+const os = require('os');
+const { execFile, execFileSync } = require('child_process');
 const multer = require('multer');
 const scanner = require('./scanner');
 const meta = require('./meta');
 const { Runner } = require('./runner');
+
+const IS_WIN = process.platform === 'win32';
+// En Windows ImageMagick 7 se llama 'magick'; en Linux/Mac es 'convert'
+const MAGICK_CMD = IS_WIN ? 'magick' : 'convert';
+// args para magick en Windows: magick [convert] input ... output
+// en Linux: convert input ... output
+function magickArgs(args) {
+  return IS_WIN ? ['convert', ...args] : args;
+}
 
 const HOST = process.env.HOST || '127.0.0.1';
 const PORT = Number(process.env.PORT || 3777);
 const ACCESS_PIN = process.env.ACCESS_PIN || '';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 
-const UPLOAD_DIR = path.join(process.env.HOME || '/tmp', '.ccm-uploads');
+const HOME_DIR = process.env.HOME || process.env.USERPROFILE || os.homedir();
+const UPLOAD_DIR = path.join(HOME_DIR, '.ccm-uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const upload = multer({ dest: UPLOAD_DIR, limits: { fileSize: 50 * 1024 * 1024 } });
@@ -98,13 +109,13 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
   if (IMAGE_COMPRESS_EXTS.has(ext) && req.file.size > MAX_IMAGE_BYTES) {
     // Comprimir: max 2048px ancho, calidad 82
     const outPath = req.file.path + '_c.jpg';
-    execFile('convert', [
+    execFile(MAGICK_CMD, magickArgs([
       req.file.path,
       '-resize', '2048x2048>',
       '-quality', '82',
       '-strip',
       outPath,
-    ], (err) => {
+    ]), (err) => {
       fs.unlink(req.file.path, () => {});
       if (err) {
         // Fallback: usar original renombrado
@@ -146,7 +157,15 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
 });
 
 // ── Thumbnail de archivos (imágenes y PDFs) ──
-const GS_AVAILABLE = (() => { try { require('child_process').execFileSync('which', ['gs']); return true; } catch { return false; } })();
+const GS_AVAILABLE = (() => {
+  try {
+    // 'where' en Windows, 'which' en Unix; gs en Linux, gswin64c en Windows
+    const cmd = IS_WIN ? 'where' : 'which';
+    const gsName = IS_WIN ? 'gswin64c' : 'gs';
+    execFileSync(cmd, [gsName]);
+    return true;
+  } catch { return false; }
+})();
 
 app.get('/api/thumbnail', (req, res) => {
   const filePath = (req.query.path || '').trim();
@@ -166,13 +185,12 @@ app.get('/api/thumbnail', (req, res) => {
 
   let args;
   if (isPdf) {
-    // Primera página del PDF
     args = ['-density', '72', `${filePath}[0]`, '-resize', '200x200>', '-background', 'white', '-flatten', 'jpeg:-'];
   } else {
     args = [filePath, '-resize', '200x200>', '-background', '#111b21', '-flatten', 'jpeg:-'];
   }
 
-  execFile('convert', args, { encoding: 'buffer', maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+  execFile(MAGICK_CMD, magickArgs(args), { encoding: 'buffer', maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
     if (err || !stdout || stdout.length === 0) return res.status(404).end();
     res.end(stdout);
   });

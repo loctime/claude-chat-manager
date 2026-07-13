@@ -284,8 +284,8 @@ function makeFileCard(filePath) {
 
 // Detecta paths absolutos en texto y los convierte en links/previews
 function renderTextWithPaths(container, text) {
-  // Primero reemplazar [Archivo adjunto: PATH] con preview directo
-  const ATTACH_RE = /\[Archivo adjunto:\s*(\/[^\]]+)\]/g;
+  // Primero reemplazar [Archivo adjunto: PATH] con preview directo (Unix y Windows)
+  const ATTACH_RE = /\[Archivo adjunto:\s*([^\]]+)\]/g;
   let processed = text;
   const attachMatches = [];
   let am;
@@ -317,8 +317,8 @@ function renderTextWithPaths(container, text) {
     return;
   }
 
-  // Paths sueltos (excluir ] del match para no capturar path dentro de [])
-  const PATH_RE = /(`?)(\/(?:home|tmp|root|var|opt|usr)[^\s`'"(){}<>\[\]]+)\1/g;
+  // Paths sueltos — Unix (/home/...) y Windows (C:\... o C:/...)
+  const PATH_RE = /(`?)((?:[A-Za-z]:[\\\/]|\/(?:home|tmp|root|var|opt|usr))[^\s`'"(){}<>\[\]]+)\1/g;
   let last = 0;
   let match;
   while ((match = PATH_RE.exec(text)) !== null) {

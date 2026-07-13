@@ -21,11 +21,20 @@ PWA local para chatear con Claude Code desde el celular o el browser. Sidebar de
 - ImageMagick + Ghostscript (para thumbnails de imágenes y PDFs)
 - Groq API key (para transcripción de audio)
 
+### Linux / macOS
 ```bash
 # Ubuntu/Debian
 sudo apt install imagemagick ghostscript
 sudo sed -i 's/rights="none" pattern="PDF"/rights="read|write" pattern="PDF"/' /etc/ImageMagick-6/policy.xml
+
+# macOS
+brew install imagemagick ghostscript
 ```
+
+### Windows
+1. Instalar [ImageMagick 7](https://imagemagick.org/script/download.php#windows) — elegir el instalador `.exe`, marcar "Add to PATH"
+2. Instalar [Ghostscript](https://www.ghostscript.com/releases/gsdnld.html) — elegir `gswin64c`, agregar al PATH
+3. Verificar en PowerShell: `magick --version` y `gswin64c --version`
 
 ## Instalación
 
@@ -53,8 +62,13 @@ export ACCESS_PIN=1234   # PIN de acceso (recomendado si exponés al exterior)
 ## Uso
 
 ```bash
-npm start   # http://127.0.0.1:3777
+# Linux / macOS
+npm start
+
+# Windows
+start.bat
 ```
+→ http://127.0.0.1:3777
 
 ### Acceso remoto (Cloudflare Tunnel)
 
