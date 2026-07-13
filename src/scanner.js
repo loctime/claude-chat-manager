@@ -55,7 +55,21 @@ function _computeSessionInfo(filePath) {
     lastActivity,
     lastModel: lastAssistant ? lastAssistant.message.model : null,
     usage: sumUsage(entries),
+    contextTokens: lastTurnContextTokens(entries),
   };
+}
+
+// Tokens del último turno assistant = tamaño de contexto vigente.
+// input + cache_read + cache_create es lo que Claude tuvo que "leer" en ese turno,
+// que en la práctica equivale al estado del contexto justo antes del próximo mensaje.
+function lastTurnContextTokens(entries) {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e.type !== 'assistant' || !e.message || !e.message.usage) continue;
+    const u = e.message.usage;
+    return (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+  }
+  return 0;
 }
 
 // Suma usage por modelo. Cada mensaje assistant tiene message.usage con

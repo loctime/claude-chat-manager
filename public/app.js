@@ -240,18 +240,23 @@ function convElement(c) {
   const pin = c.pinned ? '<span class="conv-pin" title="Fijada">📌</span>' : '';
   const arch = c.archived ? '<span class="conv-arch" title="Archivada">📁</span>' : '';
   const ai = c.aiTitle ? '<span class="conv-ai" title="Título generado por IA">✨</span>' : '';
+  const pct = c.contextPct || 0;
+  const pctLabel = fmtCtxPct(pct);
+  const ctxHtml = pctLabel
+    ? `<span class="conv-ctx" data-tone="${ctxTone(pct)}" title="Contexto usado: ${(pct * 100).toFixed(1)}%">${pctLabel}</span>`
+    : '';
   const div = document.createElement('div');
   div.className = 'conv' + (c.convId === currentConv ? ' active' : '') + (c.archived ? ' archived' : '');
   div.innerHTML = `
     <div class="conv-avatar">${avatarChar(c.name)}</div>
     <div class="conv-body">
       <div class="name">${pin}${arch}${ai}<span class="conv-name-text"></span></div>
-      <div class="sub"></div>
+      <div class="sub"><span class="conv-date"></span>${ctxHtml}</div>
     </div>
     ${b ? `<span class="conv-badge">${b}</span>` : ''}
   `;
   div.querySelector('.conv-name-text').textContent = c.name;
-  div.querySelector('.sub').textContent = (c.lastActivity || '').slice(0, 16).replace('T', ' ');
+  div.querySelector('.conv-date').textContent = (c.lastActivity || '').slice(0, 16).replace('T', ' ');
   div.onclick = () => selectConv(c.convId, c.name, c.model, c.lastModel);
   attachContextMenu(div, c);
   return div;
@@ -361,6 +366,7 @@ function showConvMenu(x, y, conv) {
   menu.innerHTML = `
     <button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button>
     <button data-action="archive">${conv.archived ? '📂 Desarchivar' : '📁 Archivar'}</button>
+    <button data-action="compact">🗜️ Compactar</button>
   `;
   document.body.appendChild(menu);
   const rect = menu.getBoundingClientRect();
@@ -373,6 +379,16 @@ function showConvMenu(x, y, conv) {
     menu.remove();
     document.removeEventListener('click', dismiss, true);
     document.removeEventListener('touchstart', dismiss, true);
+    if (action === 'compact') {
+      if (!confirm('Compactar la conversación?\n\nSe genera un resumen y la sesión actual queda archivada. La próxima respuesta arranca sesión nueva con el resumen inyectado.')) return;
+      try {
+        toast('Compactando…', 'info', 2000);
+        const r = await api(`/conversations/${conv.convId}/compact`, { method: 'POST' });
+        toast(`Compactado (${r.messagesCompacted} mensajes resumidos)`, 'info', 3000);
+        safeLoadTree();
+      } catch (err) { toast('No se pudo compactar: ' + err.message); }
+      return;
+    }
     const patch = action === 'pin'
       ? { pinned: !conv.pinned }
       : { archived: !conv.archived };
@@ -602,12 +618,13 @@ function renderTextWithPaths(container, text) {
   }
 }
 
-function addMsg(role, text) {
+function addMsg(role, text, opts = {}) {
   const existing = document.getElementById('empty-state');
   if (existing) existing.remove();
 
   const div = document.createElement('div');
   div.className = 'msg ' + role;
+  if (opts.compacted) div.classList.add('compacted');
   if (role !== 'error') {
     const span = document.createElement('span');
     span.className = 'msg-text';
@@ -627,12 +644,14 @@ function addMsg(role, text) {
   return div;
 }
 
-function addTool(name, input, output) {
+function addTool(name, input, output, opts = {}) {
   const det = document.createElement('details');
   det.className = 'tool';
-  const summary = typeof input === 'object' && input && input.command
+  if (opts.compacted) det.classList.add('compacted');
+  const rawSummary = typeof input === 'object' && input && input.command
     ? input.command
-    : JSON.stringify(input || '').slice(0, 80);
+    : JSON.stringify(input || '').slice(0, 120);
+  const summary = String(rawSummary).replace(/\s+/g, ' ').trim();
   det.innerHTML = '<summary></summary><pre class="in"></pre><pre class="out"></pre>';
   det.querySelector('summary').textContent = `▸ ${name}: ${summary}`;
   det.querySelector('.in').textContent = JSON.stringify(input, null, 2);
@@ -682,12 +701,28 @@ function addTool(name, input, output) {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
+function addCompactDivider() {
+  const div = document.createElement('div');
+  div.className = 'compact-divider';
+  div.innerHTML = `<span>🗜️ Conversación compactada — arranca sesión nueva desde acá</span><button class="compact-toggle" data-collapsed="0">Ocultar historial</button>`;
+  const btn = div.querySelector('.compact-toggle');
+  btn.addEventListener('click', () => {
+    const collapsed = btn.dataset.collapsed === '1';
+    document.querySelectorAll('#messages .compacted').forEach(el => {
+      el.style.display = collapsed ? '' : 'none';
+    });
+    btn.dataset.collapsed = collapsed ? '0' : '1';
+    btn.textContent = collapsed ? 'Ocultar historial' : 'Mostrar historial';
+  });
+  messagesEl.appendChild(div);
+}
+
 async function loadMessages(convId) {
   messagesEl.innerHTML = '';
   const msgs = await api(`/conversations/${convId}/messages`);
   lastUserText = '';
   for (let i = msgs.length - 1; i >= 0; i--) {
-    if (msgs[i].role === 'user' && (msgs[i].text || '').trim()) {
+    if (msgs[i].role === 'user' && (msgs[i].text || '').trim() && !msgs[i].compacted) {
       lastUserText = msgs[i].text;
       break;
     }
@@ -697,10 +732,20 @@ async function loadMessages(convId) {
     messagesEl.innerHTML = '<div id="empty-state"><p>Sin mensajes aún</p></div>';
     return;
   }
+  let inCompacted = false;
+  let dividerPlaced = false;
   for (const m of msgs) {
-    if (m.role === 'tool') addTool(m.name, m.input, m.output);
-    else addMsg(m.role, m.text);
+    if (m.compacted && !inCompacted) inCompacted = true;
+    if (!m.compacted && inCompacted && !dividerPlaced) {
+      addCompactDivider();
+      dividerPlaced = true;
+      inCompacted = false;
+    }
+    const opts = { compacted: !!m.compacted };
+    if (m.role === 'tool') addTool(m.name, m.input, m.output, opts);
+    else addMsg(m.role, m.text, opts);
   }
+  if (inCompacted && !dividerPlaced) addCompactDivider();
 }
 
 function updateRetryBtn() {
@@ -760,6 +805,16 @@ function fmtTokens(n) {
   if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
   return String(n);
 }
+function fmtCtxPct(pct) {
+  if (!pct) return '';
+  const p = pct * 100;
+  return p < 1 ? '<1%' : Math.round(p) + '%';
+}
+function ctxTone(pct) {
+  if (pct >= 0.8) return 'hot';
+  if (pct >= 0.5) return 'warm';
+  return '';
+}
 async function refreshCostBadge(convId) {
   const badge = $('cost-badge');
   try {
@@ -768,9 +823,15 @@ async function refreshCostBadge(convId) {
     const totalTokens = (t.input || 0) + (t.output || 0) + (t.cacheCreate || 0) + (t.cacheRead || 0);
     if (totalTokens === 0) { badge.hidden = true; return; }
     const cost = usage.costUSD || 0;
+    const pct = usage.contextPct || 0;
+    const ctx = usage.contextTokens || 0;
+    const win = usage.contextWindow || 200000;
     badge.hidden = false;
-    badge.textContent = `${fmtTokens(totalTokens)} · $${cost.toFixed(cost < 0.01 ? 4 : 2)}`;
-    badge.title = `in: ${t.input.toLocaleString()}  out: ${t.output.toLocaleString()}\n` +
+    badge.dataset.tone = ctxTone(pct);
+    const pctLabel = fmtCtxPct(pct);
+    badge.textContent = (pctLabel ? `ctx ${pctLabel} · ` : '') + `${fmtTokens(totalTokens)} · $${cost.toFixed(cost < 0.01 ? 4 : 2)}`;
+    badge.title = `contexto: ${ctx.toLocaleString()} / ${win.toLocaleString()} tokens (${(pct * 100).toFixed(1)}%)\n` +
+                  `in: ${t.input.toLocaleString()}  out: ${t.output.toLocaleString()}\n` +
                   `cache write: ${t.cacheCreate.toLocaleString()}  cache read: ${t.cacheRead.toLocaleString()}\n` +
                   `costo estimado: US$ ${cost.toFixed(4)}`;
   } catch {
@@ -795,6 +856,13 @@ async function selectConv(convId, name, model, lastModel) {
   openStream(convId);
   loadTree();
   refreshCostBadge(convId);
+  // En mobile no autofocuseamos porque dispararía el teclado en pantalla apenas tocás la lista.
+  if (!isMobile()) {
+    const input = $('input');
+    input.focus();
+    const len = input.value.length;
+    input.setSelectionRange(len, len);
+  }
 }
 
 // ── Menú "..." del chat ──
@@ -897,21 +965,18 @@ function addAttachmentChip(name, filePath, localFile) {
   $('composer-attachments').appendChild(chip);
 }
 
-$('attach-btn').onclick = () => { $('file-input').click(); };
-$('file-input').onchange = async () => {
-  const file = $('file-input').files[0];
-  if (!file) return;
-  $('file-input').value = '';
-
-  // Chip de carga mientras sube
+async function uploadAttachment(file) {
+  if (!currentConv) { addMsg('error', 'Elegí una conversación antes de adjuntar'); return; }
+  const displayName = file.name || `pegado-${Date.now()}.${(file.type.split('/')[1] || 'bin')}`;
   const loadingChip = document.createElement('div');
   loadingChip.className = 'attach-chip attach-chip-loading';
-  loadingChip.innerHTML = `<span class="attach-spinner"></span><span class="attach-chip-name">${file.name}</span>`;
+  loadingChip.innerHTML = `<span class="attach-spinner"></span><span class="attach-chip-name"></span>`;
+  loadingChip.querySelector('.attach-chip-name').textContent = displayName;
   $('composer-attachments').appendChild(loadingChip);
 
   try {
     const fd = new FormData();
-    fd.append('file', file);
+    fd.append('file', file, displayName);
     const res = await fetch('/api/upload', { method: 'POST', body: fd });
     if (!res.ok) throw new Error((await res.json()).error || res.statusText);
     const { path: filePath, name } = await res.json();
@@ -922,7 +987,65 @@ $('file-input').onchange = async () => {
     loadingChip.remove();
     addMsg('error', 'No se pudo subir: ' + err.message);
   }
+}
+
+async function uploadFiles(files) {
+  for (const f of files) await uploadAttachment(f);
+}
+
+$('attach-btn').onclick = () => { $('file-input').click(); };
+$('file-input').onchange = async () => {
+  const files = Array.from($('file-input').files);
+  $('file-input').value = '';
+  await uploadFiles(files);
 };
+
+// ── Paste (imágenes/archivos del portapapeles) ──
+$('input').addEventListener('paste', (e) => {
+  if (!e.clipboardData) return;
+  const files = Array.from(e.clipboardData.files || []);
+  if (files.length === 0) return;
+  e.preventDefault();
+  uploadFiles(files);
+});
+
+// ── Drag & drop sobre el panel de chat ──
+(function setupDragDrop() {
+  const zone = document.getElementById('panel-chat');
+  let depth = 0;
+  const show = () => { zone.classList.add('drag-over'); };
+  const hide = () => { zone.classList.remove('drag-over'); depth = 0; };
+
+  // Los eventos "dragenter"/"dragleave" se disparan por cada hijo que atraviesa el cursor,
+  // por eso contamos profundidad en vez de togglear crudo.
+  zone.addEventListener('dragenter', (e) => {
+    if (!currentConv || !e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+    e.preventDefault();
+    depth++;
+    show();
+  });
+  zone.addEventListener('dragover', (e) => {
+    if (!currentConv || !e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  zone.addEventListener('dragleave', (e) => {
+    if (depth === 0) return;
+    depth--;
+    if (depth === 0) hide();
+  });
+  zone.addEventListener('drop', (e) => {
+    if (!currentConv) return;
+    const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+    if (files.length === 0) return;
+    e.preventDefault();
+    hide();
+    uploadFiles(files);
+  });
+  // Evitar que el browser abra el archivo si el drop cae fuera de la zona
+  window.addEventListener('dragover', (e) => { if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) e.preventDefault(); });
+  window.addEventListener('drop', (e) => { if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) e.preventDefault(); });
+})();
 
 // ── Mic / Grabación ──
 let mediaRecorder = null;

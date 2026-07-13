@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { execFile, execFileSync } = require('child_process');
+const { execFile, execFileSync, spawn } = require('child_process');
 const multer = require('multer');
 const scanner = require('./scanner');
 const meta = require('./meta');
@@ -75,6 +75,17 @@ const PRICE_TABLE = [
 ];
 function priceFor(model) {
   return PRICE_TABLE.find(p => model.startsWith(p.prefix)) || null;
+}
+
+// Ventana de contexto en tokens. Todos los Claude 3.5/4 usan 200k por defecto.
+// Si en el futuro algún modelo cambia (o se habilita 1M en Sonnet), agregar prefijo acá.
+const CONTEXT_WINDOW_TABLE = [
+  { prefix: 'claude-', tokens: 200_000 },
+];
+function contextWindowFor(model) {
+  if (!model) return 200_000;
+  const row = CONTEXT_WINDOW_TABLE.find(p => model.startsWith(p.prefix));
+  return row ? row.tokens : 200_000;
 }
 function usageCost(usage) {
   let costUSD = 0;
@@ -150,6 +161,39 @@ function _groqTitle(excerpt) {
         const t = raw.trim().replace(/^["'`«»]+|["'`«»\.]+$/g, '').slice(0, 80);
         resolve(t || null);
       } catch { resolve(null); }
+    });
+  });
+}
+
+const SUMMARIZE_SYSTEM_PROMPT = 'Sos un compresor de contexto. El usuario te pasa una conversación entre él (user) y un asistente (assistant). Devolvés un resumen estructurado en español que preserve: (1) el objetivo/tema de la charla, (2) las decisiones tomadas, (3) los archivos/paths/comandos relevantes mencionados, (4) el estado actual (qué está hecho y qué falta), y (5) cualquier información no obvia que se necesite para continuar. Sin saludos, sin conclusiones, sin comentarios sobre tu tarea — solo el resumen en prosa concisa con bullets cuando ayude. Longitud: 200-500 palabras según lo que amerite.';
+
+function _claudeSummarize(excerpt) {
+  return new Promise((resolve, reject) => {
+    const prompt = `${SUMMARIZE_SYSTEM_PROMPT}\n\n--- CONVERSACIÓN A RESUMIR ---\n\n${excerpt}`;
+    const args = ['-p', prompt, '--model', 'claude-sonnet-4-6', '--dangerously-skip-permissions'];
+    const child = spawn('claude', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(new Error('timeout (120s) resumiendo con claude'));
+    }, 120_000);
+    child.stdout.on('data', d => { stdout += d.toString(); });
+    child.stderr.on('data', d => { stderr += d.toString(); });
+    child.on('error', err => {
+      clearTimeout(timer);
+      console.error('[compact] spawn claude error:', err.message);
+      reject(new Error('no se pudo lanzar claude: ' + err.message));
+    });
+    child.on('close', code => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        console.error('[compact] claude exit', code, 'stderr:', stderr.slice(0, 500));
+        return reject(new Error(`claude salió con código ${code}: ${(stderr || '').slice(0, 200)}`));
+      }
+      const t = (stdout || '').trim();
+      if (!t) return reject(new Error('resumen vacío de claude'));
+      resolve(t);
     });
   });
 }
@@ -312,6 +356,11 @@ app.get('/api/tree', (req, res) => {
   for (const c of Object.values(data.conversations)) referenced.add(c.currentSessionId);
   const byId = new Map(sessions.map(s => [s.sessionId, s]));
   const convs = [];
+  function contextPctFor(s) {
+    const tokens = s.contextTokens || 0;
+    if (!tokens) return 0;
+    return tokens / contextWindowFor(s.lastModel);
+  }
   for (const [convId, c] of Object.entries(data.conversations)) {
     const s = byId.get(c.currentSessionId) || {};
     convs.push({
@@ -326,6 +375,7 @@ app.get('/api/tree', (req, res) => {
       pinned: !!c.pinned,
       archived: !!c.archived,
       aiTitle: !!c.aiTitle,
+      contextPct: contextPctFor(s),
       status: runner.running.has(convId) ? 'running' : (runner.isBusy(convId) ? 'queued' : 'idle'),
     });
   }
@@ -342,6 +392,7 @@ app.get('/api/tree', (req, res) => {
       lastModel: s.lastModel || null,
       pinned: false,
       archived: false,
+      contextPct: contextPctFor(s),
       status: runner.running.has(s.sessionId) ? 'running' : (runner.isBusy(s.sessionId) ? 'queued' : 'idle'),
     });
   }
@@ -397,23 +448,41 @@ app.get('/api/search', (req, res) => {
 });
 
 app.get('/api/conversations/:id/usage', (req, res) => {
+  const empty = { total: { input: 0, output: 0, cacheCreate: 0, cacheRead: 0 }, byModel: {}, costUSD: 0, contextTokens: 0, contextWindow: 200_000, contextPct: 0 };
   const { conv } = resolveConv(req.params.id);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
-  if (!conv.currentSessionId) return res.json({ total: { input: 0, output: 0, cacheCreate: 0, cacheRead: 0 }, byModel: {}, costUSD: 0 });
+  if (!conv.currentSessionId) return res.json(empty);
   const file = scanner.findSessionFile(conv.currentSessionId);
-  if (!file) return res.json({ total: { input: 0, output: 0, cacheCreate: 0, cacheRead: 0 }, byModel: {}, costUSD: 0 });
+  if (!file) return res.json(empty);
   const info = scanner.sessionInfo(file);
-  if (!info || !info.usage) return res.json({ total: { input: 0, output: 0, cacheCreate: 0, cacheRead: 0 }, byModel: {}, costUSD: 0 });
-  res.json(usageCost(info.usage));
+  if (!info || !info.usage) return res.json(empty);
+  const window = contextWindowFor(info.lastModel);
+  const contextTokens = info.contextTokens || 0;
+  res.json({
+    ...usageCost(info.usage),
+    contextTokens,
+    contextWindow: window,
+    contextPct: window > 0 ? contextTokens / window : 0,
+  });
 });
 
 app.get('/api/conversations/:id/messages', (req, res) => {
   const { conv } = resolveConv(req.params.id);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
-  if (!conv.currentSessionId) return res.json([]);
-  const file = scanner.findSessionFile(conv.currentSessionId);
-  if (!file) return res.json([]);
-  res.json(scanner.getMessagesIncremental(file));
+  const out = [];
+  if (conv.compactedFromSession) {
+    const oldFile = scanner.findSessionFile(conv.compactedFromSession);
+    if (oldFile) {
+      for (const m of scanner.getMessagesIncremental(oldFile)) out.push({ ...m, compacted: true });
+    }
+  }
+  if (conv.currentSessionId) {
+    const file = scanner.findSessionFile(conv.currentSessionId);
+    if (file) {
+      for (const m of scanner.getMessagesIncremental(file)) out.push(m);
+    }
+  }
+  res.json(out);
 });
 
 function slugify(s) {
@@ -482,9 +551,54 @@ app.post('/api/conversations/:id/message', (req, res) => {
   if (runner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación ya está procesando un mensaje' });
   const { data, conv } = resolveConv(convId);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  let outgoing = text;
+  if (conv.compactedSummary && !conv.currentSessionId) {
+    outgoing = `[Resumen del contexto previo — la conversación fue compactada]\n${conv.compactedSummary}\n\n[Mensaje actual del usuario]\n${text}`;
+    delete conv.compactedSummary;
+    delete conv.compactedAt;
+  }
   meta.save(data);
-  runner.send({ convId, sessionId: conv.currentSessionId, cwd: conv.projectDir, text, model: conv.model });
+  runner.send({ convId, sessionId: conv.currentSessionId, cwd: conv.projectDir, text: outgoing, model: conv.model });
   res.status(202).json({ queued: true });
+});
+
+app.post('/api/conversations/:id/compact', async (req, res) => {
+  const convId = req.params.id;
+  if (runner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación está procesando un mensaje' });
+  const { data, conv } = resolveConv(convId);
+  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  if (!conv.currentSessionId) return res.status(400).json({ error: 'la conversación no tiene sesión activa' });
+  const file = scanner.findSessionFile(conv.currentSessionId);
+  if (!file) return res.status(404).json({ error: 'archivo de sesión no encontrado' });
+  const messages = scanner.getMessagesIncremental(file).filter(m => m.role === 'user' || m.role === 'assistant');
+  if (messages.length < 2) return res.status(400).json({ error: 'nada útil para compactar (menos de 2 mensajes)' });
+
+  const MAX_CHARS_PER_MSG = 2000;
+  const MAX_TOTAL_CHARS = 120000;
+  let total = 0;
+  const chunks = [];
+  for (const m of messages) {
+    const t = (m.text || '').slice(0, MAX_CHARS_PER_MSG);
+    const line = `${m.role}: ${t}`;
+    if (total + line.length > MAX_TOTAL_CHARS) { chunks.push('[... resto omitido por límite ...]'); break; }
+    chunks.push(line);
+    total += line.length;
+  }
+  const excerpt = chunks.join('\n\n');
+
+  let summary;
+  try { summary = await _claudeSummarize(excerpt); }
+  catch (err) { return res.status(500).json({ error: 'no se pudo resumir: ' + err.message }); }
+
+  const old = conv.currentSessionId;
+  if (old && !data.superseded.includes(old)) data.superseded.push(old);
+  conv.compactedFromSession = old;
+  conv.currentSessionId = null;
+  conv.compactedSummary = summary;
+  conv.compactedAt = new Date().toISOString();
+  meta.save(data);
+  broadcast(convId, { kind: 'compacted', summary });
+  res.json({ ok: true, summary, messagesCompacted: messages.length });
 });
 
 app.post('/api/conversations', (req, res) => {

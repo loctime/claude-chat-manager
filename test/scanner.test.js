@@ -251,3 +251,27 @@ test('sessionInfo incluye usage acumulado', () => {
   assert.equal(info.usage.total.input, 7);
   assert.equal(info.usage.total.output, 11);
 });
+
+test('sessionInfo.contextTokens = tokens del último turno assistant (input+cache_read+cache_create)', () => {
+  _clearSessionInfoCache();
+  const turn1 = JSON.stringify({
+    type: 'assistant', cwd: '/x', timestamp: '2026-07-13T10:00:00.000Z',
+    message: { role: 'assistant', model: 'claude-opus-4-7', content: [{ type: 'text', text: 'a' }],
+               usage: { input_tokens: 100, output_tokens: 5, cache_creation_input_tokens: 200, cache_read_input_tokens: 300 } },
+  });
+  const turn2 = JSON.stringify({
+    type: 'assistant', cwd: '/x', timestamp: '2026-07-13T10:00:10.000Z',
+    message: { role: 'assistant', model: 'claude-opus-4-7', content: [{ type: 'text', text: 'b' }],
+               usage: { input_tokens: 400, output_tokens: 6, cache_creation_input_tokens: 500, cache_read_input_tokens: 600 } },
+  });
+  const { file } = tmpFile([userEntry('hola'), turn1, userEntry('otra'), turn2]);
+  const info = sessionInfo(file);
+  assert.equal(info.contextTokens, 400 + 500 + 600);
+});
+
+test('sessionInfo.contextTokens = 0 si no hay usage', () => {
+  _clearSessionInfoCache();
+  const { file } = tmpFile([userEntry('hola'), assistantEntry([{ type: 'text', text: 'ok' }])]);
+  const info = sessionInfo(file);
+  assert.equal(info.contextTokens, 0);
+});
