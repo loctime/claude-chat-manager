@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { parseJsonl, sessionInfo, listSessions, toChatMessages, findSessionFile, getMessagesIncremental, sumUsage, _clearSessionInfoCache, _clearTailCache } = require('../src/scanner');
+const { parseJsonl, sessionInfo, listSessions, toChatMessages, findSessionFile, getMessagesIncremental, sumUsage, searchSessions, _clearSessionInfoCache, _clearTailCache } = require('../src/scanner');
 
 function tmpFile(lines) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-'));
@@ -196,6 +196,44 @@ test('sumUsage devuelve ceros si no hay usage events', () => {
   const u = sumUsage([{ type: 'user', message: { content: 'hola' } }]);
   assert.deepEqual(u.total, { input: 0, output: 0, cacheCreate: 0, cacheRead: 0 });
   assert.deepEqual(u.byModel, {});
+});
+
+test('searchSessions encuentra matches en texto de mensajes y devuelve snippet+índice', () => {
+  _clearSessionInfoCache();
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-search-'));
+  const projDir = path.join(base, '-home-x');
+  fs.mkdirSync(projDir);
+  fs.writeFileSync(path.join(projDir, 'sess-abc.jsonl'), [
+    userEntry('acordate del refactor de auth para mañana'),
+    assistantEntry([{ type: 'text', text: 'listo, quedó en la lista' }]),
+    userEntry('pasame el link del PR'),
+  ].join('\n'));
+  fs.writeFileSync(path.join(projDir, 'sess-def.jsonl'), [
+    userEntry('esto no tiene nada'),
+  ].join('\n'));
+
+  const results = searchSessions('refactor', { projectsDir: base });
+  assert.equal(results.length, 1);
+  assert.equal(results[0].sessionId, 'sess-abc');
+  assert.equal(results[0].matchIndex, 0);
+  assert.equal(results[0].role, 'user');
+  assert.match(results[0].snippet, /refactor de auth/);
+});
+
+test('searchSessions es case-insensitive y respeta limit', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-search-'));
+  const projDir = path.join(base, '-home-x');
+  fs.mkdirSync(projDir);
+  for (let i = 0; i < 5; i++) {
+    fs.writeFileSync(path.join(projDir, `s-${i}.jsonl`), userEntry('DEPLOY número ' + i));
+  }
+  const results = searchSessions('deploy', { projectsDir: base, limit: 3 });
+  assert.equal(results.length, 3);
+});
+
+test('searchSessions devuelve [] con query vacío', () => {
+  assert.deepEqual(searchSessions(''), []);
+  assert.deepEqual(searchSessions('   '), []);
 });
 
 test('sessionInfo incluye usage acumulado', () => {

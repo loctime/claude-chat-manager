@@ -295,6 +295,28 @@ app.get('/api/tree', (req, res) => {
   res.json({ tree, hasMore, total, limit });
 });
 
+app.get('/api/search', (req, res) => {
+  const q = (req.query.q || '').toString().trim();
+  if (!q) return res.json({ results: [] });
+  const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
+  const results = scanner.searchSessions(q, { limit });
+  // Anotar convId real (si existe conversación con nombre custom) para poder abrirla.
+  const data = meta.load();
+  const bySessionId = new Map();
+  for (const [convId, c] of Object.entries(data.conversations)) {
+    bySessionId.set(c.currentSessionId, { convId, name: c.name });
+  }
+  const enriched = results.map(r => {
+    const ref = bySessionId.get(r.sessionId);
+    return {
+      ...r,
+      convId: ref ? ref.convId : r.sessionId,
+      displayName: (ref && ref.name) || r.name,
+    };
+  });
+  res.json({ results: enriched });
+});
+
 app.get('/api/conversations/:id/usage', (req, res) => {
   const { conv } = resolveConv(req.params.id);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });

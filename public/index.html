@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="Stark">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=6">
+  <link rel="stylesheet" href="style.css?v=7">
 </head>
 <body>
   <div id="app">
@@ -18,6 +18,9 @@
     <div id="panel-list">
       <header id="list-header">
         <h1>Stark</h1>
+        <button id="search-btn" title="Buscar (Ctrl+K)" aria-label="Buscar">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19zM9.5 14C7 14 5 12 5 9.5S7 5 9.5 5 14 7 14 9.5 12 14 9.5 14z"/></svg>
+        </button>
         <button id="refresh-btn" title="Actualizar" aria-label="Actualizar">
           <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
         </button>
@@ -76,6 +79,15 @@
     </div>
   </div>
 
+  <!-- Modal de búsqueda -->
+  <dialog id="search-dialog">
+    <form id="search-form" method="dialog">
+      <input id="search-input" type="search" placeholder="Buscar en todas las conversaciones… (Ctrl+K)" autocomplete="off">
+      <div id="search-results"></div>
+      <div id="search-hint">Enter para abrir el primer resultado · Esc para cerrar</div>
+    </form>
+  </dialog>
+
   <!-- Modal nueva conversación -->
   <dialog id="new-dialog">
     <form method="dialog" id="new-form">
@@ -117,6 +129,6 @@
     <button id="ios-tip-close" aria-label="Cerrar">✕</button>
   </div>
 
-  <script src="app.js?v=6"></script>
+  <script src="app.js?v=7"></script>
 </body>
 </html>

@@ -904,6 +904,104 @@ $('new-form').onsubmit = async e => {
   }
 };
 
+// ── Búsqueda global ──
+let searchDebounce = null;
+let searchLastQuery = '';
+let searchResults = [];
+
+function highlightSnippet(snippet, query) {
+  const q = query.trim();
+  if (!q) return snippet;
+  const idx = snippet.toLowerCase().indexOf(q.toLowerCase());
+  if (idx < 0) return snippet;
+  const before = document.createTextNode(snippet.slice(0, idx));
+  const hit = document.createElement('mark');
+  hit.textContent = snippet.slice(idx, idx + q.length);
+  const after = document.createTextNode(snippet.slice(idx + q.length));
+  const frag = document.createDocumentFragment();
+  frag.appendChild(before); frag.appendChild(hit); frag.appendChild(after);
+  return frag;
+}
+
+async function runSearch(q) {
+  const box = $('search-results');
+  if (!q.trim()) { box.innerHTML = ''; searchResults = []; return; }
+  box.innerHTML = '<div class="search-loading">Buscando…</div>';
+  try {
+    const { results } = await api('/search?limit=50&q=' + encodeURIComponent(q));
+    searchResults = results;
+    searchLastQuery = q;
+    box.innerHTML = '';
+    if (results.length === 0) {
+      box.innerHTML = '<div class="search-empty">Sin resultados</div>';
+      return;
+    }
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'search-result';
+      row.dataset.idx = String(i);
+      const name = document.createElement('div');
+      name.className = 'search-name';
+      name.textContent = r.displayName || r.name || '(sin título)';
+      const snip = document.createElement('div');
+      snip.className = 'search-snippet';
+      snip.appendChild(highlightSnippet(r.snippet || '', q));
+      const meta = document.createElement('div');
+      meta.className = 'search-meta';
+      meta.textContent = r.role + ' · ' + (r.cwd || '').split('/').pop() + ' · ' + (r.lastActivity || '').slice(0, 16).replace('T', ' ');
+      row.appendChild(name); row.appendChild(snip); row.appendChild(meta);
+      row.onclick = () => openSearchResult(r);
+      box.appendChild(row);
+    }
+  } catch (err) {
+    box.innerHTML = '';
+    toast('Error buscando: ' + err.message);
+  }
+}
+
+async function openSearchResult(r) {
+  $('search-dialog').close();
+  await selectConv(r.convId, r.displayName || r.name, null, null);
+  // Scroll al match — buscamos por índice de mensaje
+  requestAnimationFrame(() => {
+    const nodes = messagesEl.querySelectorAll('.msg, details.tool');
+    const target = nodes[r.matchIndex];
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      target.classList.add('search-hit');
+      setTimeout(() => target.classList.remove('search-hit'), 2000);
+    }
+  });
+}
+
+function openSearchDialog() {
+  const dlg = $('search-dialog');
+  const input = $('search-input');
+  input.value = '';
+  $('search-results').innerHTML = '';
+  dlg.showModal();
+  input.focus();
+}
+
+$('search-btn').onclick = openSearchDialog;
+$('search-input').addEventListener('input', () => {
+  clearTimeout(searchDebounce);
+  const v = $('search-input').value;
+  searchDebounce = setTimeout(() => runSearch(v), 250);
+});
+$('search-form').onsubmit = e => {
+  e.preventDefault();
+  if (searchResults[0]) openSearchResult(searchResults[0]);
+};
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    openSearchDialog();
+  }
+});
+
 async function safeLoadTree() {
   try { await loadTree(); }
   catch (err) { toast('No se pudo actualizar la lista: ' + err.message); }

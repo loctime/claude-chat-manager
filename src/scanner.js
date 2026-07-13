@@ -183,6 +183,63 @@ function getMessagesIncremental(filePath) {
 
 function _clearTailCache() { _tailCache.clear(); }
 
+// Búsqueda de texto sobre todos los JSONL. Estrategia: primero grep sobre el raw
+// (rápido, evita parsear si no hay match), después parsea y ubica el índice del
+// mensaje que contiene el término. Devuelve hasta `limit` matches.
+function searchSessions(query, { limit = 50, projectsDir = PROJECTS_DIR } = {}) {
+  const q = (query || '').trim().toLowerCase();
+  if (!q) return [];
+  const results = [];
+  let dirs;
+  try { dirs = fs.readdirSync(projectsDir); } catch { return []; }
+  for (const d of dirs) {
+    if (results.length >= limit) break;
+    const dirPath = path.join(projectsDir, d);
+    let files;
+    try { files = fs.readdirSync(dirPath); } catch { continue; }
+    for (const f of files) {
+      if (!f.endsWith('.jsonl')) continue;
+      const filePath = path.join(dirPath, f);
+      let raw;
+      try { raw = fs.readFileSync(filePath, 'utf8'); } catch { continue; }
+      if (!raw.toLowerCase().includes(q)) continue;
+
+      const info = sessionInfo(filePath);
+      if (!info) continue; // ej. sesión de canal
+
+      const entries = parseJsonl(filePath);
+      const msgs = toChatMessages(entries);
+      let firstMatchIdx = -1;
+      let snippet = '';
+      for (let i = 0; i < msgs.length; i++) {
+        const text = (msgs[i].text || '').toLowerCase();
+        const pos = text.indexOf(q);
+        if (pos >= 0) {
+          firstMatchIdx = i;
+          const raw = msgs[i].text;
+          const start = Math.max(0, pos - 30);
+          const end = Math.min(raw.length, pos + q.length + 60);
+          snippet = (start > 0 ? '…' : '') + raw.slice(start, end) + (end < raw.length ? '…' : '');
+          break;
+        }
+      }
+      if (firstMatchIdx < 0) continue;
+      results.push({
+        sessionId: info.sessionId,
+        cwd: info.cwd,
+        name: info.snippet,
+        lastActivity: info.lastActivity,
+        matchIndex: firstMatchIdx,
+        role: msgs[firstMatchIdx].role,
+        snippet,
+      });
+      if (results.length >= limit) break;
+    }
+  }
+  results.sort((a, b) => (b.lastActivity || '').localeCompare(a.lastActivity || ''));
+  return results;
+}
+
 function toChatMessages(entries) {
   const toolResults = {};
   for (const e of entries) {
@@ -210,6 +267,6 @@ function toChatMessages(entries) {
 
 module.exports = {
   parseJsonl, sessionInfo, listSessions, findSessionFile, toChatMessages, contentToText,
-  getMessagesIncremental, sumUsage, PROJECTS_DIR,
+  getMessagesIncremental, sumUsage, searchSessions, PROJECTS_DIR,
   _clearSessionInfoCache, _clearTailCache,
 };
