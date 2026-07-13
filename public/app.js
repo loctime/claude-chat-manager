@@ -6,6 +6,25 @@ const drafts = new Map();
 const $ = id => document.getElementById(id);
 const messagesEl = $('messages');
 
+// ── Toast ──
+function toast(msg, kind = 'error', ttl = 4000) {
+  let container = document.getElementById('toast-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'toast-container';
+    document.body.appendChild(container);
+  }
+  const t = document.createElement('div');
+  t.className = 'toast ' + kind;
+  t.textContent = msg;
+  container.appendChild(t);
+  setTimeout(() => {
+    t.style.opacity = '0';
+    t.style.transition = 'opacity .2s';
+    setTimeout(() => t.remove(), 220);
+  }, ttl);
+}
+
 // ── PWA service worker + install ──
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -816,19 +835,31 @@ $('new-form').onsubmit = async e => {
   const text = $('first-message').value.trim();
   const model = $('new-model').value;
   if (!projectDir || !text) return;
-  const { convId } = await api('/conversations', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ projectDir, text, model: model || undefined }),
-  });
-  $('new-dialog').close();
-  $('first-message').value = '';
-  $('project-custom').value = '';
-  $('new-model').value = '';
-  await selectConv(convId, text.slice(0, 60), model);
-  addMsg('user', text);
-  setBusy(true);
+  const submitBtn = e.submitter;
+  if (submitBtn) submitBtn.disabled = true;
+  try {
+    const { convId } = await api('/conversations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectDir, text, model: model || undefined }),
+    });
+    $('new-dialog').close();
+    $('first-message').value = '';
+    $('project-custom').value = '';
+    $('new-model').value = '';
+    await selectConv(convId, text.slice(0, 60), model);
+    addMsg('user', text);
+    setBusy(true);
+  } catch (err) {
+    toast('No se pudo crear la conversación: ' + err.message);
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+  }
 };
 
-loadTree();
-setInterval(loadTree, 15000);
+async function safeLoadTree() {
+  try { await loadTree(); }
+  catch (err) { toast('No se pudo actualizar la lista: ' + err.message); }
+}
+safeLoadTree();
+setInterval(safeLoadTree, 15000);
