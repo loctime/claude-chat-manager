@@ -1,9 +1,17 @@
 #!/bin/bash
 # Levanta Claude Chat Manager + túnel Cloudflare
-# Uso: ACCESS_PIN=123456 ./start.sh
-# O con PIN por defecto si está seteado en el archivo
+# Config: exportá ACCESS_PIN (obligatorio) y CHAT_URL (opcional),
+#         o ponelas en ~/.claude-chat-manager.env
 
-ACCESS_PIN="${ACCESS_PIN:-REDACTED}"
+[ -f ~/.claude-chat-manager.env ] && source ~/.claude-chat-manager.env
+
+if [ -z "$ACCESS_PIN" ]; then
+  echo "ERROR: ACCESS_PIN no seteado."
+  echo "Exportalo (ACCESS_PIN=xxxx ./start.sh) o ponelo en ~/.claude-chat-manager.env"
+  exit 1
+fi
+
+CHAT_URL="${CHAT_URL:-http://127.0.0.1:3777}"
 
 kill $(lsof -ti:3777) 2>/dev/null || true
 pkill -f "cloudflared tunnel.*run" 2>/dev/null || true
@@ -17,5 +25,5 @@ echo "Server PID: $!"
 echo "Tunnel PID: $!"
 
 echo ""
-echo "Chat disponible en: https://stark.controlapps.ar"
+echo "Chat disponible en: $CHAT_URL"
 echo "PIN: $ACCESS_PIN"
