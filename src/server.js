@@ -63,6 +63,36 @@ app.use(express.static(path.join(__dirname, '..', 'public'), {
 const runner = new Runner();
 const sseClients = new Map(); // convId → Set<res>
 
+// Precios en USD por millón de tokens. Match por prefijo del model id.
+// Fuente: página pública de precios Anthropic (Ene 2026). Ajustar cuando cambien.
+const PRICE_TABLE = [
+  { prefix: 'claude-opus-4',      input: 15,   output: 75,  cacheWrite: 18.75, cacheRead: 1.5 },
+  { prefix: 'claude-sonnet-4',    input: 3,    output: 15,  cacheWrite: 3.75,  cacheRead: 0.3 },
+  { prefix: 'claude-haiku-4',     input: 1,    output: 5,   cacheWrite: 1.25,  cacheRead: 0.1 },
+  { prefix: 'claude-3-5-sonnet',  input: 3,    output: 15,  cacheWrite: 3.75,  cacheRead: 0.3 },
+  { prefix: 'claude-3-5-haiku',   input: 0.8,  output: 4,   cacheWrite: 1,     cacheRead: 0.08 },
+  { prefix: 'claude-3-opus',      input: 15,   output: 75,  cacheWrite: 18.75, cacheRead: 1.5 },
+];
+function priceFor(model) {
+  return PRICE_TABLE.find(p => model.startsWith(p.prefix)) || null;
+}
+function usageCost(usage) {
+  let costUSD = 0;
+  const byModel = {};
+  for (const [model, t] of Object.entries(usage.byModel || {})) {
+    const p = priceFor(model);
+    if (!p) { byModel[model] = { ...t, costUSD: null }; continue; }
+    const c =
+      (t.input       * p.input       / 1_000_000) +
+      (t.output      * p.output      / 1_000_000) +
+      (t.cacheCreate * p.cacheWrite  / 1_000_000) +
+      (t.cacheRead   * p.cacheRead   / 1_000_000);
+    byModel[model] = { ...t, costUSD: c };
+    costUSD += c;
+  }
+  return { total: usage.total, byModel, costUSD };
+}
+
 function broadcast(convId, payload) {
   const set = sseClients.get(convId);
   if (!set) return;
@@ -263,6 +293,17 @@ app.get('/api/tree', (req, res) => {
     conversations,
   }));
   res.json({ tree, hasMore, total, limit });
+});
+
+app.get('/api/conversations/:id/usage', (req, res) => {
+  const { conv } = resolveConv(req.params.id);
+  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  if (!conv.currentSessionId) return res.json({ total: { input: 0, output: 0, cacheCreate: 0, cacheRead: 0 }, byModel: {}, costUSD: 0 });
+  const file = scanner.findSessionFile(conv.currentSessionId);
+  if (!file) return res.json({ total: { input: 0, output: 0, cacheCreate: 0, cacheRead: 0 }, byModel: {}, costUSD: 0 });
+  const info = scanner.sessionInfo(file);
+  if (!info || !info.usage) return res.json({ total: { input: 0, output: 0, cacheCreate: 0, cacheRead: 0 }, byModel: {}, costUSD: 0 });
+  res.json(usageCost(info.usage));
 });
 
 app.get('/api/conversations/:id/messages', (req, res) => {

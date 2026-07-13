@@ -54,7 +54,34 @@ function _computeSessionInfo(filePath) {
     messageCount: msgs.length,
     lastActivity,
     lastModel: lastAssistant ? lastAssistant.message.model : null,
+    usage: sumUsage(entries),
   };
+}
+
+// Suma usage por modelo. Cada mensaje assistant tiene message.usage con
+// { input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens }.
+function sumUsage(entries) {
+  const byModel = {};
+  const total = { input: 0, output: 0, cacheCreate: 0, cacheRead: 0 };
+  for (const e of entries) {
+    if (e.type !== 'assistant' || !e.message || !e.message.usage) continue;
+    const u = e.message.usage;
+    const model = e.message.model || 'unknown';
+    if (!byModel[model]) byModel[model] = { input: 0, output: 0, cacheCreate: 0, cacheRead: 0 };
+    const inp = u.input_tokens || 0;
+    const out = u.output_tokens || 0;
+    const cw = u.cache_creation_input_tokens || 0;
+    const cr = u.cache_read_input_tokens || 0;
+    byModel[model].input += inp;
+    byModel[model].output += out;
+    byModel[model].cacheCreate += cw;
+    byModel[model].cacheRead += cr;
+    total.input += inp;
+    total.output += out;
+    total.cacheCreate += cw;
+    total.cacheRead += cr;
+  }
+  return { total, byModel };
 }
 
 function sessionInfo(filePath) {
@@ -183,6 +210,6 @@ function toChatMessages(entries) {
 
 module.exports = {
   parseJsonl, sessionInfo, listSessions, findSessionFile, toChatMessages, contentToText,
-  getMessagesIncremental, PROJECTS_DIR,
+  getMessagesIncremental, sumUsage, PROJECTS_DIR,
   _clearSessionInfoCache, _clearTailCache,
 };

@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { parseJsonl, sessionInfo, listSessions, toChatMessages, findSessionFile, getMessagesIncremental, _clearSessionInfoCache, _clearTailCache } = require('../src/scanner');
+const { parseJsonl, sessionInfo, listSessions, toChatMessages, findSessionFile, getMessagesIncremental, sumUsage, _clearSessionInfoCache, _clearTailCache } = require('../src/scanner');
 
 function tmpFile(lines) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-'));
@@ -177,4 +177,39 @@ test('getMessagesIncremental es idempotente si nada cambió (misma referencia en
 test('getMessagesIncremental devuelve [] si el archivo no existe', () => {
   _clearTailCache();
   assert.deepEqual(getMessagesIncremental('/no/existe.jsonl'), []);
+});
+
+test('sumUsage acumula tokens por modelo y en total', () => {
+  const entries = [
+    { type: 'assistant', message: { model: 'claude-opus-4-7', usage: { input_tokens: 10, output_tokens: 20, cache_creation_input_tokens: 100, cache_read_input_tokens: 200 } } },
+    { type: 'assistant', message: { model: 'claude-opus-4-7', usage: { input_tokens: 5,  output_tokens: 15, cache_creation_input_tokens: 50,  cache_read_input_tokens: 100 } } },
+    { type: 'assistant', message: { model: 'claude-sonnet-4-6', usage: { input_tokens: 1, output_tokens: 2, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } } },
+    { type: 'user', message: { content: 'ignorame' } }, // no debe sumar
+  ];
+  const u = sumUsage(entries);
+  assert.deepEqual(u.total, { input: 16, output: 37, cacheCreate: 150, cacheRead: 300 });
+  assert.deepEqual(u.byModel['claude-opus-4-7'], { input: 15, output: 35, cacheCreate: 150, cacheRead: 300 });
+  assert.deepEqual(u.byModel['claude-sonnet-4-6'], { input: 1, output: 2, cacheCreate: 0, cacheRead: 0 });
+});
+
+test('sumUsage devuelve ceros si no hay usage events', () => {
+  const u = sumUsage([{ type: 'user', message: { content: 'hola' } }]);
+  assert.deepEqual(u.total, { input: 0, output: 0, cacheCreate: 0, cacheRead: 0 });
+  assert.deepEqual(u.byModel, {});
+});
+
+test('sessionInfo incluye usage acumulado', () => {
+  _clearSessionInfoCache();
+  const usageLine = JSON.stringify({
+    type: 'assistant',
+    cwd: '/x',
+    timestamp: '2026-07-13T10:00:00.000Z',
+    message: { role: 'assistant', model: 'claude-opus-4-7', content: [{ type: 'text', text: 'ok' }],
+               usage: { input_tokens: 7, output_tokens: 11, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } },
+  });
+  const { file } = tmpFile([userEntry('hola'), usageLine]);
+  const info = sessionInfo(file);
+  assert.ok(info.usage);
+  assert.equal(info.usage.total.input, 7);
+  assert.equal(info.usage.total.output, 11);
 });

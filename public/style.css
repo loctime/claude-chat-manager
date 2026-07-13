@@ -607,6 +607,19 @@ dialog button:hover { background: var(--border); }
   #input { padding: 9px 10px; min-width: 0; }
 }
 
+/* ── Cost badge ── */
+#cost-badge {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--input-bg);
+  color: var(--text2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  margin-left: 6px;
+  cursor: help;
+}
+
 /* ── Load more button ── */
 .load-more {
   display: block;

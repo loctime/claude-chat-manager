@@ -552,12 +552,37 @@ function openStream(convId) {
         if (payload.code !== 0 && payload.stderr) addMsg('error', 'Error: ' + payload.stderr);
         loadMessages(convId);
         loadTree();
+        refreshCostBadge(convId);
       } else {
         setBusy(true);
         loadTree();
       }
     }
   };
+}
+
+// ── Cost badge ──
+function fmtTokens(n) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k';
+  return String(n);
+}
+async function refreshCostBadge(convId) {
+  const badge = $('cost-badge');
+  try {
+    const usage = await api(`/conversations/${convId}/usage`);
+    const t = usage.total;
+    const totalTokens = (t.input || 0) + (t.output || 0) + (t.cacheCreate || 0) + (t.cacheRead || 0);
+    if (totalTokens === 0) { badge.hidden = true; return; }
+    const cost = usage.costUSD || 0;
+    badge.hidden = false;
+    badge.textContent = `${fmtTokens(totalTokens)} · $${cost.toFixed(cost < 0.01 ? 4 : 2)}`;
+    badge.title = `in: ${t.input.toLocaleString()}  out: ${t.output.toLocaleString()}\n` +
+                  `cache write: ${t.cacheCreate.toLocaleString()}  cache read: ${t.cacheRead.toLocaleString()}\n` +
+                  `costo estimado: US$ ${cost.toFixed(4)}`;
+  } catch {
+    badge.hidden = true;
+  }
 }
 
 // ── Select conversation ──
@@ -576,6 +601,7 @@ async function selectConv(convId, name, model, lastModel) {
   await loadMessages(convId);
   openStream(convId);
   loadTree();
+  refreshCostBadge(convId);
 }
 
 // ── Textarea auto-resize ──
