@@ -82,10 +82,58 @@ if ('serviceWorker' in navigator) {
   });
 }
 
-// ── Mobile nav ──
-function openChat() { $('panel-chat').classList.add('open'); }
-function closeChat() { $('panel-chat').classList.remove('open'); }
+// ── Mobile nav + back button del celu ──
+function isMobile() { return window.matchMedia('(max-width: 768px)').matches; }
+
+function openChat() {
+  const wasOpen = $('panel-chat').classList.contains('open');
+  $('panel-chat').classList.add('open');
+  if (isMobile() && !wasOpen) history.pushState({ view: 'chat' }, '');
+}
+function closeChat() {
+  // Si estamos en el estado 'chat' de la history, delegar al popstate handler
+  // vía history.back() para no romper la sincronización.
+  if (isMobile() && history.state && history.state.view === 'chat') {
+    history.back();
+    return;
+  }
+  $('panel-chat').classList.remove('open');
+  closeChatMenu();
+}
 $('back-btn').onclick = closeChat;
+
+// Estado inicial: entramos en 'list' + guard entry para capturar el primer back
+history.replaceState({ view: 'list' }, '');
+history.pushState({ view: 'list-guard' }, '');
+
+let _lastBackPress = 0;
+window.addEventListener('popstate', (e) => {
+  const state = (e.state && e.state.view) || null;
+  // Si estábamos en chat y ahora el state es list-guard → cerrar chat
+  if ($('panel-chat').classList.contains('open')) {
+    $('panel-chat').classList.remove('open');
+    closeChatMenu();
+    return;
+  }
+  // Si hay algún menú/dialog abierto, cerrar y consumir el back
+  const searchDlg = $('search-dialog');
+  const newDlg = $('new-dialog');
+  if (searchDlg.open) { searchDlg.close(); history.pushState({ view: 'list-guard' }, ''); return; }
+  if (newDlg.open) { newDlg.close(); history.pushState({ view: 'list-guard' }, ''); return; }
+  const ctxMenu = document.querySelector('.ctx-menu');
+  if (ctxMenu) { ctxMenu.remove(); history.pushState({ view: 'list-guard' }, ''); return; }
+  // Estamos en la lista raíz: aviso "presione dos veces para salir"
+  const now = Date.now();
+  if (now - _lastBackPress < 2000) {
+    // 2do press dentro de la ventana — dejar salir. Ya popped a 'list';
+    // llamamos history.go(-1) para pasar la entry inicial y salir del SPA.
+    setTimeout(() => { try { history.go(-1); } catch {} }, 0);
+    return;
+  }
+  _lastBackPress = now;
+  history.pushState({ view: 'list-guard' }, '');
+  toast('Presioná atrás otra vez para salir', 'info', 1800);
+});
 
 // ── API ──
 async function api(path, opts) {
@@ -651,7 +699,7 @@ async function loadMessages(convId) {
 }
 
 function updateRetryBtn() {
-  $('retry-btn').hidden = !currentConv || !lastUserText;
+  $('menu-retry').disabled = !currentConv || !lastUserText;
 }
 
 // ── Status ──
@@ -734,8 +782,7 @@ async function selectConv(convId, name, model, lastModel) {
   $('conv-title').textContent = name;
   $('model-select').options[0].textContent = lastModel || 'auto';
   $('model-select').value = model || '';
-  $('model-select').hidden = false;
-  $('export-btn').hidden = false;
+  $('menu-btn').hidden = false;
   setBusy(false);
   clearAttachments();
   openChat();
@@ -745,7 +792,21 @@ async function selectConv(convId, name, model, lastModel) {
   refreshCostBadge(convId);
 }
 
-$('export-btn').onclick = () => {
+// ── Menú "..." del chat ──
+function closeChatMenu() { $('chat-menu').hidden = true; }
+function toggleChatMenu() {
+  const m = $('chat-menu');
+  m.hidden = !m.hidden;
+}
+$('menu-btn').onclick = e => { e.stopPropagation(); toggleChatMenu(); };
+$('chat-menu').addEventListener('click', e => e.stopPropagation());
+document.addEventListener('click', e => {
+  if (!$('chat-menu').hidden && !$('chat-menu').contains(e.target) && e.target !== $('menu-btn')) {
+    closeChatMenu();
+  }
+});
+$('menu-export').onclick = () => {
+  closeChatMenu();
   if (!currentConv) return;
   const url = `/api/conversations/${currentConv}/export?format=md`;
   const a = document.createElement('a');
@@ -985,9 +1046,10 @@ $('composer').onsubmit = async e => {
 };
 
 // ── Retry último mensaje ──
-$('retry-btn').onclick = async () => {
+$('menu-retry').onclick = async () => {
+  closeChatMenu();
   if (!currentConv || !lastUserText) return;
-  const btn = $('retry-btn');
+  const btn = $('menu-retry');
   btn.disabled = true;
   try {
     // Si hay una ejecución en curso, cancelar primero
@@ -1020,7 +1082,7 @@ $('retry-btn').onclick = async () => {
     addMsg('error', 'No se pudo reintentar: ' + err.message);
     setBusy(false);
   } finally {
-    btn.disabled = false;
+    updateRetryBtn();
   }
 };
 
