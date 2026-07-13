@@ -102,17 +102,20 @@ function closeChat() {
 }
 $('back-btn').onclick = closeChat;
 
-// Estado inicial: entramos en 'list' + guard entry para capturar el primer back
+// Estado inicial: 'list' + varias entries de guarda para que popstate
+// nunca dispare en el borde del historial (donde Android cierra el PWA sin dar tiempo a re-armar).
 history.replaceState({ view: 'list' }, '');
-history.pushState({ view: 'list-guard' }, '');
+for (let i = 0; i < 3; i++) history.pushState({ view: 'list-guard' }, '');
 
 let _lastBackPress = 0;
+let _exiting = false;
 window.addEventListener('popstate', (e) => {
-  const state = (e.state && e.state.view) || null;
-  // Si estábamos en chat y ahora el state es list-guard → cerrar chat
+  if (_exiting) return; // salida en curso — dejamos que el browser cierre
+  // Si estábamos en chat: cerrar y re-armar guarda
   if ($('panel-chat').classList.contains('open')) {
     $('panel-chat').classList.remove('open');
     closeChatMenu();
+    history.pushState({ view: 'list-guard' }, '');
     return;
   }
   // Si hay algún menú/dialog abierto, cerrar y consumir el back
@@ -126,9 +129,10 @@ window.addEventListener('popstate', (e) => {
   const now = Date.now();
   const DOUBLE_CLICK_MS = 600;
   if (now - _lastBackPress < DOUBLE_CLICK_MS) {
-    // 2do press rápido — salir. popstate ya nos movió a 'list';
-    // history.go(-1) pasa la entry inicial y minimiza/cierra el PWA.
-    setTimeout(() => { try { history.go(-1); } catch {} }, 0);
+    // 2do press rápido — salir. Blastear a través de todas las guardas hasta 'list'
+    // y dejar que el próximo back (o el mismo, si el browser lo agrupa) cierre el PWA.
+    _exiting = true;
+    setTimeout(() => { try { history.go(-10); } catch {} }, 0);
     return;
   }
   _lastBackPress = now;
