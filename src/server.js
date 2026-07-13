@@ -140,7 +140,12 @@ app.get('/api/conversations/:id/stream', (req, res) => {
   res.write('\n');
   if (!sseClients.has(convId)) sseClients.set(convId, new Set());
   sseClients.get(convId).add(res);
-  req.on('close', () => sseClients.get(convId).delete(res));
+  req.on('close', () => {
+    const set = sseClients.get(convId);
+    if (!set) return;
+    set.delete(res);
+    if (set.size === 0) sseClients.delete(convId);
+  });
 });
 
 app.listen(PORT, HOST, () => {
