@@ -684,6 +684,7 @@ async function selectConv(convId, name, model, lastModel) {
   $('model-select').options[0].textContent = lastModel || 'auto';
   $('model-select').value = model || '';
   $('model-select').hidden = false;
+  $('export-btn').hidden = false;
   setBusy(false);
   clearAttachments();
   openChat();
@@ -692,6 +693,17 @@ async function selectConv(convId, name, model, lastModel) {
   loadTree();
   refreshCostBadge(convId);
 }
+
+$('export-btn').onclick = () => {
+  if (!currentConv) return;
+  const url = `/api/conversations/${currentConv}/export?format=md`;
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+};
 
 // ── Textarea auto-resize ──
 function autoResize(el) {

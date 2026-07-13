@@ -349,6 +349,65 @@ app.get('/api/conversations/:id/messages', (req, res) => {
   res.json(scanner.getMessagesIncremental(file));
 });
 
+function slugify(s) {
+  return (s || 'conversacion')
+    .normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+    .slice(0, 60) || 'conversacion';
+}
+
+function messagesToMarkdown({ conv, info, messages }) {
+  const lines = [];
+  const name = conv.name || (info && info.snippet) || '(sin título)';
+  lines.push(`# ${name}`, '');
+  lines.push(`- Proyecto: \`${conv.projectDir || (info && info.cwd) || ''}\``);
+  if (info && info.lastActivity) lines.push(`- Última actividad: ${info.lastActivity}`);
+  if (info && info.lastModel) lines.push(`- Modelo: ${info.lastModel}`);
+  if (conv.currentSessionId) lines.push(`- Session ID: \`${conv.currentSessionId}\``);
+  lines.push('', '---', '');
+
+  const MAX_TOOL = 4000;
+  for (const m of messages) {
+    if (m.role === 'user') {
+      lines.push('## Usuario', '', m.text, '');
+    } else if (m.role === 'assistant') {
+      lines.push('## Asistente', '', m.text, '');
+    } else if (m.role === 'tool') {
+      lines.push(`### 🔧 ${m.name}`, '');
+      const inp = typeof m.input === 'string' ? m.input : JSON.stringify(m.input, null, 2);
+      lines.push('**Input:**', '', '```json', inp, '```', '');
+      if (m.output) {
+        const out = String(m.output);
+        const trimmed = out.length > MAX_TOOL ? out.slice(0, MAX_TOOL) + `\n... [truncado ${out.length - MAX_TOOL} caracteres]` : out;
+        lines.push('**Output:**', '', '```', trimmed, '```', '');
+      }
+    }
+  }
+  return lines.join('\n');
+}
+
+app.get('/api/conversations/:id/export', (req, res) => {
+  const { conv } = resolveConv(req.params.id);
+  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  const format = (req.query.format || 'md').toLowerCase();
+  if (format !== 'md') return res.status(400).json({ error: 'formato no soportado' });
+  const messages = conv.currentSessionId
+    ? (scanner.findSessionFile(conv.currentSessionId)
+        ? scanner.getMessagesIncremental(scanner.findSessionFile(conv.currentSessionId))
+        : [])
+    : [];
+  const info = conv.currentSessionId
+    ? (scanner.findSessionFile(conv.currentSessionId)
+        ? scanner.sessionInfo(scanner.findSessionFile(conv.currentSessionId))
+        : null)
+    : null;
+  const md = messagesToMarkdown({ conv, info, messages });
+  const filename = `${slugify(conv.name || (info && info.snippet))}.md`;
+  res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.end(md);
+});
+
 app.post('/api/conversations/:id/message', (req, res) => {
   const convId = req.params.id;
   const text = (req.body.text || '').trim();
