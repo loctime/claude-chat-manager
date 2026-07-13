@@ -608,7 +608,7 @@ dialog button:hover { background: var(--border); }
 }
 
 /* ── Archivar/Pinnear ── */
-.conv-pin, .conv-arch { margin-right: 4px; font-size: 12px; }
+.conv-pin, .conv-arch, .conv-ai { margin-right: 4px; font-size: 12px; }
 .conv.archived { opacity: .55; }
 .conv.archived .conv-avatar { filter: grayscale(.6); }
 

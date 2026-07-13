@@ -186,12 +186,13 @@ function convElement(c) {
   const b = badge(c.status);
   const pin = c.pinned ? '<span class="conv-pin" title="Fijada">📌</span>' : '';
   const arch = c.archived ? '<span class="conv-arch" title="Archivada">📁</span>' : '';
+  const ai = c.aiTitle ? '<span class="conv-ai" title="Título generado por IA">✨</span>' : '';
   const div = document.createElement('div');
   div.className = 'conv' + (c.convId === currentConv ? ' active' : '') + (c.archived ? ' archived' : '');
   div.innerHTML = `
     <div class="conv-avatar">${avatarChar(c.name)}</div>
     <div class="conv-body">
-      <div class="name">${pin}${arch}<span class="conv-name-text"></span></div>
+      <div class="name">${pin}${arch}${ai}<span class="conv-name-text"></span></div>
       <div class="sub"></div>
     </div>
     ${b ? `<span class="conv-badge">${b}</span>` : ''}
@@ -646,6 +647,9 @@ function openStream(convId) {
         setBusy(true);
         loadTree();
       }
+    } else if (payload.kind === 'meta') {
+      if (payload.name) $('conv-title').textContent = payload.name;
+      loadTree();
     }
   };
 }

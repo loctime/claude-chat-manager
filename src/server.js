@@ -111,7 +111,73 @@ runner.on('event', ({ convId, event }) => {
   broadcast(convId, { kind: 'claude', event });
 });
 
-runner.on('status', s => broadcast(s.convId, { kind: 'status', ...s }));
+runner.on('status', s => {
+  broadcast(s.convId, { kind: 'status', ...s });
+  if (s.status === 'idle' && s.code === 0) {
+    maybeGenerateTitle(s.convId).catch(() => {});
+  }
+});
+
+// ── Título automático vía Groq ──
+const _lastTitleAttempt = new Map(); // convId → timestamp
+const TITLE_MIN_MSGS = 3;
+const TITLE_RETRY_MS = 30_000;
+
+function _groqTitle(excerpt) {
+  return new Promise((resolve) => {
+    const body = JSON.stringify({
+      model: 'llama-3.1-8b-instant',
+      messages: [
+        { role: 'system', content: 'Sos un generador de títulos. El usuario te va a pasar el inicio de una conversación y vos respondés SOLO con un título corto (3 a 6 palabras) en español que la resuma. Nada de comillas, puntos, emojis, ni explicaciones. Ejemplo:\n\nEntrada:\nuser: Cómo instalo Docker en Ubuntu?\nassistant: Ejecutá sudo apt install docker.io\n\nTítulo: Instalación de Docker en Ubuntu' },
+        { role: 'user', content: excerpt },
+      ],
+      max_tokens: 30,
+      temperature: 0.3,
+    });
+    execFile('curl', [
+      '-s', '-X', 'POST',
+      'https://api.groq.com/openai/v1/chat/completions',
+      '-H', `Authorization: Bearer ${GROQ_API_KEY}`,
+      '-H', 'Content-Type: application/json',
+      '--max-time', '15',
+      '-d', body,
+    ], { maxBuffer: 512 * 1024 }, (err, stdout) => {
+      if (err) return resolve(null);
+      try {
+        const parsed = JSON.parse(stdout);
+        if (parsed.error) return resolve(null);
+        const raw = (parsed.choices && parsed.choices[0] && parsed.choices[0].message && parsed.choices[0].message.content) || '';
+        const t = raw.trim().replace(/^["'`«»]+|["'`«»\.]+$/g, '').slice(0, 80);
+        resolve(t || null);
+      } catch { resolve(null); }
+    });
+  });
+}
+
+async function maybeGenerateTitle(convId) {
+  if (!GROQ_API_KEY) return;
+  const last = _lastTitleAttempt.get(convId) || 0;
+  if (Date.now() - last < TITLE_RETRY_MS) return;
+  const data = meta.load();
+  const conv = data.conversations[convId];
+  if (!conv || conv.name || conv.aiTitle) return;
+  const file = conv.currentSessionId ? scanner.findSessionFile(conv.currentSessionId) : null;
+  if (!file) return;
+  const info = scanner.sessionInfo(file);
+  if (!info || info.messageCount < TITLE_MIN_MSGS) return;
+  _lastTitleAttempt.set(convId, Date.now());
+  const messages = scanner.getMessagesIncremental(file).filter(m => m.role !== 'tool').slice(0, 6);
+  const excerpt = messages.map(m => `${m.role}: ${(m.text || '').slice(0, 400)}`).join('\n\n').slice(0, 2000);
+  const title = await _groqTitle(excerpt);
+  if (!title) return;
+  const latest = meta.load();
+  const latestConv = latest.conversations[convId];
+  if (!latestConv || latestConv.name) return;
+  latestConv.name = title;
+  latestConv.aiTitle = true;
+  meta.save(latest);
+  broadcast(convId, { kind: 'meta', name: title, aiTitle: true });
+}
 
 function resolveConv(convId) {
   const data = meta.load();
@@ -259,6 +325,7 @@ app.get('/api/tree', (req, res) => {
       lastModel: s.lastModel || null,
       pinned: !!c.pinned,
       archived: !!c.archived,
+      aiTitle: !!c.aiTitle,
       status: runner.running.has(convId) ? 'running' : (runner.isBusy(convId) ? 'queued' : 'idle'),
     });
   }
@@ -434,7 +501,10 @@ app.post('/api/conversations', (req, res) => {
 app.patch('/api/conversations/:id', (req, res) => {
   const { data, conv } = resolveConv(req.params.id);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
-  if ('name' in req.body) conv.name = (req.body.name || '').trim() || undefined;
+  if ('name' in req.body) {
+    conv.name = (req.body.name || '').trim() || undefined;
+    conv.aiTitle = false;
+  }
   if ('model' in req.body) conv.model = (req.body.model || '').trim() || undefined;
   if ('pinned' in req.body) conv.pinned = !!req.body.pinned;
   if ('archived' in req.body) conv.archived = !!req.body.archived;
