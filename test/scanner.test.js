@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { parseJsonl, sessionInfo, listSessions, toChatMessages, findSessionFile } = require('../src/scanner');
+const { parseJsonl, sessionInfo, listSessions, toChatMessages, findSessionFile, getMessagesIncremental, _clearSessionInfoCache, _clearTailCache } = require('../src/scanner');
 
 function tmpFile(lines) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-'));
@@ -88,4 +88,93 @@ test('toChatMessages ignora entradas meta y tool_results como mensajes de usuari
   const msgs = toChatMessages(entries);
   assert.equal(msgs.length, 1);
   assert.equal(msgs[0].text, 'hola');
+});
+
+test('sessionInfo cachea por mtime: dos llamadas consecutivas devuelven el mismo objeto', () => {
+  _clearSessionInfoCache();
+  const { file } = tmpFile([userEntry('primer mensaje')]);
+  const info1 = sessionInfo(file);
+  const info2 = sessionInfo(file);
+  assert.equal(info1.messageCount, 1);
+  // identidad de referencia: si vino del cache es el mismo objeto
+  assert.strictEqual(info2, info1, 'debería venir del cache (misma referencia)');
+});
+
+test('sessionInfo invalida el cache cuando cambia mtime', () => {
+  _clearSessionInfoCache();
+  const { file } = tmpFile([userEntry('uno')]);
+  assert.equal(sessionInfo(file).messageCount, 1);
+
+  // Reescribir con 2 mensajes y forzar mtime nuevo
+  fs.writeFileSync(file, [userEntry('uno'), assistantEntry([{ type: 'text', text: 'dos' }])].join('\n'));
+  const future = new Date(Date.now() + 5000);
+  fs.utimesSync(file, future, future);
+
+  assert.equal(sessionInfo(file).messageCount, 2);
+});
+
+test('sessionInfo cachea también resultados null (sin mensajes) para no re-parsear basura', () => {
+  _clearSessionInfoCache();
+  const { file } = tmpFile(['{"type":"summary","summary":"x"}']);
+  assert.equal(sessionInfo(file), null);
+  // No cambio el archivo — segunda llamada debe salir del cache y seguir siendo null
+  assert.equal(sessionInfo(file), null);
+});
+
+test('sessionInfo devuelve null y limpia cache si el archivo desaparece', () => {
+  _clearSessionInfoCache();
+  const { file } = tmpFile([userEntry('borrame')]);
+  assert.equal(sessionInfo(file).messageCount, 1);
+  fs.unlinkSync(file);
+  assert.equal(sessionInfo(file), null);
+});
+
+test('getMessagesIncremental lee todo la primera vez', () => {
+  _clearTailCache();
+  const { file } = tmpFile([userEntry('hola'), assistantEntry([{ type: 'text', text: 'hey' }])]);
+  const msgs = getMessagesIncremental(file);
+  assert.equal(msgs.length, 2);
+  assert.equal(msgs[0].role, 'user');
+  assert.equal(msgs[1].role, 'assistant');
+});
+
+test('getMessagesIncremental sólo parsea el sufijo nuevo al appendear al archivo', () => {
+  _clearTailCache();
+  const { file } = tmpFile([userEntry('hola')]);
+  assert.equal(getMessagesIncremental(file).length, 1);
+
+  // Append de una línea nueva
+  fs.appendFileSync(file, '\n' + assistantEntry([{ type: 'text', text: 'nueva' }]));
+  // Forzar mtime distinto para que se dispare la relectura
+  const future = new Date(Date.now() + 5000);
+  fs.utimesSync(file, future, future);
+
+  const msgs = getMessagesIncremental(file);
+  assert.equal(msgs.length, 2);
+  assert.equal(msgs[1].text, 'nueva');
+});
+
+test('getMessagesIncremental invalida el cache si el archivo se achica (truncate/rewrite)', () => {
+  _clearTailCache();
+  const { file } = tmpFile([userEntry('viejo1'), userEntry('viejo2'), userEntry('viejo3')]);
+  assert.equal(getMessagesIncremental(file).length, 3);
+
+  // Reescribir con menos contenido (simula que Claude Code truncó/reescribió el archivo)
+  fs.writeFileSync(file, userEntry('flamante'));
+  const msgs = getMessagesIncremental(file);
+  assert.equal(msgs.length, 1);
+  assert.equal(msgs[0].text, 'flamante');
+});
+
+test('getMessagesIncremental es idempotente si nada cambió (misma referencia en toChatMessages)', () => {
+  _clearTailCache();
+  const { file } = tmpFile([userEntry('idle')]);
+  const m1 = getMessagesIncremental(file);
+  const m2 = getMessagesIncremental(file);
+  assert.deepEqual(m1, m2);
+});
+
+test('getMessagesIncremental devuelve [] si el archivo no existe', () => {
+  _clearTailCache();
+  assert.deepEqual(getMessagesIncremental('/no/existe.jsonl'), []);
 });

@@ -31,7 +31,12 @@ function isChannelSession(entries) {
   return false;
 }
 
-function sessionInfo(filePath) {
+// Cache sessionInfo por mtime: cada JSONL se re-parsea sólo si cambió su mtime en disco.
+// Clave = filePath; valor = { mtimeMs, info } donde info puede ser null (para archivos que
+// no tienen mensajes útiles — así no re-parseamos jsonl inservibles en cada tick).
+const _sessionInfoCache = new Map();
+
+function _computeSessionInfo(filePath) {
   const entries = parseJsonl(filePath);
   if (isChannelSession(entries)) return null;
   const msgs = entries.filter(e => (e.type === 'user' || e.type === 'assistant') && e.message && !e.isMeta);
@@ -51,6 +56,22 @@ function sessionInfo(filePath) {
     lastModel: lastAssistant ? lastAssistant.message.model : null,
   };
 }
+
+function sessionInfo(filePath) {
+  let mtimeMs;
+  try { mtimeMs = fs.statSync(filePath).mtimeMs; }
+  catch { _sessionInfoCache.delete(filePath); return null; }
+
+  const cached = _sessionInfoCache.get(filePath);
+  if (cached && cached.mtimeMs === mtimeMs) return cached.info;
+
+  const info = _computeSessionInfo(filePath);
+  _sessionInfoCache.set(filePath, { mtimeMs, info });
+  return info;
+}
+
+// Solo para tests / operaciones excepcionales.
+function _clearSessionInfoCache() { _sessionInfoCache.clear(); }
 
 function listSessions(projectsDir = PROJECTS_DIR) {
   let dirs;
@@ -79,6 +100,62 @@ function findSessionFile(sessionId, projectsDir = PROJECTS_DIR) {
   return null;
 }
 
+// Tail incremental del JSONL: mantenemos por filePath el offset (size) leído y las
+// entries ya parseadas, así en el /api/conversations/:id/messages siguiente solo
+// leemos y parseamos el sufijo nuevo del archivo.
+const _tailCache = new Map(); // filePath → { size, mtimeMs, entries }
+
+function _parseChunk(str) {
+  const out = [];
+  for (const line of str.split('\n')) {
+    if (!line.trim()) continue;
+    try { out.push(JSON.parse(line)); } catch { /* saltear línea corrupta */ }
+  }
+  return out;
+}
+
+function getMessagesIncremental(filePath) {
+  let stat;
+  try { stat = fs.statSync(filePath); }
+  catch { _tailCache.delete(filePath); return []; }
+
+  const cached = _tailCache.get(filePath);
+
+  // Archivo se achicó (fue truncado o reescrito) → invalidar y leer entero
+  if (cached && stat.size < cached.size) _tailCache.delete(filePath);
+
+  const current = _tailCache.get(filePath);
+  if (current && stat.size === current.size && stat.mtimeMs === current.mtimeMs) {
+    // Nada cambió — devolvemos las entries cacheadas transformadas
+    return toChatMessages(current.entries);
+  }
+
+  // Leer solo desde el offset viejo (o el archivo completo si no hay cache)
+  const start = current ? current.size : 0;
+  let fd;
+  try { fd = fs.openSync(filePath, 'r'); }
+  catch { return []; }
+  try {
+    const len = stat.size - start;
+    if (len <= 0) {
+      // Solo cambió mtime (raro) — devolver lo que teníamos
+      _tailCache.set(filePath, { size: stat.size, mtimeMs: stat.mtimeMs, entries: (current && current.entries) || [] });
+      return toChatMessages((current && current.entries) || []);
+    }
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, start);
+    const chunkStr = buf.toString('utf8');
+    const newEntries = _parseChunk(chunkStr);
+    const merged = current ? current.entries.concat(newEntries) : newEntries;
+    _tailCache.set(filePath, { size: stat.size, mtimeMs: stat.mtimeMs, entries: merged });
+    return toChatMessages(merged);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function _clearTailCache() { _tailCache.clear(); }
+
 function toChatMessages(entries) {
   const toolResults = {};
   for (const e of entries) {
@@ -104,4 +181,8 @@ function toChatMessages(entries) {
   return items;
 }
 
-module.exports = { parseJsonl, sessionInfo, listSessions, findSessionFile, toChatMessages, contentToText, PROJECTS_DIR };
+module.exports = {
+  parseJsonl, sessionInfo, listSessions, findSessionFile, toChatMessages, contentToText,
+  getMessagesIncremental, PROJECTS_DIR,
+  _clearSessionInfoCache, _clearTailCache,
+};
