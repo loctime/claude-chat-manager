@@ -30,6 +30,7 @@ class Runner extends EventEmitter {
   _start(job) {
     const args = ['-p', job.text, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
     if (job.sessionId) args.push('--resume', job.sessionId);
+    if (job.model) args.push('--model', job.model);
     const child = this.spawnFn(this.command, args, { cwd: job.cwd });
     this.running.set(job.convId, child);
     this.emit('status', { convId: job.convId, status: 'running' });

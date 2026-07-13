@@ -63,6 +63,8 @@ app.get('/api/tree', (req, res) => {
       snippet: s.snippet || '',
       lastActivity: s.lastActivity || null,
       messageCount: s.messageCount || 0,
+      model: c.model || null,
+      lastModel: s.lastModel || null,
       status: runner.running.has(convId) ? 'running' : (runner.isBusy(convId) ? 'queued' : 'idle'),
     });
   }
@@ -75,6 +77,8 @@ app.get('/api/tree', (req, res) => {
       snippet: s.snippet,
       lastActivity: s.lastActivity,
       messageCount: s.messageCount,
+      model: null,
+      lastModel: s.lastModel || null,
       status: runner.running.has(s.sessionId) ? 'running' : (runner.isBusy(s.sessionId) ? 'queued' : 'idle'),
     });
   }
@@ -107,25 +111,26 @@ app.post('/api/conversations/:id/message', (req, res) => {
   const { data, conv } = resolveConv(convId);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
   meta.save(data);
-  runner.send({ convId, sessionId: conv.currentSessionId, cwd: conv.projectDir, text });
+  runner.send({ convId, sessionId: conv.currentSessionId, cwd: conv.projectDir, text, model: conv.model });
   res.status(202).json({ queued: true });
 });
 
 app.post('/api/conversations', (req, res) => {
-  const { projectDir, text } = req.body;
+  const { projectDir, text, model } = req.body;
   if (!projectDir || !(text || '').trim()) return res.status(400).json({ error: 'faltan projectDir o text' });
   const convId = crypto.randomUUID();
   const data = meta.load();
-  data.conversations[convId] = { currentSessionId: null, projectDir };
+  data.conversations[convId] = { currentSessionId: null, projectDir, model: model || undefined };
   meta.save(data);
-  runner.send({ convId, sessionId: null, cwd: projectDir, text: text.trim() });
+  runner.send({ convId, sessionId: null, cwd: projectDir, text: text.trim(), model: model || undefined });
   res.status(201).json({ convId });
 });
 
 app.patch('/api/conversations/:id', (req, res) => {
   const { data, conv } = resolveConv(req.params.id);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
-  conv.name = (req.body.name || '').trim() || undefined;
+  if ('name' in req.body) conv.name = (req.body.name || '').trim() || undefined;
+  if ('model' in req.body) conv.model = (req.body.model || '').trim() || undefined;
   meta.save(data);
   res.json({ ok: true });
 });

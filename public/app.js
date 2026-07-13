@@ -33,7 +33,7 @@ async function loadTree() {
       div.innerHTML = `<div class="name"></div><div class="sub"></div>`;
       div.querySelector('.name').textContent = c.name + badge(c.status);
       div.querySelector('.sub').textContent = (c.lastActivity || '').slice(0, 16).replace('T', ' ');
-      div.onclick = () => selectConv(c.convId, c.name);
+      div.onclick = () => selectConv(c.convId, c.name, c.model, c.lastModel);
       det.appendChild(div);
     }
     nav.appendChild(det);
@@ -103,9 +103,13 @@ function openStream(convId) {
   };
 }
 
-async function selectConv(convId, name) {
+async function selectConv(convId, name, model, lastModel) {
   currentConv = convId;
   $('conv-title').textContent = name;
+  const defaultLabel = lastModel ? `Default (${lastModel})` : 'Default';
+  $('model-select').options[0].textContent = defaultLabel;
+  $('model-select').value = model || '';
+  $('model-select').hidden = false;
   setBusy(false);
   await loadMessages(convId);
   openStream(convId);
@@ -128,6 +132,19 @@ $('composer').onsubmit = async e => {
   } catch (err) {
     addMsg('error', err.message);
     setBusy(false);
+  }
+};
+
+$('model-select').onchange = async () => {
+  if (!currentConv) return;
+  try {
+    await api(`/conversations/${currentConv}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: $('model-select').value }),
+    });
+  } catch (err) {
+    addMsg('error', 'No se pudo cambiar el modelo: ' + err.message);
   }
 };
 
@@ -169,16 +186,18 @@ $('new-form').onsubmit = async e => {
   e.preventDefault();
   const projectDir = $('project-custom').value.trim() || $('project-select').value;
   const text = $('first-message').value.trim();
+  const model = $('new-model').value;
   if (!projectDir || !text) return;
   const { convId } = await api('/conversations', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ projectDir, text }),
+    body: JSON.stringify({ projectDir, text, model: model || undefined }),
   });
   $('new-dialog').close();
   $('first-message').value = '';
   $('project-custom').value = '';
-  await selectConv(convId, text.slice(0, 60));
+  $('new-model').value = '';
+  await selectConv(convId, text.slice(0, 60), model);
   addMsg('user', text);
   setBusy(true);
 };

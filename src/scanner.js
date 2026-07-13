@@ -30,12 +30,14 @@ function sessionInfo(filePath) {
   const last = entries[entries.length - 1];
   let lastActivity = last && last.timestamp;
   if (!lastActivity) { try { lastActivity = fs.statSync(filePath).mtime.toISOString(); } catch { lastActivity = null; } }
+  const lastAssistant = [...msgs].reverse().find(e => e.type === 'assistant' && e.message && e.message.model);
   return {
     sessionId: path.basename(filePath, '.jsonl'),
     cwd: (entries.find(e => e.cwd) || {}).cwd || null,
     snippet,
     messageCount: msgs.length,
     lastActivity,
+    lastModel: lastAssistant ? lastAssistant.message.model : null,
   };
 }
 

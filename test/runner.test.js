@@ -33,6 +33,17 @@ test('arma los args correctos con y sin --resume', () => {
   assert.ok(!spawned[1].args.includes('--resume'));
 });
 
+test('pasa --model cuando el job lo tiene, lo omite si no', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  r.send({ convId: 'c1', sessionId: 's1', cwd: '/t', text: 'a', model: 'haiku' });
+  r.send({ convId: 'c2', sessionId: 's2', cwd: '/t', text: 'b' });
+  const i = spawned[0].args.indexOf('--model');
+  assert.ok(i >= 0);
+  assert.equal(spawned[0].args[i + 1], 'haiku');
+  assert.ok(!spawned[1].args.includes('--model'));
+});
+
 test('semáforo de 2: el tercero queda en cola y arranca al liberarse un slot', () => {
   const spawned = [];
   const r = makeRunner(spawned);

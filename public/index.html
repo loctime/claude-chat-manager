@@ -17,6 +17,12 @@
   <main id="chat">
     <header id="chat-header">
       <span id="conv-title">Elegí una conversación</span>
+      <select id="model-select" title="Modelo de esta conversación" hidden>
+        <option value="">Modelo: default</option>
+        <option value="opus">Opus</option>
+        <option value="sonnet">Sonnet</option>
+        <option value="haiku">Haiku</option>
+      </select>
     </header>
     <section id="messages"></section>
     <form id="composer">
@@ -32,6 +38,14 @@
       </label>
       <label>U otra carpeta
         <input id="project-custom" type="text" placeholder="/home/loctime/Proyectos/...">
+      </label>
+      <label>Modelo
+        <select id="new-model">
+          <option value="">Default</option>
+          <option value="opus">Opus</option>
+          <option value="sonnet">Sonnet</option>
+          <option value="haiku">Haiku</option>
+        </select>
       </label>
       <label>Primer mensaje
         <textarea id="first-message" rows="3" required></textarea>
