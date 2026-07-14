@@ -7,10 +7,49 @@ let treeTotal = 0;
 let archivedTotal = 0;
 let showArchived = false;
 let lastUserText = '';
+let activeAccount = null;
 const drafts = new Map();
 
 const $ = id => document.getElementById(id);
 const messagesEl = $('messages');
+
+// ── Selector de cuentas ──
+async function loadAccounts() {
+  try {
+    const r = await fetch('/api/accounts');
+    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel } = await r.json();
+    activeAccount = active;
+    // Botón "ir a la otra instancia": elige URL local si estamos en 127.0.0.1/localhost,
+    // pública en cualquier otro caso (celu vía Cloudflare tunnel).
+    const sw = $('account-switch');
+    if (sw && otherLabel && (otherLocalUrl || otherPublicUrl)) {
+      const isLocal = /^(127\.0\.0\.1|localhost)$/.test(window.location.hostname);
+      const url = isLocal
+        ? (otherLocalUrl || otherPublicUrl)
+        : (otherPublicUrl || otherLocalUrl);
+      sw.textContent = `→ ${otherLabel}`;
+      sw.href = url;
+      sw.hidden = false;
+    }
+    const sel = $('account-select');
+    // Modo single-user: ocultar el selector, no hay nada que elegir.
+    if (accounts.length <= 1) { sel.hidden = true; return; }
+    sel.hidden = false;
+    sel.innerHTML = accounts.map(a =>
+      `<option value="${a}" ${a === active ? 'selected' : ''}>${a}</option>`
+    ).join('');
+    sel.onchange = async () => {
+      await fetch('/api/accounts/switch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account: sel.value }),
+      });
+      activeAccount = sel.value;
+      treeLimit = 100;
+      loadTree();
+    };
+  } catch {}
+}
 
 // ── Toast ──
 function toast(msg, kind = 'error', ttl = 4000) {
@@ -147,9 +186,21 @@ async function api(path, opts) {
   return res.json();
 }
 
+// Anexa ?account=X o &account=X a un path GET, respetando el separador correcto.
+function withAccount(path) {
+  if (!activeAccount) return path;
+  const sep = path.includes('?') ? '&' : '?';
+  return `${path}${sep}account=${encodeURIComponent(activeAccount)}`;
+}
+
+// Devuelve el body con account: activeAccount agregado (para POST/PATCH).
+function withAccountBody(body) {
+  return activeAccount ? { ...body, account: activeAccount } : body;
+}
+
 // ── TTS (Web Speech API) ──
 let ttsUtterance = null;
-function speak(text, btn) {
+function speak(text, btn, kind = 'assistant') {
   if (!('speechSynthesis' in window)) return;
   if (ttsUtterance) {
     speechSynthesis.cancel();
@@ -157,7 +208,10 @@ function speak(text, btn) {
     if (ttsUtterance._btn === btn) { ttsUtterance = null; return; }
   }
   const u = new SpeechSynthesisUtterance(text);
-  u.lang = 'es-AR';
+  const voiceName = kind === 'user' ? settings.voiceUser : settings.voiceAssistant;
+  const voice = voiceName ? speechSynthesis.getVoices().find(v => v.name === voiceName) : null;
+  if (voice) { u.voice = voice; u.lang = voice.lang; }
+  else u.lang = 'es-AR';
   u._btn = btn;
   ttsUtterance = u;
   btn.classList.add('playing');
@@ -176,14 +230,14 @@ function cleanForTTS(text) {
     .trim();
 }
 
-function makeTtsBtn(text) {
+function makeTtsBtn(text, kind = 'assistant') {
   const clean = cleanForTTS(text);
   const btn = document.createElement('button');
   btn.className = 'msg-tts';
   btn.title = 'Reproducir';
   btn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>';
   if (!clean) btn.style.display = 'none'; // no mostrar si no hay texto para leer
-  btn.onclick = () => speak(clean, btn);
+  btn.onclick = () => speak(clean, btn, kind);
   return btn;
 }
 
@@ -265,6 +319,7 @@ function convElement(c) {
 async function loadTree() {
   const params = new URLSearchParams({ limit: String(treeLimit) });
   if (showArchived) params.set('archived', '1');
+  if (activeAccount) params.set('account', activeAccount);
   const resp = await api('/tree?' + params);
   tree = resp.tree;
   treeHasMore = resp.hasMore;
@@ -383,7 +438,11 @@ function showConvMenu(x, y, conv) {
       if (!confirm('Compactar la conversación?\n\nSe genera un resumen y la sesión actual queda archivada. La próxima respuesta arranca sesión nueva con el resumen inyectado.')) return;
       try {
         toast('Compactando…', 'info', 2000);
-        const r = await api(`/conversations/${conv.convId}/compact`, { method: 'POST' });
+        const r = await api(`/conversations/${conv.convId}/compact`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(withAccountBody({})),
+        });
         toast(`Compactado (${r.messagesCompacted} mensajes resumidos)`, 'info', 3000);
         safeLoadTree();
       } catch (err) { toast('No se pudo compactar: ' + err.message); }
@@ -396,7 +455,7 @@ function showConvMenu(x, y, conv) {
       await api(`/conversations/${conv.convId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(patch),
+        body: JSON.stringify(withAccountBody(patch)),
       });
       safeLoadTree();
     } catch (err) { toast('No se pudo actualizar: ' + err.message); }
@@ -629,7 +688,7 @@ function addMsg(role, text, opts = {}) {
     const span = document.createElement('span');
     span.className = 'msg-text';
     renderTextWithPaths(span, text);
-    const ttsBtn = makeTtsBtn(text);
+    const ttsBtn = makeTtsBtn(text, role === 'user' ? 'user' : 'assistant');
     const time = document.createElement('span');
     time.className = 'msg-time';
     time.textContent = now();
@@ -719,7 +778,7 @@ function addCompactDivider() {
 
 async function loadMessages(convId) {
   messagesEl.innerHTML = '';
-  const msgs = await api(`/conversations/${convId}/messages`);
+  const msgs = await api(withAccount(`/conversations/${convId}/messages`));
   lastUserText = '';
   for (let i = msgs.length - 1; i >= 0; i--) {
     if (msgs[i].role === 'user' && (msgs[i].text || '').trim() && !msgs[i].compacted) {
@@ -818,7 +877,7 @@ function ctxTone(pct) {
 async function refreshCostBadge(convId) {
   const badge = $('cost-badge');
   try {
-    const usage = await api(`/conversations/${convId}/usage`);
+    const usage = await api(withAccount(`/conversations/${convId}/usage`));
     const t = usage.total;
     const totalTokens = (t.input || 0) + (t.output || 0) + (t.cacheCreate || 0) + (t.cacheRead || 0);
     if (totalTokens === 0) { badge.hidden = true; return; }
@@ -881,7 +940,7 @@ document.addEventListener('click', e => {
 $('menu-export').onclick = () => {
   closeChatMenu();
   if (!currentConv) return;
-  const url = `/api/conversations/${currentConv}/export?format=md`;
+  const url = `/api${withAccount(`/conversations/${currentConv}/export?format=md`)}`;
   const a = document.createElement('a');
   a.href = url;
   a.download = '';
@@ -1129,7 +1188,7 @@ function addUserMsgWithFiles(text, attachments) {
     div.appendChild(span);
   }
 
-  const ttsBtn = makeTtsBtn(text || '');
+  const ttsBtn = makeTtsBtn(text || '', 'user');
   const time = document.createElement('span');
   time.className = 'msg-time';
   time.textContent = now();
@@ -1165,7 +1224,7 @@ $('composer').onsubmit = async e => {
     await api(`/conversations/${currentConv}/message`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(withAccountBody({ text })),
     });
   } catch (err) {
     addMsg('error', err.message);
@@ -1194,7 +1253,7 @@ $('menu-retry').onclick = async () => {
         await api(`/conversations/${currentConv}/message`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: lastUserText }),
+          body: JSON.stringify(withAccountBody({ text: lastUserText })),
         });
         return;
       } catch (err) {
@@ -1221,7 +1280,7 @@ $('model-select').onchange = async () => {
     await api(`/conversations/${currentConv}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: $('model-select').value }),
+      body: JSON.stringify(withAccountBody({ model: $('model-select').value })),
     });
   } catch (err) { addMsg('error', 'No se pudo cambiar el modelo: ' + err.message); }
 };
@@ -1238,7 +1297,7 @@ $('conv-title').ondblclick = () => {
       await api(`/conversations/${currentConv}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: el.textContent.trim() }),
+        body: JSON.stringify(withAccountBody({ name: el.textContent.trim() })),
       });
       loadTree();
     } catch (err) { addMsg('error', 'No se pudo renombrar: ' + err.message); }
@@ -1272,7 +1331,7 @@ $('new-form').onsubmit = async e => {
     const { convId } = await api('/conversations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ projectDir, text, model: model || undefined }),
+      body: JSON.stringify(withAccountBody({ projectDir, text, model: model || undefined })),
     });
     $('new-dialog').close();
     $('first-message').value = '';
@@ -1312,7 +1371,7 @@ async function runSearch(q) {
   if (!q.trim()) { box.innerHTML = ''; searchResults = []; return; }
   box.innerHTML = '<div class="search-loading">Buscando…</div>';
   try {
-    const { results } = await api('/search?limit=50&q=' + encodeURIComponent(q));
+    const { results } = await api(withAccount('/search?limit=50&q=' + encodeURIComponent(q)));
     searchResults = results;
     searchLastQuery = q;
     box.innerHTML = '';
@@ -1390,5 +1449,98 @@ async function safeLoadTree() {
   try { await loadTree(); }
   catch (err) { toast('No se pudo actualizar la lista: ' + err.message); }
 }
-safeLoadTree();
+loadAccounts().then(() => safeLoadTree());
 setInterval(safeLoadTree, 15000);
+
+// ── Configuración ──
+const SETTINGS_KEY = 'ccm.settings';
+const DEFAULT_SETTINGS = {
+  showTools: true,
+  voiceAssistant: '',
+  voiceUser: '',
+  colorAccent: '',
+  colorMe: '',
+  colorAi: '',
+};
+const settings = { ...DEFAULT_SETTINGS, ...loadSettings() };
+
+function loadSettings() {
+  try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; }
+  catch { return {}; }
+}
+function saveSettings() {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+}
+function applySettings() {
+  document.body.classList.toggle('hide-tools', !settings.showTools);
+  const root = document.documentElement;
+  const vars = { '--accent': settings.colorAccent, '--bubble-me': settings.colorMe, '--bubble-ai': settings.colorAi };
+  for (const [k, v] of Object.entries(vars)) {
+    if (v) root.style.setProperty(k, v);
+    else root.style.removeProperty(k);
+  }
+}
+applySettings();
+
+function populateVoices() {
+  const voices = speechSynthesis.getVoices();
+  if (!voices.length) return;
+  const sorted = [...voices].sort((a, b) => {
+    const aEs = a.lang.startsWith('es') ? 0 : 1;
+    const bEs = b.lang.startsWith('es') ? 0 : 1;
+    return aEs - bEs || a.name.localeCompare(b.name);
+  });
+  for (const selId of ['cfg-voice-assistant', 'cfg-voice-user']) {
+    const sel = $(selId);
+    const current = sel.value;
+    sel.innerHTML = '<option value="">Default del sistema</option>';
+    for (const v of sorted) {
+      const opt = document.createElement('option');
+      opt.value = v.name;
+      opt.textContent = `${v.name} (${v.lang})`;
+      sel.appendChild(opt);
+    }
+    sel.value = current;
+  }
+}
+if ('speechSynthesis' in window) {
+  populateVoices();
+  speechSynthesis.onvoiceschanged = populateVoices;
+}
+
+function readComputedColor(varName) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+  // <input type="color"> exige formato #rrggbb
+  if (/^#[0-9a-f]{6}$/i.test(v)) return v;
+  if (/^#[0-9a-f]{3}$/i.test(v)) return '#' + v.slice(1).split('').map(c => c + c).join('');
+  return '#000000';
+}
+
+function openSettings() {
+  $('cfg-show-tools').checked = settings.showTools;
+  $('cfg-voice-assistant').value = settings.voiceAssistant;
+  $('cfg-voice-user').value = settings.voiceUser;
+  $('cfg-color-accent').value = settings.colorAccent || readComputedColor('--accent');
+  $('cfg-color-me').value = settings.colorMe || readComputedColor('--bubble-me');
+  $('cfg-color-ai').value = settings.colorAi || readComputedColor('--bubble-ai');
+  $('settings-dialog').showModal();
+}
+
+$('settings-btn').onclick = openSettings;
+
+$('cfg-show-tools').onchange = e => {
+  settings.showTools = e.target.checked;
+  applySettings(); saveSettings();
+};
+$('cfg-voice-assistant').onchange = e => { settings.voiceAssistant = e.target.value; saveSettings(); };
+$('cfg-voice-user').onchange = e => { settings.voiceUser = e.target.value; saveSettings(); };
+$('cfg-color-accent').oninput = e => { settings.colorAccent = e.target.value; applySettings(); saveSettings(); };
+$('cfg-color-me').oninput = e => { settings.colorMe = e.target.value; applySettings(); saveSettings(); };
+$('cfg-color-ai').oninput = e => { settings.colorAi = e.target.value; applySettings(); saveSettings(); };
+
+$('cfg-reset').onclick = () => {
+  Object.assign(settings, DEFAULT_SETTINGS);
+  applySettings(); saveSettings();
+  openSettings();
+  toast('Configuración restaurada', 'info', 2000);
+};

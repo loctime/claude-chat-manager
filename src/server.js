@@ -24,6 +24,41 @@ const ACCESS_PIN = process.env.ACCESS_PIN || '';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 
 const HOME_DIR = process.env.HOME || process.env.USERPROFILE || os.homedir();
+
+// ── Multi-cuenta ──
+// SINGLE_ACCOUNT=1 fuerza modo single-user (solo el usuario que corre el proceso).
+// Sin esa var el server intenta detectar otras cuentas en /home y ofrecer switch.
+function detectAccounts() {
+  const current = os.userInfo().username;
+  if (process.env.SINGLE_ACCOUNT === '1') return [current];
+  const accounts = [];
+  try {
+    const homes = fs.readdirSync('/home');
+    for (const user of homes) {
+      const settingsPath = path.join('/home', user, '.claude', 'settings.json');
+      if (fs.existsSync(settingsPath)) accounts.push(user);
+    }
+  } catch {}
+  if (!accounts.includes(current)) accounts.unshift(current);
+  else { accounts.splice(accounts.indexOf(current), 1); accounts.unshift(current); }
+  return accounts;
+}
+
+const ACCOUNTS = detectAccounts();
+let activeAccount = ACCOUNTS[0];
+
+function accountHomeDir(acc) {
+  const current = os.userInfo().username;
+  return acc === current ? HOME_DIR : path.join('/home', acc);
+}
+function accountProjectsDir(acc) {
+  return path.join(accountHomeDir(acc), '.claude', 'projects');
+}
+function accountMetaFile(acc) {
+  const current = os.userInfo().username;
+  if (acc === current) return path.join(HOME_DIR, '.claude', 'session-manager', 'meta.json');
+  return path.join(HOME_DIR, '.claude', 'session-manager', `meta-${acc}.json`);
+}
 const UPLOAD_DIR = path.join(HOME_DIR, '.ccm-uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
@@ -51,6 +86,28 @@ if (ACCESS_PIN) {
   });
 }
 
+// ── Endpoints de cuentas ──
+const OTHER_LOCAL_URL = process.env.OTHER_LOCAL_URL || '';
+const OTHER_PUBLIC_URL = process.env.OTHER_PUBLIC_URL || '';
+const OTHER_LABEL = process.env.OTHER_LABEL || '';
+
+app.get('/api/accounts', (req, res) => {
+  res.json({
+    accounts: ACCOUNTS,
+    active: activeAccount,
+    otherLocalUrl: OTHER_LOCAL_URL,
+    otherPublicUrl: OTHER_PUBLIC_URL,
+    otherLabel: OTHER_LABEL,
+  });
+});
+
+app.post('/api/accounts/switch', (req, res) => {
+  const { account } = req.body;
+  if (!ACCOUNTS.includes(account)) return res.status(400).json({ error: 'cuenta no disponible' });
+  activeAccount = account;
+  res.json({ ok: true, active: activeAccount });
+});
+
 // index.html y archivos JS/CSS nunca cacheados por el browser
 app.use(express.static(path.join(__dirname, '..', 'public'), {
   setHeaders(res, filePath) {
@@ -60,7 +117,7 @@ app.use(express.static(path.join(__dirname, '..', 'public'), {
   },
 }));
 
-const runner = new Runner();
+const runner = new Runner({ selfHost: HOST, selfPort: PORT });
 const sseClients = new Map(); // convId → Set<res>
 
 // Precios en USD por millón de tokens. Match por prefijo del model id.
@@ -110,13 +167,14 @@ function broadcast(convId, payload) {
   for (const res of set) res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
-runner.on('event', ({ convId, event }) => {
+runner.on('event', ({ convId, event, account }) => {
   const sid = event.session_id;
   if (sid) {
-    const data = meta.load();
+    const metaFile = accountMetaFile(account || activeAccount);
+    const data = meta.load(metaFile);
     if (data.conversations[convId] && data.conversations[convId].currentSessionId !== sid) {
       meta.advanceSession(data, convId, sid);
-      meta.save(data);
+      meta.save(data, metaFile);
     }
   }
   broadcast(convId, { kind: 'claude', event });
@@ -125,7 +183,7 @@ runner.on('event', ({ convId, event }) => {
 runner.on('status', s => {
   broadcast(s.convId, { kind: 'status', ...s });
   if (s.status === 'idle' && s.code === 0) {
-    maybeGenerateTitle(s.convId).catch(() => {});
+    maybeGenerateTitle(s.convId, s.account || activeAccount).catch(() => {});
   }
 });
 
@@ -198,14 +256,16 @@ function _claudeSummarize(excerpt) {
   });
 }
 
-async function maybeGenerateTitle(convId) {
+async function maybeGenerateTitle(convId, acc = activeAccount) {
   if (!GROQ_API_KEY) return;
   const last = _lastTitleAttempt.get(convId) || 0;
   if (Date.now() - last < TITLE_RETRY_MS) return;
-  const data = meta.load();
+  const metaFile = accountMetaFile(acc);
+  const projDir = accountProjectsDir(acc);
+  const data = meta.load(metaFile);
   const conv = data.conversations[convId];
   if (!conv || conv.name || conv.aiTitle) return;
-  const file = conv.currentSessionId ? scanner.findSessionFile(conv.currentSessionId) : null;
+  const file = conv.currentSessionId ? scanner.findSessionFile(conv.currentSessionId, projDir) : null;
   if (!file) return;
   const info = scanner.sessionInfo(file);
   if (!info || info.messageCount < TITLE_MIN_MSGS) return;
@@ -214,23 +274,25 @@ async function maybeGenerateTitle(convId) {
   const excerpt = messages.map(m => `${m.role}: ${(m.text || '').slice(0, 400)}`).join('\n\n').slice(0, 2000);
   const title = await _groqTitle(excerpt);
   if (!title) return;
-  const latest = meta.load();
+  const latest = meta.load(metaFile);
   const latestConv = latest.conversations[convId];
   if (!latestConv || latestConv.name) return;
   latestConv.name = title;
   latestConv.aiTitle = true;
-  meta.save(latest);
+  meta.save(latest, metaFile);
   broadcast(convId, { kind: 'meta', name: title, aiTitle: true });
 }
 
-function resolveConv(convId) {
-  const data = meta.load();
-  if (data.conversations[convId]) return { data, conv: data.conversations[convId] };
-  const file = scanner.findSessionFile(convId);
-  if (!file) return { data, conv: null };
+function resolveConv(convId, acc = activeAccount) {
+  const metaFile = accountMetaFile(acc);
+  const projDir = accountProjectsDir(acc);
+  const data = meta.load(metaFile);
+  if (data.conversations[convId]) return { data, conv: data.conversations[convId], metaFile };
+  const file = scanner.findSessionFile(convId, projDir);
+  if (!file) return { data, conv: null, metaFile };
   const info = scanner.sessionInfo(file);
-  data.conversations[convId] = { currentSessionId: convId, projectDir: (info && info.cwd) || process.env.HOME };
-  return { data, conv: data.conversations[convId] };
+  data.conversations[convId] = { currentSessionId: convId, projectDir: (info && info.cwd) || HOME_DIR };
+  return { data, conv: data.conversations[convId], metaFile };
 }
 
 // ── Upload de archivo adjunto (con compresión automática de imágenes) ──
@@ -350,8 +412,9 @@ const DEFAULT_TREE_LIMIT = 100;
 const MAX_TREE_LIMIT = 500;
 
 app.get('/api/tree', (req, res) => {
-  const data = meta.load();
-  const sessions = scanner.listSessions();
+  const acc = req.query.account || activeAccount;
+  const data = meta.load(accountMetaFile(acc));
+  const sessions = scanner.listSessions(accountProjectsDir(acc));
   const referenced = new Set(data.superseded);
   for (const c of Object.values(data.conversations)) referenced.add(c.currentSessionId);
   const byId = new Map(sessions.map(s => [s.sessionId, s]));
@@ -422,16 +485,17 @@ app.get('/api/tree', (req, res) => {
     projectDir,
     conversations,
   }));
-  res.json({ tree, hasMore, total, limit, archivedTotal });
+  res.json({ tree, hasMore, total, limit, archivedTotal, account: acc });
 });
 
 app.get('/api/search', (req, res) => {
+  const acc = req.query.account || activeAccount;
   const q = (req.query.q || '').toString().trim();
   if (!q) return res.json({ results: [] });
   const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
-  const results = scanner.searchSessions(q, { limit });
+  const results = scanner.searchSessions(q, { limit, projectsDir: accountProjectsDir(acc) });
   // Anotar convId real (si existe conversación con nombre custom) para poder abrirla.
-  const data = meta.load();
+  const data = meta.load(accountMetaFile(acc));
   const bySessionId = new Map();
   for (const [convId, c] of Object.entries(data.conversations)) {
     bySessionId.set(c.currentSessionId, { convId, name: c.name });
@@ -449,10 +513,11 @@ app.get('/api/search', (req, res) => {
 
 app.get('/api/conversations/:id/usage', (req, res) => {
   const empty = { total: { input: 0, output: 0, cacheCreate: 0, cacheRead: 0 }, byModel: {}, costUSD: 0, contextTokens: 0, contextWindow: 200_000, contextPct: 0 };
-  const { conv } = resolveConv(req.params.id);
+  const acc = req.query.account || activeAccount;
+  const { conv } = resolveConv(req.params.id, acc);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
   if (!conv.currentSessionId) return res.json(empty);
-  const file = scanner.findSessionFile(conv.currentSessionId);
+  const file = scanner.findSessionFile(conv.currentSessionId, accountProjectsDir(acc));
   if (!file) return res.json(empty);
   const info = scanner.sessionInfo(file);
   if (!info || !info.usage) return res.json(empty);
@@ -467,17 +532,19 @@ app.get('/api/conversations/:id/usage', (req, res) => {
 });
 
 app.get('/api/conversations/:id/messages', (req, res) => {
-  const { conv } = resolveConv(req.params.id);
+  const acc = req.query.account || activeAccount;
+  const projDir = accountProjectsDir(acc);
+  const { conv } = resolveConv(req.params.id, acc);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
   const out = [];
   if (conv.compactedFromSession) {
-    const oldFile = scanner.findSessionFile(conv.compactedFromSession);
+    const oldFile = scanner.findSessionFile(conv.compactedFromSession, projDir);
     if (oldFile) {
       for (const m of scanner.getMessagesIncremental(oldFile)) out.push({ ...m, compacted: true });
     }
   }
   if (conv.currentSessionId) {
-    const file = scanner.findSessionFile(conv.currentSessionId);
+    const file = scanner.findSessionFile(conv.currentSessionId, projDir);
     if (file) {
       for (const m of scanner.getMessagesIncremental(file)) out.push(m);
     }
@@ -523,18 +590,20 @@ function messagesToMarkdown({ conv, info, messages }) {
 }
 
 app.get('/api/conversations/:id/export', (req, res) => {
-  const { conv } = resolveConv(req.params.id);
+  const acc = req.query.account || activeAccount;
+  const projDir = accountProjectsDir(acc);
+  const { conv } = resolveConv(req.params.id, acc);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
   const format = (req.query.format || 'md').toLowerCase();
   if (format !== 'md') return res.status(400).json({ error: 'formato no soportado' });
   const messages = conv.currentSessionId
-    ? (scanner.findSessionFile(conv.currentSessionId)
-        ? scanner.getMessagesIncremental(scanner.findSessionFile(conv.currentSessionId))
+    ? (scanner.findSessionFile(conv.currentSessionId, projDir)
+        ? scanner.getMessagesIncremental(scanner.findSessionFile(conv.currentSessionId, projDir))
         : [])
     : [];
   const info = conv.currentSessionId
-    ? (scanner.findSessionFile(conv.currentSessionId)
-        ? scanner.sessionInfo(scanner.findSessionFile(conv.currentSessionId))
+    ? (scanner.findSessionFile(conv.currentSessionId, projDir)
+        ? scanner.sessionInfo(scanner.findSessionFile(conv.currentSessionId, projDir))
         : null)
     : null;
   const md = messagesToMarkdown({ conv, info, messages });
@@ -549,7 +618,8 @@ app.post('/api/conversations/:id/message', (req, res) => {
   const text = (req.body.text || '').trim();
   if (!text) return res.status(400).json({ error: 'mensaje vacío' });
   if (runner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación ya está procesando un mensaje' });
-  const { data, conv } = resolveConv(convId);
+  const acc = req.body.account || activeAccount;
+  const { data, conv, metaFile } = resolveConv(convId, acc);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
   let outgoing = text;
   if (conv.compactedSummary && !conv.currentSessionId) {
@@ -557,18 +627,20 @@ app.post('/api/conversations/:id/message', (req, res) => {
     delete conv.compactedSummary;
     delete conv.compactedAt;
   }
-  meta.save(data);
-  runner.send({ convId, sessionId: conv.currentSessionId, cwd: conv.projectDir, text: outgoing, model: conv.model });
+  meta.save(data, metaFile);
+  runner.send({ convId, sessionId: conv.currentSessionId, cwd: conv.projectDir, text: outgoing, model: conv.model, account: acc });
   res.status(202).json({ queued: true });
 });
 
 app.post('/api/conversations/:id/compact', async (req, res) => {
   const convId = req.params.id;
   if (runner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación está procesando un mensaje' });
-  const { data, conv } = resolveConv(convId);
+  const acc = req.body.account || activeAccount;
+  const projDir = accountProjectsDir(acc);
+  const { data, conv, metaFile } = resolveConv(convId, acc);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
   if (!conv.currentSessionId) return res.status(400).json({ error: 'la conversación no tiene sesión activa' });
-  const file = scanner.findSessionFile(conv.currentSessionId);
+  const file = scanner.findSessionFile(conv.currentSessionId, projDir);
   if (!file) return res.status(404).json({ error: 'archivo de sesión no encontrado' });
   const messages = scanner.getMessagesIncremental(file).filter(m => m.role === 'user' || m.role === 'assistant');
   if (messages.length < 2) return res.status(400).json({ error: 'nada útil para compactar (menos de 2 mensajes)' });
@@ -596,7 +668,7 @@ app.post('/api/conversations/:id/compact', async (req, res) => {
   conv.currentSessionId = null;
   conv.compactedSummary = summary;
   conv.compactedAt = new Date().toISOString();
-  meta.save(data);
+  meta.save(data, metaFile);
   broadcast(convId, { kind: 'compacted', summary });
   res.json({ ok: true, summary, messagesCompacted: messages.length });
 });
@@ -604,16 +676,19 @@ app.post('/api/conversations/:id/compact', async (req, res) => {
 app.post('/api/conversations', (req, res) => {
   const { projectDir, text, model } = req.body;
   if (!projectDir || !(text || '').trim()) return res.status(400).json({ error: 'faltan projectDir o text' });
+  const acc = req.body.account || activeAccount;
+  const metaFile = accountMetaFile(acc);
   const convId = crypto.randomUUID();
-  const data = meta.load();
+  const data = meta.load(metaFile);
   data.conversations[convId] = { currentSessionId: null, projectDir, model: model || undefined };
-  meta.save(data);
-  runner.send({ convId, sessionId: null, cwd: projectDir, text: text.trim(), model: model || undefined });
+  meta.save(data, metaFile);
+  runner.send({ convId, sessionId: null, cwd: projectDir, text: text.trim(), model: model || undefined, account: acc });
   res.status(201).json({ convId });
 });
 
 app.patch('/api/conversations/:id', (req, res) => {
-  const { data, conv } = resolveConv(req.params.id);
+  const acc = req.body.account || activeAccount;
+  const { data, conv, metaFile } = resolveConv(req.params.id, acc);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
   if ('name' in req.body) {
     conv.name = (req.body.name || '').trim() || undefined;
@@ -622,7 +697,7 @@ app.patch('/api/conversations/:id', (req, res) => {
   if ('model' in req.body) conv.model = (req.body.model || '').trim() || undefined;
   if ('pinned' in req.body) conv.pinned = !!req.body.pinned;
   if ('archived' in req.body) conv.archived = !!req.body.archived;
-  meta.save(data);
+  meta.save(data, metaFile);
   res.json({ ok: true });
 });
 

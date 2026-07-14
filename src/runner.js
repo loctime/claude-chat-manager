@@ -1,21 +1,30 @@
 const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
+const os = require('os');
+
+const CURRENT_USER = os.userInfo().username;
 
 class Runner extends EventEmitter {
-  constructor({ maxConcurrent = 2, spawnFn = spawn, command = 'claude' } = {}) {
+  constructor({ maxConcurrent = 2, spawnFn = spawn, command = 'claude', selfHost, selfPort } = {}) {
     super();
     this.max = maxConcurrent;
     this.spawnFn = spawnFn;
     this.command = command;
+    this.selfHost = selfHost;
+    this.selfPort = selfPort;
     this.queue = [];
     this.running = new Map(); // convId → child
+    this._accounts = new Map(); // convId → account
   }
 
   send(job) {
     this.queue.push(job);
-    this.emit('status', { convId: job.convId, status: 'queued' });
+    if (job.account) this._accounts.set(job.convId, job.account);
+    this.emit('status', { convId: job.convId, status: 'queued', account: job.account });
     this._drain();
   }
+
+  accountFor(convId) { return this._accounts.get(convId); }
 
   isBusy(convId) {
     return this.running.has(convId) || this.queue.some(j => j.convId === convId);
@@ -41,11 +50,23 @@ class Runner extends EventEmitter {
 
   _start(job) {
     const args = ['-p', job.text, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
+    if (this.selfPort) {
+      const host = this.selfHost || '127.0.0.1';
+      args.push(
+        '--append-system-prompt',
+        `AVISO INFRAESTRUCTURA: te está ejecutando claude-chat-manager (Node/Express) en ${host}:${this.selfPort}. Ese proceso es tu propio transporte hacia el usuario — si lo matás perdés el stream a la mitad y el usuario ve tu respuesta cortada. NO ejecutes comandos que apunten a ese puerto ni a ese proceso: nada de kill/pkill/fuser/lsof -ti:${this.selfPort} -k, ss ... | xargs kill, systemctl stop, etc. Si el usuario te pide reiniciar el chat-manager, explicale que lo tiene que hacer él desde otra terminal (o via PM2/systemd) porque vos no podés matar tu propio host.`
+      );
+    }
     if (job.sessionId) args.push('--resume', job.sessionId);
     if (job.model) args.push('--model', job.model);
-    const child = this.spawnFn(this.command, args, { cwd: job.cwd });
+    const account = job.account || CURRENT_USER;
+    const usesudo = account !== CURRENT_USER;
+    const spawnCmd = usesudo ? 'sudo' : this.command;
+    const spawnArgs = usesudo ? ['-u', account, this.command, ...args] : args;
+    const homeDir = usesudo ? `/home/${account}` : os.homedir();
+    const child = this.spawnFn(spawnCmd, spawnArgs, { cwd: job.cwd, env: { ...process.env, HOME: homeDir } });
     this.running.set(job.convId, child);
-    this.emit('status', { convId: job.convId, status: 'running' });
+    this.emit('status', { convId: job.convId, status: 'running', account });
 
     let buf = '';
     let stderr = '';
@@ -60,7 +81,7 @@ class Runner extends EventEmitter {
         if (!line.trim()) continue;
         let ev;
         try { ev = JSON.parse(line); } catch { continue; }
-        this.emit('event', { convId: job.convId, event: ev });
+        this.emit('event', { convId: job.convId, event: ev, account });
       }
     });
     child.stderr.on('data', d => { stderr += d.toString(); });
@@ -68,7 +89,7 @@ class Runner extends EventEmitter {
       if (done) return;
       done = true;
       this.running.delete(job.convId);
-      const status = { convId: job.convId, status: 'idle', code: -1, stderr: err.message };
+      const status = { convId: job.convId, status: 'idle', code: -1, stderr: err.message, account };
       this.emit('status', status);
       this._drain();
     });
@@ -80,9 +101,9 @@ class Runner extends EventEmitter {
       if (buf.trim()) {
         let ev;
         try { ev = JSON.parse(buf); } catch { }
-        if (ev) this.emit('event', { convId: job.convId, event: ev });
+        if (ev) this.emit('event', { convId: job.convId, event: ev, account });
       }
-      const status = { convId: job.convId, status: 'idle', code };
+      const status = { convId: job.convId, status: 'idle', code, account };
       if (code !== 0) status.stderr = stderr;
       this.emit('status', status);
       this._drain();
