@@ -71,6 +71,9 @@ npm start
 
 # Windows
 start.bat
+
+# Windows con túnel Cloudflare (server + cloudflared, requiere config.yml y setx ACCESS_PIN)
+start-jarvis.bat
 ```
 → http://127.0.0.1:3777
 
