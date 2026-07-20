@@ -1,4 +1,4 @@
-# Stark — Claude Chat Manager
+# J.A.R.V.I.S — Claude Chat Manager
 
 PWA local para chatear con Claude Code desde el celular o el browser. Sidebar de conversaciones por proyecto, streaming en tiempo real, voz, adjuntos e imágenes.
 
@@ -81,14 +81,14 @@ start-jarvis.bat
 
 ```bash
 # Crear túnel (una vez)
-cloudflared tunnel create stark
-cloudflared tunnel route dns stark tu-subdominio.tudominio.com
+cloudflared tunnel create jarvis
+cloudflared tunnel route dns jarvis tu-subdominio.tudominio.com
 
 # Archivo ~/.cloudflared/config.yml
 tunnel: <ID>
 credentials-file: ~/.cloudflared/<ID>.json
 ingress:
-  - hostname: stark.tudominio.com
+  - hostname: jarvis.tudominio.com
     service: http://127.0.0.1:3777
   - service: http_status:404
 

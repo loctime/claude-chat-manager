@@ -1,6 +1,6 @@
 {
-  "name": "Stark",
-  "short_name": "Stark",
+  "name": "J.A.R.V.I.S",
+  "short_name": "J.A.R.V.I.S",
   "description": "Claude Code chat manager",
   "start_url": "/",
   "display": "standalone",
