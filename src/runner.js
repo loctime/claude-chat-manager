@@ -1,11 +1,13 @@
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const { EventEmitter } = require('events');
 const os = require('os');
+const { CLAUDE_CMD } = require('./claude-cmd');
 
 const CURRENT_USER = os.userInfo().username;
+const IS_WIN = process.platform === 'win32';
 
 class Runner extends EventEmitter {
-  constructor({ maxConcurrent = 2, spawnFn = spawn, command = 'claude', selfHost, selfPort } = {}) {
+  constructor({ maxConcurrent = 2, spawnFn = spawn, command = CLAUDE_CMD, selfHost, selfPort } = {}) {
     super();
     this.max = maxConcurrent;
     this.spawnFn = spawnFn;
@@ -32,7 +34,16 @@ class Runner extends EventEmitter {
 
   cancel(convId) {
     const child = this.running.get(convId);
-    if (child) { child.kill('SIGTERM'); return true; }
+    if (child) {
+      if (IS_WIN && child.pid) {
+        // En Windows kill() no baja los subprocesos del CLI; taskkill /T mata el árbol
+        try { execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }); }
+        catch { child.kill('SIGTERM'); }
+      } else {
+        child.kill('SIGTERM');
+      }
+      return true;
+    }
     const idx = this.queue.findIndex(j => j.convId === convId);
     if (idx >= 0) {
       const [job] = this.queue.splice(idx, 1);
@@ -60,7 +71,8 @@ class Runner extends EventEmitter {
     if (job.sessionId) args.push('--resume', job.sessionId);
     if (job.model) args.push('--model', job.model);
     const account = job.account || CURRENT_USER;
-    const usesudo = account !== CURRENT_USER;
+    // Multi-cuenta via sudo solo existe en Linux/Mac; en Windows siempre corre el usuario actual
+    const usesudo = !IS_WIN && account !== CURRENT_USER;
     const spawnCmd = usesudo ? 'sudo' : this.command;
     const spawnArgs = usesudo ? ['-u', account, this.command, ...args] : args;
     const homeDir = usesudo ? `/home/${account}` : os.homedir();

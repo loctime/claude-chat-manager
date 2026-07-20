@@ -1,18 +1,18 @@
 @echo off
 :: Stark - Claude Chat Manager (Windows)
-:: Requiere: Node.js, Claude Code CLI, ImageMagick 7 (magick), Groq API key
+:: Requiere: Node.js, Claude Code CLI. Opcional: ImageMagick 7 (magick) + Ghostscript para thumbnails.
+cd /d "%~dp0"
 
-:: Seteá tu Groq API key acá o como variable de entorno del sistema
-:: set GROQ_API_KEY=tu_key_acá
-
-if "%GROQ_API_KEY%"=="" (
-  echo ADVERTENCIA: GROQ_API_KEY no configurada. Transcripcion de voz no disponible.
-  echo Seteala con: set GROQ_API_KEY=tu_key
-  echo.
+if not exist node_modules (
+  echo Instalando dependencias...
+  call npm install
 )
+
+:: GROQ_API_KEY: si no esta como variable de entorno, el server la lee
+:: automaticamente de %USERPROFILE%\.claude\settings.json (clave env.GROQ_API_KEY)
 
 :: Puerto (default 3777)
 if "%PORT%"=="" set PORT=3777
 
 echo Iniciando Stark en http://127.0.0.1:%PORT%
-node src/server.js
+node src\server.js

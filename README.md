@@ -52,6 +52,10 @@ Variable de entorno requerida para transcripción de voz:
 export GROQ_API_KEY=tu_key   # gratis en console.groq.com
 ```
 
+Si no está como variable de entorno, el server la busca automáticamente en `~/.claude/settings.json` bajo `env.GROQ_API_KEY`.
+
+En Windows el binario de Claude se resuelve solo (shim npm o .exe en PATH); se puede forzar con `CLAUDE_CMD=C:\ruta\a\claude.exe`. El modo multi-cuenta (switch entre usuarios de `/home` vía sudo) es solo Linux/Mac — en Windows corre siempre single-account.
+
 Opcional:
 ```bash
 export PORT=3777          # default

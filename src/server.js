@@ -8,6 +8,7 @@ const multer = require('multer');
 const scanner = require('./scanner');
 const meta = require('./meta');
 const { Runner } = require('./runner');
+const { CLAUDE_CMD } = require('./claude-cmd');
 
 const IS_WIN = process.platform === 'win32';
 // En Windows ImageMagick 7 se llama 'magick'; en Linux/Mac es 'convert'
@@ -21,16 +22,26 @@ function magickArgs(args) {
 const HOST = process.env.HOST || '127.0.0.1';
 const PORT = Number(process.env.PORT || 3777);
 const ACCESS_PIN = process.env.ACCESS_PIN || '';
-const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 
 const HOME_DIR = process.env.HOME || process.env.USERPROFILE || os.homedir();
+
+// GROQ_API_KEY: primero env var, si no está la buscamos en ~/.claude/settings.json (clave env)
+function loadGroqKey() {
+  if (process.env.GROQ_API_KEY) return process.env.GROQ_API_KEY;
+  try {
+    const s = JSON.parse(fs.readFileSync(path.join(HOME_DIR, '.claude', 'settings.json'), 'utf8'));
+    return (s.env && s.env.GROQ_API_KEY) || '';
+  } catch { return ''; }
+}
+const GROQ_API_KEY = loadGroqKey();
 
 // ── Multi-cuenta ──
 // SINGLE_ACCOUNT=1 fuerza modo single-user (solo el usuario que corre el proceso).
 // Sin esa var el server intenta detectar otras cuentas en /home y ofrecer switch.
 function detectAccounts() {
   const current = os.userInfo().username;
-  if (process.env.SINGLE_ACCOUNT === '1') return [current];
+  // En Windows no hay /home ni sudo -u: siempre single-account
+  if (process.env.SINGLE_ACCOUNT === '1' || IS_WIN) return [current];
   const accounts = [];
   try {
     const homes = fs.readdirSync('/home');
@@ -229,7 +240,7 @@ function _claudeSummarize(excerpt) {
   return new Promise((resolve, reject) => {
     const prompt = `${SUMMARIZE_SYSTEM_PROMPT}\n\n--- CONVERSACIÓN A RESUMIR ---\n\n${excerpt}`;
     const args = ['-p', prompt, '--model', 'claude-sonnet-4-6', '--dangerously-skip-permissions'];
-    const child = spawn('claude', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(CLAUDE_CMD, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => {
@@ -318,12 +329,12 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
       '-strip',
       outPath,
     ]), (err) => {
-      fs.unlink(req.file.path, () => {});
       if (err) {
-        // Fallback: usar original renombrado
+        // Fallback: usar original renombrado (ej. ImageMagick no instalado)
         fs.renameSync(req.file.path, finalPath);
         return finish(finalPath);
       }
+      fs.unlink(req.file.path, () => {});
       finish(outPath);
     });
   } else {
