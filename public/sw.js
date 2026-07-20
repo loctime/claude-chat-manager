@@ -1,4 +1,4 @@
-const CACHE = 'jarvis-v7';
+const CACHE = 'jarvis-v8';
 const STATIC = ['/icon-192.png', '/icon-512.png', '/manifest.json'];
 
 self.addEventListener('install', e => {
@@ -16,9 +16,19 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
-  // Todo lo que no sean iconos/manifest: siempre red, nunca cache
   if (!STATIC.some(s => url.pathname === s)) return;
-  // Iconos/manifest: cache-first
+  // Manifest: network-first (si cambia el branding/nombre, que se vea al toque)
+  if (url.pathname === '/manifest.json') {
+    e.respondWith(
+      fetch(e.request).then(r => {
+        const copy = r.clone();
+        caches.open(CACHE).then(c => c.put(e.request, copy));
+        return r;
+      }).catch(() => caches.match(e.request))
+    );
+    return;
+  }
+  // Iconos: cache-first
   e.respondWith(
     caches.match(e.request).then(c => c || fetch(e.request))
   );

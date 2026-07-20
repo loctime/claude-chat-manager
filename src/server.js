@@ -122,7 +122,7 @@ app.post('/api/accounts/switch', (req, res) => {
 // index.html y archivos JS/CSS nunca cacheados por el browser
 app.use(express.static(path.join(__dirname, '..', 'public'), {
   setHeaders(res, filePath) {
-    if (filePath.endsWith('.html') || filePath.endsWith('.js') || filePath.endsWith('.css')) {
+    if (filePath.endsWith('.html') || filePath.endsWith('.js') || filePath.endsWith('.css') || filePath.endsWith('manifest.json')) {
       res.setHeader('Cache-Control', 'no-store');
     }
   },
