@@ -843,8 +843,12 @@ function openStream(convId) {
     } else if (payload.kind === 'status') {
       if (payload.status === 'idle') {
         setBusy(false);
-        if (payload.code !== 0 && payload.stderr) addMsg('error', 'Error: ' + payload.stderr);
-        loadMessages(convId);
+        // Recargar ANTES de mostrar el error: loadMessages() reemplaza todo
+        // messagesEl.innerHTML, así que si el addMsg('error', ...) va primero
+        // queda tapado al instante por el reload.
+        loadMessages(convId).then(() => {
+          if (payload.code !== 0 && payload.stderr) addMsg('error', 'Error: ' + payload.stderr);
+        });
         loadTree();
         refreshCostBadge(convId);
       } else {
@@ -855,6 +859,19 @@ function openStream(convId) {
       if (payload.name) $('conv-title').textContent = payload.name;
       loadTree();
     }
+  };
+  eventSource.onerror = () => {
+    if (convId !== currentConv) return;
+    // El tunnel de Cloudflare puede cortar el stream SSE en turnos largos;
+    // EventSource reconecta solo pero cualquier evento emitido durante el
+    // corte se pierde (el servidor no los reenvía). Al reconectar, refrescar
+    // por las dudas para no dejar la conversación "colgada" con el mensaje
+    // enviado sin respuesta visible.
+    setTimeout(() => {
+      if (convId !== currentConv) return;
+      loadMessages(convId);
+      loadTree();
+    }, 1500);
   };
 }
 

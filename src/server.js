@@ -727,7 +727,12 @@ app.get('/api/conversations/:id/stream', (req, res) => {
   res.write('\n');
   if (!sseClients.has(convId)) sseClients.set(convId, new Set());
   sseClients.get(convId).add(res);
+  // Cloudflare Tunnel corta conexiones SSE inactivas (~100s de idle).
+  // Sin este ping, un turno largo de Claude sin output deja el stream mudo
+  // y el edge lo mata a mitad de camino, perdiendo el evento 'idle' final.
+  const heartbeat = setInterval(() => res.write(':heartbeat\n\n'), 20000);
   req.on('close', () => {
+    clearInterval(heartbeat);
     const set = sseClients.get(convId);
     if (!set) return;
     set.delete(res);
