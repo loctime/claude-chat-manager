@@ -44,6 +44,50 @@ test('pasa --model cuando el job lo tiene, lo omite si no', () => {
   assert.ok(!spawned[1].args.includes('--model'));
 });
 
+test('agrega --append-system-prompt con la instrucción del modo (default "directo" sin responseMode)', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  r.send({ convId: 'c1', sessionId: 's1', cwd: '/t', text: 'a' });
+  const i = spawned[0].args.indexOf('--append-system-prompt');
+  assert.ok(i >= 0);
+  assert.match(spawned[0].args[i + 1], /Modo de respuesta: directo/);
+});
+
+test('modo "detallado" no agrega --append-system-prompt (sin selfPort)', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  r.send({ convId: 'c1', sessionId: 's1', cwd: '/t', text: 'a', responseMode: 'detallado' });
+  assert.ok(!spawned[0].args.includes('--append-system-prompt'));
+});
+
+test('modo "cavernicola" agrega su propia instrucción', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  r.send({ convId: 'c1', sessionId: 's1', cwd: '/t', text: 'a', responseMode: 'cavernicola' });
+  const i = spawned[0].args.indexOf('--append-system-prompt');
+  assert.ok(i >= 0);
+  assert.match(spawned[0].args[i + 1], /Modo de respuesta: cavernícola/);
+});
+
+test('con selfPort configurado, concatena aviso de infraestructura + instrucción del modo en un solo --append-system-prompt', () => {
+  const spawned = [];
+  const r = new Runner({
+    maxConcurrent: 2,
+    selfPort: 3777,
+    spawnFn: (cmd, args, opts) => {
+      const child = fakeChild();
+      spawned.push({ cmd, args, opts, child });
+      return child;
+    },
+  });
+  r.send({ convId: 'c1', sessionId: 's1', cwd: '/t', text: 'a', responseMode: 'cavernicola' });
+  const occurrences = spawned[0].args.filter(a => a === '--append-system-prompt').length;
+  assert.equal(occurrences, 1);
+  const i = spawned[0].args.indexOf('--append-system-prompt');
+  assert.match(spawned[0].args[i + 1], /AVISO INFRAESTRUCTURA/);
+  assert.match(spawned[0].args[i + 1], /Modo de respuesta: cavernícola/);
+});
+
 test('semáforo de 2: el tercero queda en cola y arranca al liberarse un slot', () => {
   const spawned = [];
   const r = makeRunner(spawned);
