@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="J.A.R.V.I.S">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=23">
+  <link rel="stylesheet" href="style.css?v=24">
 </head>
 <body>
   <div id="app">
@@ -56,7 +56,12 @@
           <option value="opus">Opus</option>
           <option value="haiku">Haiku</option>
         </select>
-        <span id="cost-badge" title="Costo estimado" hidden></span>
+        <select id="response-mode-select" title="Modo de respuesta" aria-label="Modo de respuesta">
+          <option value="detallado">Detallado</option>
+          <option value="directo">Directo</option>
+          <option value="cavernicola">Cavernícola</option>
+        </select>
+        <span id="cost-badge" title="Costo estimado — tocar para ver el detalle" hidden></span>
       </header>
       <section id="messages">
         <div id="empty-state">
@@ -182,6 +187,6 @@
     <button id="ios-tip-close" aria-label="Cerrar">✕</button>
   </div>
 
-  <script src="app.js?v=23"></script>
+  <script src="app.js?v=24"></script>
 </body>
 </html>

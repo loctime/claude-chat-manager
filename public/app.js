@@ -311,7 +311,7 @@ function convElement(c) {
   div.querySelector('.conv-name-text').textContent = c.name;
   div.querySelector('.conv-date').textContent = (c.lastActivity || '').slice(0, 16).replace('T', ' ');
   div._conv = c;
-  div.onclick = () => selectConv(c.convId, c.name, c.model, c.lastModel, c.projectDir);
+  div.onclick = () => selectConv(c.convId, c.name, c.model, c.lastModel, c.projectDir, c.responseMode);
   attachContextMenu(div, c);
   return div;
 }
@@ -908,7 +908,9 @@ async function refreshCostBadge(convId) {
     badge.hidden = false;
     badge.dataset.tone = ctxTone(pct);
     const pctLabel = fmtCtxPct(pct);
-    badge.textContent = (pctLabel ? `ctx ${pctLabel} | ` : '') + `${fmtTokens(totalTokens)} tok | $${cost.toFixed(cost < 0.01 ? 4 : 2)}`;
+    // Compacto: solo el % (o los tokens si todavía no hay % calculado) — el
+    // detalle completo se ve al tocar el badge, no hace falta hover en mobile.
+    badge.textContent = pctLabel || fmtTokens(totalTokens);
     badge.title = `contexto: ${ctx.toLocaleString()} / ${win.toLocaleString()} tokens (${(pct * 100).toFixed(1)}%)\n` +
                   `in: ${t.input.toLocaleString()}  out: ${t.output.toLocaleString()}\n` +
                   `cache write: ${t.cacheCreate.toLocaleString()}  cache read: ${t.cacheRead.toLocaleString()}\n` +
@@ -917,15 +919,17 @@ async function refreshCostBadge(convId) {
     badge.hidden = true;
   }
 }
+$('cost-badge').onclick = () => toast($('cost-badge').title, 'info', 5000);
 
 // ── Select conversation ──
-async function selectConv(convId, name, model, lastModel, projectDir) {
+async function selectConv(convId, name, model, lastModel, projectDir, responseMode) {
   if (currentConv) drafts.set(currentConv, $('input').value);
   currentConv = convId;
   $('input').value = drafts.get(convId) || '';
   autoResize($('input'));
   $('conv-title').textContent = name;
   $('model-select').value = model || 'sonnet';
+  $('response-mode-select').value = responseMode || 'directo';
   const folderEl = $('conv-folder');
   const dirName = (projectDir || '').split(/[\\/]/).filter(Boolean).pop();
   folderEl.textContent = dirName || '';
@@ -1240,6 +1244,18 @@ $('model-select').onchange = async () => {
   } catch (err) { addMsg('error', 'No se pudo cambiar el modelo: ' + err.message); }
 };
 
+// ── Response mode change ──
+$('response-mode-select').onchange = async () => {
+  if (!currentConv) return;
+  try {
+    await api(`/conversations/${currentConv}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(withAccountBody({ responseMode: $('response-mode-select').value })),
+    });
+  } catch (err) { addMsg('error', 'No se pudo cambiar el modo de respuesta: ' + err.message); }
+};
+
 // ── Rename ──
 $('conv-title').ondblclick = () => {
   if (!currentConv) return;
@@ -1300,7 +1316,7 @@ $('new-form').onsubmit = async e => {
     $('vps-project').value = '';
     $('vps-project-custom').value = '';
     $('new-model').value = '';
-    await selectConv(convId, text ? text.slice(0, 60) : 'Nueva conversación', model, null, resolvedDir);
+    await selectConv(convId, text ? text.slice(0, 60) : 'Nueva conversación', model, null, resolvedDir, undefined);
     if (text) {
       addMsg('user', text);
       setBusy(true);
@@ -1371,7 +1387,7 @@ async function runSearch(q) {
 
 async function openSearchResult(r) {
   $('search-dialog').close();
-  await selectConv(r.convId, r.displayName || r.name, r.model, r.lastModel, r.cwd);
+  await selectConv(r.convId, r.displayName || r.name, r.model, r.lastModel, r.cwd, r.responseMode);
   // Scroll al match — buscamos por índice de mensaje
   requestAnimationFrame(() => {
     const nodes = messagesEl.querySelectorAll('.msg, details.tool');
@@ -1418,7 +1434,7 @@ document.addEventListener('keydown', e => {
   e.preventDefault();
   const target = top2[0]._conv.convId === currentConv ? top2[1] : top2[0];
   const c = target._conv;
-  selectConv(c.convId, c.name, c.model, c.lastModel, c.projectDir);
+  selectConv(c.convId, c.name, c.model, c.lastModel, c.projectDir, c.responseMode);
 });
 
 async function safeLoadTree() {

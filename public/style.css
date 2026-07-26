@@ -221,6 +221,12 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
   max-width: 110px; overflow: hidden; text-overflow: ellipsis;
 }
 
+#response-mode-select {
+  background: var(--input-bg); color: var(--text2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 6px; font-size: 12px; cursor: pointer;
+  max-width: 110px; overflow: hidden; text-overflow: ellipsis;
+}
+
 #conv-folder {
   flex: 0 0 auto;
   background: var(--input-bg); color: var(--text2); border: 1px solid var(--border);
@@ -855,7 +861,7 @@ body.hide-tools details.tool { display: none !important; }
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   margin-left: 6px;
-  cursor: help;
+  cursor: pointer;
 }
 #cost-badge[data-tone="warm"] { color: #d9a441; background: rgba(217,164,65,.14); }
 #cost-badge[data-tone="hot"]  { color: #e05a5a; background: rgba(224,90,90,.16); }
@@ -900,6 +906,7 @@ body.hide-tools details.tool { display: none !important; }
   font-size: 14px;
   max-width: 380px;
   word-wrap: break-word;
+  white-space: pre-line;
   pointer-events: auto;
   animation: toast-in .18s ease-out;
 }
