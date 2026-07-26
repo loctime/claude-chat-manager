@@ -49,7 +49,7 @@ function _computeSessionInfo(filePath) {
   const lastAssistant = [...msgs].reverse().find(e => e.type === 'assistant' && e.message && e.message.model);
   return {
     sessionId: path.basename(filePath, '.jsonl'),
-    cwd: (entries.find(e => e.cwd) || {}).cwd || null,
+    cwd: ([...entries].reverse().find(e => e.cwd) || {}).cwd || null,
     snippet,
     messageCount: msgs.length,
     lastActivity,
@@ -129,6 +129,20 @@ function listSessions(projectsDir = PROJECTS_DIR) {
     }
   }
   return sessions;
+}
+
+// cwd real para lanzar/resumir una conversación. `conv.projectDir` es metadata fijada
+// una sola vez al crearla — si Claude entró a un git worktree (tool EnterWorktree) a
+// mitad de sesión, Claude Code CLI reubica el archivo de la sesión a otra carpeta de
+// proyecto y projectDir queda stale. Resolvemos el cwd real leyendo dónde vive
+// efectivamente la sesión ahora mismo; si no hay sesión todavía, caemos a projectDir.
+function resolveCwd(conv, projectsDir = PROJECTS_DIR) {
+  if (conv && conv.currentSessionId) {
+    const file = findSessionFile(conv.currentSessionId, projectsDir);
+    const info = file && sessionInfo(file);
+    if (info && info.cwd) return info.cwd;
+  }
+  return (conv && conv.projectDir) || null;
 }
 
 function findSessionFile(sessionId, projectsDir = PROJECTS_DIR) {
@@ -280,7 +294,7 @@ function toChatMessages(entries) {
 }
 
 module.exports = {
-  parseJsonl, sessionInfo, listSessions, findSessionFile, toChatMessages, contentToText,
+  parseJsonl, sessionInfo, listSessions, findSessionFile, resolveCwd, toChatMessages, contentToText,
   getMessagesIncremental, sumUsage, searchSessions, PROJECTS_DIR,
   _clearSessionInfoCache, _clearTailCache,
 };

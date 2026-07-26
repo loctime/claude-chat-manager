@@ -10,14 +10,14 @@
   <meta name="apple-mobile-web-app-title" content="J.A.R.V.I.S">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=22">
+  <link rel="stylesheet" href="style.css?v=23">
 </head>
 <body>
   <div id="app">
     <!-- Panel lista -->
     <div id="panel-list">
       <header id="list-header">
-        <h1>J.A.R.V.I.S</h1>
+        <h1><span id="global-busy-dot" class="ping-dot" title="Procesando…"><span class="ring"></span><span class="core"></span></span>J.A.R.V.I.S</h1>
         <select id="account-select" title="Cuenta activa" aria-label="Cuenta activa"></select>
         <a id="account-switch" title="Ir a la otra cuenta" hidden></a>
         <button id="search-btn" title="Buscar (Ctrl+K)" aria-label="Buscar">
@@ -50,30 +50,14 @@
           <span id="conv-title">Elegí una conversación</span>
           <span id="conv-status"></span>
         </div>
+        <span id="conv-folder" title="" hidden></span>
+        <select id="model-select" title="Modelo" aria-label="Modelo">
+          <option value="sonnet">Sonnet</option>
+          <option value="opus">Opus</option>
+          <option value="haiku">Haiku</option>
+        </select>
         <span id="cost-badge" title="Costo estimado" hidden></span>
-        <button id="menu-btn" title="Opciones" aria-label="Opciones" hidden>
-          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
-        </button>
       </header>
-      <div id="chat-menu" hidden>
-        <label class="menu-row">
-          <span>Modelo</span>
-          <select id="model-select">
-            <option value="">auto</option>
-            <option value="opus">Opus</option>
-            <option value="sonnet">Sonnet</option>
-            <option value="haiku">Haiku</option>
-          </select>
-        </label>
-        <button type="button" id="menu-retry" data-action="retry" disabled>
-          <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
-          Reintentar último mensaje
-        </button>
-        <button type="button" id="menu-export" data-action="export">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
-          Exportar a Markdown
-        </button>
-      </div>
       <section id="messages">
         <div id="empty-state">
           <svg viewBox="0 0 24 24" fill="currentColor" width="48" height="48" opacity=".2"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
@@ -82,7 +66,7 @@
       </section>
       <div id="composer-attachments"></div>
       <form id="composer">
-        <input id="file-input" type="file" hidden accept="*/*" multiple>
+        <input id="file-input" type="file" hidden accept="image/*,text/*,application/*" multiple>
         <button id="attach-btn" type="button" title="Adjuntar archivo" aria-label="Adjuntar archivo" disabled>
           <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5a2.5 2.5 0 0 1 5 0v10.5c0 .83-.67 1.5-1.5 1.5s-1.5-.67-1.5-1.5V6H9v9.5a2.5 2.5 0 0 0 5 0V5c0-2.21-1.79-4-4-4S6 2.79 6 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>
         </button>
@@ -119,6 +103,20 @@
       <label>Otra carpeta
         <input id="project-custom" type="text" placeholder="/home/loctime/Proyectos/…">
       </label>
+      <label>Proyecto en VPS
+        <select id="vps-project">
+          <option value="">— ninguno —</option>
+          <option value="ventamat">ventamat</option>
+          <option value="ventamat-panel">ventamat-panel</option>
+          <option value="controlapps-clientes">controlapps-clientes</option>
+          <option value="coopermat-api">coopermat-api</option>
+          <option value="controlbun">controlbun</option>
+          <option value="cazador">cazador</option>
+        </select>
+      </label>
+      <label>Otro proyecto VPS
+        <input id="vps-project-custom" type="text" placeholder="nombre-del-proyecto">
+      </label>
       <label>Modelo
         <select id="new-model">
           <option value="">Default</option>
@@ -126,9 +124,6 @@
           <option value="sonnet">Sonnet</option>
           <option value="haiku">Haiku</option>
         </select>
-      </label>
-      <label>Primer mensaje
-        <textarea id="first-message" rows="3" required></textarea>
       </label>
       <menu>
         <button value="cancel">Cancelar</button>
@@ -187,6 +182,6 @@
     <button id="ios-tip-close" aria-label="Cerrar">✕</button>
   </div>
 
-  <script src="app.js?v=21"></script>
+  <script src="app.js?v=23"></script>
 </body>
 </html>

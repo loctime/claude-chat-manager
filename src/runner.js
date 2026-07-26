@@ -82,7 +82,7 @@ class Runner extends EventEmitter {
     const spawnCmd = usesudo ? 'sudo' : this.command;
     const spawnArgs = usesudo ? ['-u', account, this.command, ...args] : args;
     const homeDir = usesudo ? `/home/${account}` : os.homedir();
-    const child = this.spawnFn(spawnCmd, spawnArgs, { cwd: job.cwd, env: { ...process.env, HOME: homeDir } });
+    const child = this.spawnFn(spawnCmd, spawnArgs, { cwd: job.cwd, env: { ...process.env, HOME: homeDir }, stdio: ['ignore', 'pipe', 'pipe'] });
     this.running.set(job.convId, child);
     this.emit('status', { convId: job.convId, status: 'running', account });
 

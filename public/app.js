@@ -6,7 +6,6 @@ let treeHasMore = false;
 let treeTotal = 0;
 let archivedTotal = 0;
 let showArchived = false;
-let lastUserText = '';
 let activeAccount = null;
 const drafts = new Map();
 
@@ -137,7 +136,6 @@ function closeChat() {
     return;
   }
   $('panel-chat').classList.remove('open');
-  closeChatMenu();
 }
 $('back-btn').onclick = closeChat;
 
@@ -153,7 +151,6 @@ window.addEventListener('popstate', (e) => {
   // Si estábamos en chat: cerrar y re-armar guarda
   if ($('panel-chat').classList.contains('open')) {
     $('panel-chat').classList.remove('open');
-    closeChatMenu();
     history.pushState({ view: 'list-guard' }, '');
     return;
   }
@@ -282,7 +279,9 @@ $('refresh-btn').onclick = refreshAll;
 
 // ── Tree ──
 function badge(status) {
-  return status === 'running' ? '⚡' : status === 'queued' ? '⏳' : '';
+  if (status === 'running') return '<span class="ping-dot active" title="Procesando…"><span class="ring"></span><span class="core"></span></span>';
+  if (status === 'queued') return '<span class="conv-badge" title="En cola">⏳</span>';
+  return '';
 }
 
 function avatarChar(name) {
@@ -307,12 +306,12 @@ function convElement(c) {
       <div class="name">${pin}${arch}${ai}<span class="conv-name-text"></span></div>
       <div class="sub"><span class="conv-date"></span>${ctxHtml}</div>
     </div>
-    ${b ? `<span class="conv-badge">${b}</span>` : ''}
+    ${b}
   `;
   div.querySelector('.conv-name-text').textContent = c.name;
   div.querySelector('.conv-date').textContent = (c.lastActivity || '').slice(0, 16).replace('T', ' ');
   div._conv = c;
-  div.onclick = () => selectConv(c.convId, c.name, c.model, c.lastModel);
+  div.onclick = () => selectConv(c.convId, c.name, c.model, c.lastModel, c.projectDir);
   attachContextMenu(div, c);
   return div;
 }
@@ -366,6 +365,21 @@ async function loadTree() {
     t.onclick = () => { showArchived = !showArchived; treeLimit = 100; safeLoadTree(); };
     nav.appendChild(t);
   }
+
+  updateGlobalBusyIndicator();
+}
+
+// ── Indicador global de "procesando" (icono ping + título + badge de la app instalada) ──
+let globalBusy = false;
+function updateGlobalBusyIndicator() {
+  const anyBusy = tree.some(proj => proj.conversations.some(c => c.status && c.status !== 'idle'));
+  $('global-busy-dot').classList.toggle('active', anyBusy);
+  document.title = anyBusy ? '● J.A.R.V.I.S' : 'J.A.R.V.I.S';
+  if (anyBusy === globalBusy) return;
+  globalBusy = anyBusy;
+  if (!('setAppBadge' in navigator)) return;
+  if (anyBusy) navigator.setAppBadge().catch(() => {});
+  else navigator.clearAppBadge().catch(() => {});
 }
 
 // ── Menú contextual (click derecho + long-press mobile) ──
@@ -780,14 +794,6 @@ function addCompactDivider() {
 async function loadMessages(convId) {
   messagesEl.innerHTML = '';
   const msgs = await api(withAccount(`/conversations/${convId}/messages`));
-  lastUserText = '';
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    if (msgs[i].role === 'user' && (msgs[i].text || '').trim() && !msgs[i].compacted) {
-      lastUserText = msgs[i].text;
-      break;
-    }
-  }
-  updateRetryBtn();
   if (msgs.length === 0) {
     messagesEl.innerHTML = '<div id="empty-state"><p>Sin mensajes aún</p></div>';
     return;
@@ -806,10 +812,6 @@ async function loadMessages(convId) {
     else addMsg(m.role, m.text, opts);
   }
   if (inCompacted && !dividerPlaced) addCompactDivider();
-}
-
-function updateRetryBtn() {
-  $('menu-retry').disabled = !currentConv || !lastUserText;
 }
 
 // ── Status ──
@@ -906,7 +908,7 @@ async function refreshCostBadge(convId) {
     badge.hidden = false;
     badge.dataset.tone = ctxTone(pct);
     const pctLabel = fmtCtxPct(pct);
-    badge.textContent = (pctLabel ? `ctx ${pctLabel} · ` : '') + `${fmtTokens(totalTokens)} · $${cost.toFixed(cost < 0.01 ? 4 : 2)}`;
+    badge.textContent = (pctLabel ? `ctx ${pctLabel} | ` : '') + `${fmtTokens(totalTokens)} tok | $${cost.toFixed(cost < 0.01 ? 4 : 2)}`;
     badge.title = `contexto: ${ctx.toLocaleString()} / ${win.toLocaleString()} tokens (${(pct * 100).toFixed(1)}%)\n` +
                   `in: ${t.input.toLocaleString()}  out: ${t.output.toLocaleString()}\n` +
                   `cache write: ${t.cacheCreate.toLocaleString()}  cache read: ${t.cacheRead.toLocaleString()}\n` +
@@ -917,15 +919,18 @@ async function refreshCostBadge(convId) {
 }
 
 // ── Select conversation ──
-async function selectConv(convId, name, model, lastModel) {
+async function selectConv(convId, name, model, lastModel, projectDir) {
   if (currentConv) drafts.set(currentConv, $('input').value);
   currentConv = convId;
   $('input').value = drafts.get(convId) || '';
   autoResize($('input'));
   $('conv-title').textContent = name;
-  $('model-select').options[0].textContent = lastModel || 'auto';
-  $('model-select').value = model || '';
-  $('menu-btn').hidden = false;
+  $('model-select').value = model || 'sonnet';
+  const folderEl = $('conv-folder');
+  const dirName = (projectDir || '').split(/[\\/]/).filter(Boolean).pop();
+  folderEl.textContent = dirName || '';
+  folderEl.title = projectDir || '';
+  folderEl.hidden = !dirName;
   setBusy(false);
   clearAttachments();
   openChat();
@@ -941,31 +946,6 @@ async function selectConv(convId, name, model, lastModel) {
     input.setSelectionRange(len, len);
   }
 }
-
-// ── Menú "..." del chat ──
-function closeChatMenu() { $('chat-menu').hidden = true; }
-function toggleChatMenu() {
-  const m = $('chat-menu');
-  m.hidden = !m.hidden;
-}
-$('menu-btn').onclick = e => { e.stopPropagation(); toggleChatMenu(); };
-$('chat-menu').addEventListener('click', e => e.stopPropagation());
-document.addEventListener('click', e => {
-  if (!$('chat-menu').hidden && !$('chat-menu').contains(e.target) && e.target !== $('menu-btn')) {
-    closeChatMenu();
-  }
-});
-$('menu-export').onclick = () => {
-  closeChatMenu();
-  if (!currentConv) return;
-  const url = `/api${withAccount(`/conversations/${currentConv}/export?format=md`)}`;
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = '';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-};
 
 // ── Textarea auto-resize ──
 function autoResize(el) {
@@ -1235,8 +1215,6 @@ $('composer').onsubmit = async e => {
   autoResize($('input'));
   drafts.delete(currentConv);
   clearAttachments();
-  lastUserText = text;
-  updateRetryBtn();
   setBusy(true);
   try {
     await api(`/conversations/${currentConv}/message`, {
@@ -1247,47 +1225,6 @@ $('composer').onsubmit = async e => {
   } catch (err) {
     addMsg('error', err.message);
     setBusy(false);
-  }
-};
-
-// ── Retry último mensaje ──
-$('menu-retry').onclick = async () => {
-  closeChatMenu();
-  if (!currentConv || !lastUserText) return;
-  const btn = $('menu-retry');
-  btn.disabled = true;
-  try {
-    // Si hay una ejecución en curso, cancelar primero
-    if (!$('cancel-btn').hidden) {
-      try { await api(`/conversations/${currentConv}/message`, { method: 'DELETE' }); } catch {}
-    }
-    // Reintentar POST hasta que el runner esté libre (max 5s)
-    const deadline = Date.now() + 5000;
-    const rawUserText = lastUserText.replace(/^\[Archivo adjunto:[^\]]+\]\n*/gm, '').trim();
-    addUserMsgWithFiles(rawUserText, []);
-    setBusy(true);
-    while (Date.now() < deadline) {
-      try {
-        await api(`/conversations/${currentConv}/message`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(withAccountBody({ text: lastUserText })),
-        });
-        return;
-      } catch (err) {
-        if (/procesando/i.test(err.message)) {
-          await new Promise(r => setTimeout(r, 200));
-          continue;
-        }
-        throw err;
-      }
-    }
-    throw new Error('timeout esperando que termine la ejecución anterior');
-  } catch (err) {
-    addMsg('error', 'No se pudo reintentar: ' + err.message);
-    setBusy(false);
-  } finally {
-    updateRetryBtn();
   }
 };
 
@@ -1327,6 +1264,10 @@ $('conv-title').ondblclick = () => {
 $('new-conv').onclick = () => {
   const sel = $('project-select');
   sel.innerHTML = '';
+  const home = document.createElement('option');
+  home.value = '';
+  home.textContent = '— seguir en casa (sin mensaje inicial) —';
+  sel.appendChild(home);
   for (const proj of tree) {
     const opt = document.createElement('option');
     opt.value = proj.projectDir;
@@ -1339,25 +1280,31 @@ $('new-conv').onclick = () => {
 $('new-form').onsubmit = async e => {
   if (e.submitter && e.submitter.value === 'cancel') return;
   e.preventDefault();
-  const projectDir = $('project-custom').value.trim() || $('project-select').value;
-  const text = $('first-message').value.trim();
+  const vpsProject = $('vps-project-custom').value.trim() || $('vps-project').value;
+  const localDir = $('project-custom').value.trim() || $('project-select').value;
+  // Sin VPS ni carpeta local elegida: se queda en casa, sin mensaje inicial
+  // (ya arranca ahí, no hace falta pedirle que "vaya" a ningún lado).
+  const projectDir = vpsProject ? `VPS: ${vpsProject}` : (localDir || undefined);
+  const text = vpsProject ? `Vamos a trabajar en ${vpsProject} en el VPS.` : (localDir ? `Vamos a trabajar en ${localDir}.` : '');
   const model = $('new-model').value;
-  if (!projectDir || !text) return;
   const submitBtn = e.submitter;
   if (submitBtn) submitBtn.disabled = true;
   try {
-    const { convId } = await api('/conversations', {
+    const { convId, projectDir: resolvedDir } = await api('/conversations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(withAccountBody({ projectDir, text, model: model || undefined })),
     });
     $('new-dialog').close();
-    $('first-message').value = '';
     $('project-custom').value = '';
+    $('vps-project').value = '';
+    $('vps-project-custom').value = '';
     $('new-model').value = '';
-    await selectConv(convId, text.slice(0, 60), model);
-    addMsg('user', text);
-    setBusy(true);
+    await selectConv(convId, text ? text.slice(0, 60) : 'Nueva conversación', model, null, resolvedDir);
+    if (text) {
+      addMsg('user', text);
+      setBusy(true);
+    }
   } catch (err) {
     toast('No se pudo crear la conversación: ' + err.message);
   } finally {
@@ -1424,7 +1371,7 @@ async function runSearch(q) {
 
 async function openSearchResult(r) {
   $('search-dialog').close();
-  await selectConv(r.convId, r.displayName || r.name, null, null);
+  await selectConv(r.convId, r.displayName || r.name, r.model, r.lastModel, r.cwd);
   // Scroll al match — buscamos por índice de mensaje
   requestAnimationFrame(() => {
     const nodes = messagesEl.querySelectorAll('.msg, details.tool');
@@ -1471,7 +1418,7 @@ document.addEventListener('keydown', e => {
   e.preventDefault();
   const target = top2[0]._conv.convId === currentConv ? top2[1] : top2[0];
   const c = target._conv;
-  selectConv(c.convId, c.name, c.model, c.lastModel);
+  selectConv(c.convId, c.name, c.model, c.lastModel, c.projectDir);
 });
 
 async function safeLoadTree() {
@@ -1500,12 +1447,27 @@ function loadSettings() {
 function saveSettings() {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
 }
+function contrastTextColor(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.6 ? '#111b21' : '#e9edef';
+}
+
 function applySettings() {
   document.body.classList.toggle('hide-tools', !settings.showTools);
   const root = document.documentElement;
   const vars = { '--accent': settings.colorAccent, '--bubble-me': settings.colorMe, '--bubble-ai': settings.colorAi };
   for (const [k, v] of Object.entries(vars)) {
     if (v) root.style.setProperty(k, v);
+    else root.style.removeProperty(k);
+  }
+  const textVars = { '--bubble-me-text': settings.colorMe, '--bubble-ai-text': settings.colorAi };
+  for (const [k, v] of Object.entries(textVars)) {
+    const textColor = contrastTextColor(v);
+    if (textColor) root.style.setProperty(k, textColor);
     else root.style.removeProperty(k);
   }
 }
