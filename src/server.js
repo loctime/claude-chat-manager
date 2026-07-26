@@ -513,10 +513,14 @@ app.get('/api/search', (req, res) => {
   }
   const enriched = results.map(r => {
     const ref = bySessionId.get(r.sessionId);
+    const convId = ref ? ref.convId : r.sessionId;
+    const conv = data.conversations[convId];
     return {
       ...r,
-      convId: ref ? ref.convId : r.sessionId,
+      convId,
       displayName: (ref && ref.name) || r.name,
+      model: conv ? conv.model : null,
+      lastModel: conv ? conv.lastModel : r.lastModel,
     };
   });
   res.json({ results: enriched });
@@ -561,67 +565,6 @@ app.get('/api/conversations/:id/messages', (req, res) => {
     }
   }
   res.json(out);
-});
-
-function slugify(s) {
-  return (s || 'conversacion')
-    .normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-    .slice(0, 60) || 'conversacion';
-}
-
-function messagesToMarkdown({ conv, info, messages }) {
-  const lines = [];
-  const name = conv.name || (info && info.snippet) || '(sin título)';
-  lines.push(`# ${name}`, '');
-  lines.push(`- Proyecto: \`${conv.projectDir || (info && info.cwd) || ''}\``);
-  if (info && info.lastActivity) lines.push(`- Última actividad: ${info.lastActivity}`);
-  if (info && info.lastModel) lines.push(`- Modelo: ${info.lastModel}`);
-  if (conv.currentSessionId) lines.push(`- Session ID: \`${conv.currentSessionId}\``);
-  lines.push('', '---', '');
-
-  const MAX_TOOL = 4000;
-  for (const m of messages) {
-    if (m.role === 'user') {
-      lines.push('## Usuario', '', m.text, '');
-    } else if (m.role === 'assistant') {
-      lines.push('## Asistente', '', m.text, '');
-    } else if (m.role === 'tool') {
-      lines.push(`### 🔧 ${m.name}`, '');
-      const inp = typeof m.input === 'string' ? m.input : JSON.stringify(m.input, null, 2);
-      lines.push('**Input:**', '', '```json', inp, '```', '');
-      if (m.output) {
-        const out = String(m.output);
-        const trimmed = out.length > MAX_TOOL ? out.slice(0, MAX_TOOL) + `\n... [truncado ${out.length - MAX_TOOL} caracteres]` : out;
-        lines.push('**Output:**', '', '```', trimmed, '```', '');
-      }
-    }
-  }
-  return lines.join('\n');
-}
-
-app.get('/api/conversations/:id/export', (req, res) => {
-  const acc = req.query.account || activeAccount;
-  const projDir = accountProjectsDir(acc);
-  const { conv } = resolveConv(req.params.id, acc);
-  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
-  const format = (req.query.format || 'md').toLowerCase();
-  if (format !== 'md') return res.status(400).json({ error: 'formato no soportado' });
-  const messages = conv.currentSessionId
-    ? (scanner.findSessionFile(conv.currentSessionId, projDir)
-        ? scanner.getMessagesIncremental(scanner.findSessionFile(conv.currentSessionId, projDir))
-        : [])
-    : [];
-  const info = conv.currentSessionId
-    ? (scanner.findSessionFile(conv.currentSessionId, projDir)
-        ? scanner.sessionInfo(scanner.findSessionFile(conv.currentSessionId, projDir))
-        : null)
-    : null;
-  const md = messagesToMarkdown({ conv, info, messages });
-  const filename = `${slugify(conv.name || (info && info.snippet))}.md`;
-  res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  res.end(md);
 });
 
 app.post('/api/conversations/:id/message', (req, res) => {
@@ -692,16 +635,26 @@ app.post('/api/conversations/:id/compact', async (req, res) => {
 });
 
 app.post('/api/conversations', (req, res) => {
-  const { projectDir, text, model } = req.body;
-  if (!projectDir || !(text || '').trim()) return res.status(400).json({ error: 'faltan projectDir o text' });
+  const { text, model } = req.body;
   const acc = req.body.account || activeAccount;
+  // Sin projectDir explícito: la conversación queda anclada a home (no hay
+  // "carpeta elegida" que mostrar/agrupar, y tampoco hace falta un mensaje
+  // de navegación — ya arranca ahí).
+  const projectDir = req.body.projectDir || accountHomeDir(acc);
   const metaFile = accountMetaFile(acc);
   const convId = crypto.randomUUID();
   const data = meta.load(metaFile);
   data.conversations[convId] = { currentSessionId: null, projectDir, model: model || undefined };
   meta.save(data, metaFile);
-  runner.send({ convId, sessionId: null, cwd: projectDir, text: text.trim(), model: model || undefined, account: acc });
-  res.status(201).json({ convId });
+  // cwd = home del usuario (no projectDir): así la sesión arranca leyendo el CLAUDE.md
+  // global y la memoria completa, igual que una sesión interactiva normal. projectDir
+  // queda solo como metadata para agrupar/mostrar en el sidebar y el header.
+  // Si no vino texto (se dejó en home, sin destino explícito) no hace falta
+  // mandar un primer mensaje — la conversación queda vacía, lista para escribir.
+  if ((text || '').trim()) {
+    runner.send({ convId, sessionId: null, cwd: accountHomeDir(acc), text: text.trim(), model: model || undefined, account: acc });
+  }
+  res.status(201).json({ convId, projectDir });
 });
 
 app.patch('/api/conversations/:id', (req, res) => {

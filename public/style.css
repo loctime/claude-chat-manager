@@ -42,7 +42,35 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
   padding: 16px;
   background: var(--header);
 }
-#list-header h1 { font-size: 20px; font-weight: 600; letter-spacing: .3px; }
+#list-header h1 { font-size: 20px; font-weight: 600; letter-spacing: .3px; display: flex; align-items: center; }
+
+/* ── Indicador global de "procesando" (alguna conversación corriendo) ── */
+.ping-dot {
+  display: none;
+  position: relative;
+  width: 11px;
+  height: 11px;
+  margin-right: 9px;
+  flex: 0 0 auto;
+}
+.ping-dot.active { display: inline-block; }
+.ping-dot .ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: ping-ring 1.6s cubic-bezier(0,0,.2,1) infinite;
+}
+.ping-dot .core {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--accent);
+}
+@keyframes ping-ring {
+  0%   { transform: scale(1); opacity: .6; }
+  75%, 100% { transform: scale(2.6); opacity: 0; }
+}
 #account-select, #account-switch {
   background: var(--accent, #00a884);
   color: #fff;
@@ -193,6 +221,14 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
   max-width: 110px; overflow: hidden; text-overflow: ellipsis;
 }
 
+#conv-folder {
+  flex: 0 0 auto;
+  background: var(--input-bg); color: var(--text2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 8px; font-size: 12px;
+  max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  cursor: help;
+}
+
 /* ── Mensajes ── */
 #messages {
   flex: 1;
@@ -226,13 +262,13 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
   align-self: flex-end;
   background: var(--bubble-me);
   border-bottom-right-radius: 2px;
-  color: #e9edef;
+  color: var(--bubble-me-text, #e9edef);
 }
 .msg.assistant {
   align-self: flex-start;
   background: var(--bubble-ai);
   border-bottom-left-radius: 2px;
-  color: #e9edef;
+  color: var(--bubble-ai-text, #e9edef);
 }
 .msg.error {
   align-self: flex-start;
@@ -753,57 +789,6 @@ body.hide-tools details.tool { display: none !important; }
   cursor: pointer;
 }
 .compact-toggle:hover { background: var(--header); }
-
-/* ── Chat menu (kebab dropdown) ── */
-#chat-menu {
-  position: absolute;
-  top: 56px;
-  right: 8px;
-  z-index: 900;
-  background: var(--header);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: 0 4px 12px rgba(0,0,0,.4);
-  padding: 6px;
-  min-width: 240px;
-}
-#chat-menu .menu-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
-  gap: 12px;
-  color: var(--text);
-  font-size: 13px;
-}
-#chat-menu .menu-row span { flex: 0 0 auto; }
-#chat-menu .menu-row select {
-  flex: 1 1 auto;
-  min-width: 0;
-  background: var(--input-bg);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 4px 6px;
-  font-size: 13px;
-}
-#chat-menu button {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  text-align: left;
-  padding: 10px 12px;
-  background: transparent;
-  color: var(--text);
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 13px;
-}
-#chat-menu button:hover:not(:disabled) { background: var(--input-bg); }
-#chat-menu button:disabled { opacity: .45; cursor: default; }
-#chat-menu button svg { flex: 0 0 auto; }
 
 /* ── Search dialog ── */
 #search-dialog {
