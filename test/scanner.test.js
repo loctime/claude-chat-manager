@@ -3,7 +3,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { parseJsonl, sessionInfo, listSessions, toChatMessages, findSessionFile, getMessagesIncremental, sumUsage, searchSessions, _clearSessionInfoCache, _clearTailCache } = require('../src/scanner');
+const { parseJsonl, sessionInfo, listSessions, toChatMessages, findSessionFile, getMessagesIncremental, sumUsage, searchSessions, resolveCwd, _clearSessionInfoCache, _clearTailCache } = require('../src/scanner');
 
 function tmpFile(lines) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-'));
@@ -274,4 +274,38 @@ test('sessionInfo.contextTokens = 0 si no hay usage', () => {
   const { file } = tmpFile([userEntry('hola'), assistantEntry([{ type: 'text', text: 'ok' }])]);
   const info = sessionInfo(file);
   assert.equal(info.contextTokens, 0);
+});
+
+test('sessionInfo.cwd usa el cwd más reciente, no el primero (ej. al entrar a un git worktree a mitad de sesión)', () => {
+  _clearSessionInfoCache();
+  const before = userEntry('arrancamos en home');
+  const afterWorktree = JSON.stringify({
+    type: 'assistant', cwd: '/home/loctime/Proyectos/demo/.worktrees/feature',
+    sessionId: 'aaaa-1111', timestamp: '2026-07-12T10:05:00.000Z',
+    message: { role: 'assistant', content: [{ type: 'text', text: 'ya en el worktree' }] },
+  });
+  const { file } = tmpFile([before, afterWorktree]);
+  const info = sessionInfo(file);
+  assert.equal(info.cwd, '/home/loctime/Proyectos/demo/.worktrees/feature');
+});
+
+test('resolveCwd usa el cwd real de la sesión activa en vez del projectDir guardado (que puede haber quedado stale tras un EnterWorktree)', () => {
+  _clearSessionInfoCache();
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-resolvecwd-'));
+  const projDir = path.join(base, '-encoded-project');
+  fs.mkdirSync(projDir);
+  const relocated = JSON.stringify({
+    type: 'assistant', cwd: '/real/worktree/path', sessionId: 'sess-relocated',
+    timestamp: '2026-07-12T10:05:00.000Z',
+    message: { role: 'assistant', content: [{ type: 'text', text: 'reubicado' }] },
+  });
+  fs.writeFileSync(path.join(projDir, 'sess-relocated.jsonl'), [userEntry('hola'), relocated].join('\n'));
+
+  const conv = { currentSessionId: 'sess-relocated', projectDir: '/stale/home/dir' };
+  assert.equal(resolveCwd(conv, base), '/real/worktree/path');
+});
+
+test('resolveCwd cae al projectDir guardado cuando la conversación todavía no tiene sesión (mensaje inicial)', () => {
+  const conv = { currentSessionId: null, projectDir: '/elegido/por/el/usuario' };
+  assert.equal(resolveCwd(conv, '/no/existe'), '/elegido/por/el/usuario');
 });

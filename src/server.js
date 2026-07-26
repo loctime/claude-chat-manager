@@ -639,7 +639,14 @@ app.post('/api/conversations/:id/message', (req, res) => {
     delete conv.compactedAt;
   }
   meta.save(data, metaFile);
-  runner.send({ convId, sessionId: conv.currentSessionId, cwd: conv.projectDir, text: outgoing, model: conv.model, account: acc });
+  // Las conversaciones "VPS: <proyecto>" no tienen una carpeta local real —
+  // conv.projectDir ahí es solo metadata para agrupar/mostrar, no un cwd válido.
+  // Para el resto, no confiamos ciegamente en conv.projectDir: si Claude entró a un
+  // git worktree a mitad de charla, la sesión quedó reubicada a otra carpeta de
+  // proyecto y projectDir quedó desactualizado — resolveCwd busca dónde vive
+  // realmente la sesión ahora.
+  const cwd = (conv.projectDir || '').startsWith('VPS: ') ? accountHomeDir(acc) : scanner.resolveCwd(conv, accountProjectsDir(acc));
+  runner.send({ convId, sessionId: conv.currentSessionId, cwd, text: outgoing, model: conv.model, account: acc });
   res.status(202).json({ queued: true });
 });
 

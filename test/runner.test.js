@@ -33,6 +33,13 @@ test('arma los args correctos con y sin --resume', () => {
   assert.ok(!spawned[1].args.includes('--resume'));
 });
 
+test('cierra stdin del hijo (ignore) para no colgar esperando datos que nunca llegan', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  r.send({ convId: 'c1', sessionId: 's1', cwd: '/tmp/p', text: 'hola' });
+  assert.deepEqual(spawned[0].opts.stdio, ['ignore', 'pipe', 'pipe']);
+});
+
 test('pasa --model cuando el job lo tiene, lo omite si no', () => {
   const spawned = [];
   const r = makeRunner(spawned);
