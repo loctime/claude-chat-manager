@@ -445,6 +445,7 @@ app.get('/api/tree', (req, res) => {
       lastActivity: s.lastActivity || null,
       messageCount: s.messageCount || 0,
       model: c.model || null,
+      responseMode: c.responseMode || null,
       lastModel: s.lastModel || null,
       pinned: !!c.pinned,
       archived: !!c.archived,
@@ -463,6 +464,7 @@ app.get('/api/tree', (req, res) => {
       lastActivity: s.lastActivity,
       messageCount: s.messageCount,
       model: null,
+      responseMode: null,
       lastModel: s.lastModel || null,
       pinned: false,
       archived: false,
@@ -509,7 +511,7 @@ app.get('/api/search', (req, res) => {
   const data = meta.load(accountMetaFile(acc));
   const bySessionId = new Map();
   for (const [convId, c] of Object.entries(data.conversations)) {
-    bySessionId.set(c.currentSessionId, { convId, name: c.name });
+    bySessionId.set(c.currentSessionId, { convId, name: c.name, responseMode: c.responseMode });
   }
   const enriched = results.map(r => {
     const ref = bySessionId.get(r.sessionId);
@@ -517,6 +519,7 @@ app.get('/api/search', (req, res) => {
       ...r,
       convId: ref ? ref.convId : r.sessionId,
       displayName: (ref && ref.name) || r.name,
+      responseMode: ref ? (ref.responseMode || null) : null,
     };
   });
   res.json({ results: enriched });
@@ -639,7 +642,7 @@ app.post('/api/conversations/:id/message', (req, res) => {
     delete conv.compactedAt;
   }
   meta.save(data, metaFile);
-  runner.send({ convId, sessionId: conv.currentSessionId, cwd: conv.projectDir, text: outgoing, model: conv.model, account: acc });
+  runner.send({ convId, sessionId: conv.currentSessionId, cwd: conv.projectDir, text: outgoing, model: conv.model, responseMode: conv.responseMode, account: acc });
   res.status(202).json({ queued: true });
 });
 
@@ -706,6 +709,7 @@ app.patch('/api/conversations/:id', (req, res) => {
     conv.aiTitle = false;
   }
   if ('model' in req.body) conv.model = (req.body.model || '').trim() || undefined;
+  if ('responseMode' in req.body) conv.responseMode = (req.body.responseMode || '').trim() || undefined;
   if ('pinned' in req.body) conv.pinned = !!req.body.pinned;
   if ('archived' in req.body) conv.archived = !!req.body.archived;
   meta.save(data, metaFile);
