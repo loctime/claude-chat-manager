@@ -49,3 +49,25 @@ test('el heartbeat arranca con el primer cliente y se apaga con el último', () 
   req.emit('close');
   assert.equal(hub._timer, null);
 });
+
+test('un cliente que tira error no impide que otros clientes reciban el broadcast', () => {
+  const hub = new SseHub({ heartbeatMs: 60_000 });
+  const reqA = new EventEmitter(); const resA = fakeRes();
+  const reqB = new EventEmitter(); const resB = fakeRes();
+  const reqC = new EventEmitter(); const resC = fakeRes();
+  hub.handle(reqA, resA, { kind: 'hello', busy: [] });
+  hub.handle(reqB, resB, { kind: 'hello', busy: [] });
+  hub.handle(reqC, resC, { kind: 'hello', busy: [] });
+  assert.equal(hub.size, 3);
+  // Hacer que resB lance error en write.
+  resB.write = () => { throw new Error('socket destroyed'); };
+  hub.broadcast({ convId: 'c1', kind: 'status', status: 'running' });
+  // Verificar que resA y resC recibieron el broadcast.
+  const lastA = resA.chunks[resA.chunks.length - 1];
+  const lastC = resC.chunks[resC.chunks.length - 1];
+  assert.deepEqual(JSON.parse(lastA.slice(6)), { convId: 'c1', kind: 'status', status: 'running' });
+  assert.deepEqual(JSON.parse(lastC.slice(6)), { convId: 'c1', kind: 'status', status: 'running' });
+  // Verificar que resB fue removido (hub.size pasó de 3 a 2).
+  assert.equal(hub.size, 2);
+  reqA.emit('close'); reqC.emit('close');
+});

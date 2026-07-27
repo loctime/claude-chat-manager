@@ -20,7 +20,7 @@ class SseHub {
     if (!this._timer) {
       // Cloudflare Tunnel corta conexiones SSE inactivas (~100s de idle).
       this._timer = setInterval(() => {
-        for (const c of this.clients) c.write(':heartbeat\n\n');
+        this._fanout(':heartbeat\n\n');
       }, this.heartbeatMs);
     }
     req.on('close', () => {
@@ -34,7 +34,26 @@ class SseHub {
 
   broadcast(payload) {
     const data = `data: ${JSON.stringify(payload)}\n\n`;
-    for (const c of this.clients) c.write(data);
+    this._fanout(data);
+  }
+
+  _fanout(data) {
+    const deadClients = [];
+    for (const c of this.clients) {
+      try {
+        c.write(data);
+      } catch (err) {
+        deadClients.push(c);
+      }
+    }
+    // Remover clientes muertos y limpiar heartbeat si no queda ninguno.
+    for (const c of deadClients) {
+      this.clients.delete(c);
+    }
+    if (this.clients.size === 0 && this._timer) {
+      clearInterval(this._timer);
+      this._timer = null;
+    }
   }
 
   get size() { return this.clients.size; }
