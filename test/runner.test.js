@@ -177,3 +177,15 @@ test('child.emit("error") emite idle con code -1 y drena cola', () => {
   const idles = statuses.filter(s => s.convId === 'c1' && s.status === 'idle');
   assert.equal(idles.length, 1);
 });
+
+test('busyIds devuelve running + encolados sin duplicados', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  assert.deepEqual(r.busyIds(), []);
+  r.send({ convId: 'c1', sessionId: 's1', cwd: '/t', text: 'a' });
+  r.send({ convId: 'c2', sessionId: 's2', cwd: '/t', text: 'b' });
+  r.send({ convId: 'c3', sessionId: 's3', cwd: '/t', text: 'c' }); // queda en cola (max 2)
+  assert.deepEqual([...r.busyIds()].sort(), ['c1', 'c2', 'c3']);
+  spawned[0].child.emit('close', 0); // c1 termina, c3 arranca
+  assert.deepEqual([...r.busyIds()].sort(), ['c2', 'c3']);
+});

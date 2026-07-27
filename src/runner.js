@@ -33,6 +33,12 @@ class Runner extends EventEmitter {
     return this.running.has(convId) || this.queue.some(j => j.convId === convId);
   }
 
+  busyIds() {
+    const ids = new Set(this.running.keys());
+    for (const j of this.queue) ids.add(j.convId);
+    return [...ids];
+  }
+
   cancel(convId) {
     const child = this.running.get(convId);
     if (child) {
