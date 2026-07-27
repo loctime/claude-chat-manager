@@ -9,6 +9,7 @@ const scanner = require('./scanner');
 const meta = require('./meta');
 const { Runner } = require('./runner');
 const { CLAUDE_CMD } = require('./claude-cmd');
+const { SseHub } = require('./sse');
 
 const IS_WIN = process.platform === 'win32';
 // En Windows ImageMagick 7 se llama 'magick'; en Linux/Mac es 'convert'
@@ -129,7 +130,7 @@ app.use(express.static(path.join(__dirname, '..', 'public'), {
 }));
 
 const runner = new Runner({ selfHost: HOST, selfPort: PORT });
-const sseClients = new Map(); // convId → Set<res>
+const sseHub = new SseHub();
 
 // Precios en USD por millón de tokens. Match por prefijo del model id.
 // Fuente: página pública de precios Anthropic (Ene 2026). Ajustar cuando cambien.
@@ -173,9 +174,7 @@ function usageCost(usage) {
 }
 
 function broadcast(convId, payload) {
-  const set = sseClients.get(convId);
-  if (!set) return;
-  for (const res of set) res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  sseHub.broadcast({ convId, ...payload });
 }
 
 runner.on('event', ({ convId, event, account }) => {
@@ -681,29 +680,14 @@ app.delete('/api/conversations/:id/message', (req, res) => {
   res.json({ cancelled });
 });
 
-app.get('/api/conversations/:id/stream', (req, res) => {
-  const convId = req.params.id;
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-  });
-  res.write('\n');
-  if (!sseClients.has(convId)) sseClients.set(convId, new Set());
-  sseClients.get(convId).add(res);
-  // Cloudflare Tunnel corta conexiones SSE inactivas (~100s de idle).
-  // Sin este ping, un turno largo de Claude sin output deja el stream mudo
-  // y el edge lo mata a mitad de camino, perdiendo el evento 'idle' final.
-  const heartbeat = setInterval(() => res.write(':heartbeat\n\n'), 20000);
-  req.on('close', () => {
-    clearInterval(heartbeat);
-    const set = sseClients.get(convId);
-    if (!set) return;
-    set.delete(res);
-    if (set.size === 0) sseClients.delete(convId);
-  });
+app.get('/api/stream', (req, res) => {
+  sseHub.handle(req, res, { kind: 'hello', busy: runner.busyIds() });
 });
 
-app.listen(PORT, HOST, () => {
-  console.log(`Claude Chat Manager en http://${HOST}:${PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, HOST, () => {
+    console.log(`Claude Chat Manager en http://${HOST}:${PORT}`);
+  });
+}
+
+module.exports = { app, runner, sseHub };
