@@ -5,7 +5,11 @@ let treeLimit = 100;
 let treeHasMore = false;
 let treeTotal = 0;
 let archivedTotal = 0;
-let showArchived = false;
+let archivedTreeLimit = 100;
+let archivedTreeHasMore = false;
+let archivedTreeTotal = 0;
+let viewingArchived = false;
+let archivedPaneLoaded = false;
 let activeAccount = null;
 const drafts = new Map();
 
@@ -45,13 +49,14 @@ async function loadAccounts() {
       });
       activeAccount = sel.value;
       treeLimit = 100;
+      resetArchivedPane();
       loadTree();
     };
   } catch {}
 }
 
 // ── Toast ──
-function toast(msg, kind = 'error', ttl = 4000) {
+function toast(msg, kind = 'error', ttl = 4000, action = null) {
   let container = document.getElementById('toast-container');
   if (!container) {
     container = document.createElement('div');
@@ -60,13 +65,30 @@ function toast(msg, kind = 'error', ttl = 4000) {
   }
   const t = document.createElement('div');
   t.className = 'toast ' + kind;
-  t.textContent = msg;
-  container.appendChild(t);
-  setTimeout(() => {
+  const text = document.createElement('span');
+  text.textContent = msg;
+  t.appendChild(text);
+
+  let removed = false;
+  const remove = () => {
+    if (removed) return;
+    removed = true;
     t.style.opacity = '0';
     t.style.transition = 'opacity .2s';
     setTimeout(() => t.remove(), 220);
-  }, ttl);
+  };
+
+  if (action) {
+    const btn = document.createElement('button');
+    btn.className = 'toast-action';
+    btn.type = 'button';
+    btn.textContent = action.label;
+    btn.onclick = () => { remove(); action.onClick(); };
+    t.appendChild(btn);
+  }
+
+  container.appendChild(t);
+  setTimeout(remove, ttl);
 }
 
 // ── PWA service worker + install ──
@@ -244,6 +266,7 @@ async function refreshAll() {
   btn.classList.add('spinning');
   try {
     await loadTree();
+    if (archivedPaneLoaded) await loadArchivedTree();
     if (currentConv) await loadMessages(currentConv);
   } finally {
     btn.classList.remove('spinning');
@@ -252,30 +275,31 @@ async function refreshAll() {
 $('refresh-btn').onclick = refreshAll;
 
 // ── Pull-to-refresh en el panel lista ──
-(function initPTR() {
-  const nav = $('tree');
+function initPTR(navEl, loadFn) {
   const indicator = $('ptr-indicator');
   let startY = 0;
   let pulling = false;
 
-  nav.addEventListener('touchstart', e => {
-    if (nav.scrollTop === 0) { startY = e.touches[0].clientY; pulling = true; }
+  navEl.addEventListener('touchstart', e => {
+    if (navEl.scrollTop === 0) { startY = e.touches[0].clientY; pulling = true; }
   }, { passive: true });
 
-  nav.addEventListener('touchmove', e => {
+  navEl.addEventListener('touchmove', e => {
     if (!pulling) return;
     if (e.touches[0].clientY - startY > 60) indicator.hidden = false;
   }, { passive: true });
 
-  nav.addEventListener('touchend', async () => {
+  navEl.addEventListener('touchend', async () => {
     if (!pulling) return;
     pulling = false;
     if (!indicator.hidden) {
-      await loadTree();
+      await loadFn();
       indicator.hidden = true;
     }
   });
-})();
+}
+initPTR($('tree'), safeLoadTree);
+initPTR($('tree-archived'), safeLoadArchivedTree);
 
 // ── Tree ──
 function badge(status) {
@@ -311,23 +335,14 @@ function convElement(c) {
   div.querySelector('.conv-name-text').textContent = c.name;
   div.querySelector('.conv-date').textContent = (c.lastActivity || '').slice(0, 16).replace('T', ' ');
   div._conv = c;
-  div.onclick = () => selectConv(c.convId, c.name, c.model, c.lastModel, c.projectDir);
-  attachContextMenu(div, c);
+  div.onclick = () => selectConv(c.convId, c.name, c.model, c.lastModel, c.projectDir, c.responseMode);
+  attachRowGestures(div, c);
   return div;
 }
 
-async function loadTree() {
-  const params = new URLSearchParams({ limit: String(treeLimit) });
-  if (showArchived) params.set('archived', '1');
-  if (activeAccount) params.set('account', activeAccount);
-  const resp = await api('/tree?' + params);
-  tree = resp.tree;
-  treeHasMore = resp.hasMore;
-  treeTotal = resp.total;
-  archivedTotal = resp.archivedTotal || 0;
-  const nav = $('tree');
-  nav.innerHTML = '';
-  for (const proj of tree) {
+function buildTreePane(navEl, treeData) {
+  navEl.innerHTML = '';
+  for (const proj of treeData.tree) {
     const det = document.createElement('details');
     det.className = 'project';
     det.open = true;
@@ -336,8 +351,20 @@ async function loadTree() {
     sum.title = proj.projectDir;
     det.appendChild(sum);
     for (const c of proj.conversations) det.appendChild(convElement(c));
-    nav.appendChild(det);
+    navEl.appendChild(det);
   }
+}
+
+async function loadTree() {
+  const params = new URLSearchParams({ limit: String(treeLimit) });
+  if (activeAccount) params.set('account', activeAccount);
+  const resp = await api('/tree?' + params);
+  tree = resp.tree;
+  treeHasMore = resp.hasMore;
+  treeTotal = resp.total;
+  archivedTotal = resp.archivedTotal || 0;
+  const nav = $('tree');
+  buildTreePane(nav, resp);
 
   if (treeHasMore) {
     const more = document.createElement('button');
@@ -354,19 +381,80 @@ async function loadTree() {
     nav.appendChild(more);
   }
 
-  // Toggle archivadas
-  if (archivedTotal > 0 || showArchived) {
+  if (archivedTotal > 0) {
     const t = document.createElement('button');
     t.className = 'archived-toggle';
     t.type = 'button';
-    t.textContent = showArchived
-      ? `← Volver a activas`
-      : `Ver archivadas (${archivedTotal})`;
-    t.onclick = () => { showArchived = !showArchived; treeLimit = 100; safeLoadTree(); };
+    t.textContent = `Ver archivadas (${archivedTotal})`;
+    t.onclick = () => { goToArchived(); };
     nav.appendChild(t);
   }
 
   updateGlobalBusyIndicator();
+}
+
+async function loadArchivedTree() {
+  const params = new URLSearchParams({ limit: String(archivedTreeLimit), archived: '1' });
+  if (activeAccount) params.set('account', activeAccount);
+  const resp = await api('/tree?' + params);
+  archivedTreeHasMore = resp.hasMore;
+  archivedTreeTotal = resp.total;
+  const nav = $('tree-archived');
+  buildTreePane(nav, resp);
+
+  const back = document.createElement('button');
+  back.className = 'archived-back';
+  back.type = 'button';
+  back.textContent = '← Volver a activas';
+  back.onclick = () => { goToActive(); };
+  nav.insertBefore(back, nav.firstChild);
+
+  if (archivedTreeHasMore) {
+    const more = document.createElement('button');
+    more.id = 'load-more-archived-btn';
+    more.className = 'load-more';
+    more.type = 'button';
+    more.textContent = `Cargar más (${archivedTreeTotal - archivedTreeLimit} restantes)`;
+    more.onclick = async () => {
+      more.disabled = true;
+      archivedTreeLimit += 100;
+      try { await loadArchivedTree(); }
+      catch (err) { toast('No se pudo cargar más: ' + err.message); more.disabled = false; }
+    };
+    nav.appendChild(more);
+  }
+}
+
+async function safeLoadArchivedTree() {
+  try { await loadArchivedTree(); }
+  catch (err) { toast('No se pudo actualizar archivadas: ' + err.message); }
+}
+
+async function goToArchived() {
+  if (viewingArchived) return;
+  if (!archivedPaneLoaded) {
+    try {
+      await loadArchivedTree();
+      archivedPaneLoaded = true;
+    } catch (err) {
+      toast('No se pudo cargar archivadas: ' + err.message);
+      return;
+    }
+  }
+  viewingArchived = true;
+  $('tree-viewport-inner').classList.add('showing-archived');
+}
+
+function goToActive() {
+  viewingArchived = false;
+  $('tree-viewport-inner').classList.remove('showing-archived');
+}
+
+function resetArchivedPane() {
+  archivedPaneLoaded = false;
+  archivedTreeLimit = 100;
+  $('tree-archived').innerHTML = '';
+  if (viewingArchived) goToActive();
 }
 
 // ── Indicador global de "procesando" (icono ping + título + badge de la app instalada) ──
@@ -382,11 +470,61 @@ function updateGlobalBusyIndicator() {
   else navigator.clearAppBadge().catch(() => {});
 }
 
-// ── Menú contextual (click derecho + long-press mobile) ──
-function attachContextMenu(el, conv) {
+function refreshVisibleTrees() {
+  safeLoadTree();
+  if (archivedPaneLoaded) safeLoadArchivedTree();
+}
+
+async function commitArchiveToggle(el, conv) {
+  const wasArchived = !!conv.archived;
+  const newArchived = !wasArchived;
+  el.style.transition = 'transform .18s ease, opacity .18s ease';
+  el.style.transform = 'translateX(100%)';
+  el.style.opacity = '0';
+  setTimeout(() => { el.remove(); }, 180);
+
+  try {
+    await api(`/conversations/${conv.convId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(withAccountBody({ archived: newArchived })),
+    });
+  } catch (err) {
+    toast('No se pudo actualizar: ' + err.message);
+    setTimeout(refreshVisibleTrees, 200);
+    return;
+  }
+
+  const label = newArchived ? 'Conversación archivada' : 'Conversación desarchivada';
+  toast(label, 'info', 4000, {
+    label: 'Deshacer',
+    onClick: async () => {
+      try {
+        await api(`/conversations/${conv.convId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(withAccountBody({ archived: wasArchived })),
+        });
+      } catch (err) {
+        toast('No se pudo deshacer: ' + err.message);
+      }
+      refreshVisibleTrees();
+    },
+  });
+  setTimeout(refreshVisibleTrees, 200);
+}
+
+// ── Menú contextual (click derecho + long-press mobile) + swipe-derecha para archivar ──
+const ROW_SWIPE_THRESHOLD = 80;
+
+function attachRowGestures(el, conv) {
   let touchTimer = null;
   let longPressed = false;
   let startX = 0, startY = 0;
+  let axisLocked = null;
+  let rowDragging = false;
+  let currentDx = 0;
+  let redirectedToPane = false;
 
   el.addEventListener('contextmenu', e => {
     e.preventDefault();
@@ -395,6 +533,10 @@ function attachContextMenu(el, conv) {
 
   el.addEventListener('touchstart', e => {
     longPressed = false;
+    axisLocked = null;
+    rowDragging = false;
+    currentDx = 0;
+    redirectedToPane = false;
     const t = e.touches[0];
     startX = t.clientX; startY = t.clientY;
     touchTimer = setTimeout(() => {
@@ -406,17 +548,68 @@ function attachContextMenu(el, conv) {
   }, { passive: true });
 
   el.addEventListener('touchmove', e => {
-    if (!touchTimer) return;
+    if (longPressed) return; // el menú ya abrió para este gesto: no arrastrar la fila
     const t = e.touches[0];
-    if (Math.abs(t.clientX - startX) > 10 || Math.abs(t.clientY - startY) > 10) {
-      clearTimeout(touchTimer);
-      touchTimer = null;
-    }
-  }, { passive: true });
 
-  el.addEventListener('touchend', () => {
+    if (redirectedToPane) {
+      if (paneSwipeMove(t.clientX, t.clientY)) e.preventDefault();
+      return;
+    }
+
+    const dx = t.clientX - startX;
+    const dy = t.clientY - startY;
+    if (axisLocked === null) {
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+      axisLocked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+      if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
+      if (axisLocked === 'x' && dx < 0) {
+        // Arrastre hacia la izquierda: nunca archiva (solo la derecha lo
+        // hace) — se lo cedemos al swipe de pantalla, porque en una lista
+        // llena casi no queda fondo tocable fuera de las filas.
+        redirectedToPane = true;
+        if (paneSwipeStart(startX, startY) && paneSwipeMove(t.clientX, t.clientY)) e.preventDefault();
+        return;
+      }
+    }
+    if (axisLocked !== 'x') return;
+    e.preventDefault();
+    rowDragging = true;
+    currentDx = Math.max(0, dx);
+    el.style.transform = `translateX(${currentDx}px)`;
+    el.style.opacity = String(Math.max(0.3, 1 - currentDx / 200));
+  }, { passive: false });
+
+  function resetRow() {
+    el.style.transition = 'transform .2s ease, opacity .2s ease';
+    el.style.transform = '';
+    el.style.opacity = '';
+    setTimeout(() => { el.style.transition = ''; }, 200);
+  }
+
+  el.addEventListener('touchend', async () => {
     if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
-  }, { passive: true });
+    if (redirectedToPane) {
+      await paneSwipeEnd();
+    } else if (rowDragging && !longPressed) {
+      if (currentDx > ROW_SWIPE_THRESHOLD) commitArchiveToggle(el, conv);
+      else resetRow();
+    }
+    redirectedToPane = false;
+    rowDragging = false;
+    axisLocked = null;
+  });
+
+  el.addEventListener('touchcancel', () => {
+    if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
+    if (redirectedToPane) {
+      paneSwipeEnd();
+    } else if (rowDragging) {
+      resetRow();
+    }
+    redirectedToPane = false;
+    rowDragging = false;
+    axisLocked = null;
+  });
 
   // Bloquear el click sintético que dispara touchend después del long-press
   // (si no, selecciona la conversación y cierra el menú)
@@ -459,7 +652,7 @@ function showConvMenu(x, y, conv) {
           body: JSON.stringify(withAccountBody({})),
         });
         toast(`Compactado (${r.messagesCompacted} mensajes resumidos)`, 'info', 3000);
-        safeLoadTree();
+        refreshVisibleTrees();
       } catch (err) { toast('No se pudo compactar: ' + err.message); }
       return;
     }
@@ -472,7 +665,7 @@ function showConvMenu(x, y, conv) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withAccountBody(patch)),
       });
-      safeLoadTree();
+      refreshVisibleTrees();
     } catch (err) { toast('No se pudo actualizar: ' + err.message); }
   };
 
@@ -959,15 +1152,15 @@ function openStream(convId) {
           // Turno terminado: si estás leyendo más arriba, el botón pasa a verde.
           flagJumpBtn('done');
         });
-        loadTree();
+        refreshVisibleTrees();
         refreshCostBadge(convId);
       } else {
         setBusy(true);
-        loadTree();
+        refreshVisibleTrees();
       }
     } else if (payload.kind === 'meta') {
       if (payload.name) $('conv-title').textContent = payload.name;
-      loadTree();
+      refreshVisibleTrees();
     }
   };
   eventSource.onerror = () => {
@@ -980,7 +1173,7 @@ function openStream(convId) {
     setTimeout(() => {
       if (convId !== currentConv) return;
       loadMessages(convId);
-      loadTree();
+      refreshVisibleTrees();
     }, 1500);
   };
 }
@@ -1540,12 +1733,97 @@ document.addEventListener('keydown', e => {
   selectConv(c.convId, c.name, c.model, c.lastModel, c.projectDir);
 });
 
+// ── Swipe de pantalla (activas ↔ archivadas, solo táctil) ──
+// Expuesto como funciones (no IIFE) porque attachRowGestures también las
+// invoca cuando detecta un arrastre hacia la izquierda que empieza sobre
+// una fila (ver Finding 2 del review final: con la lista llena de filas,
+// casi no queda fondo tocable para iniciar el swipe de pantalla).
+const PANE_SWIPE_THRESHOLD = 60;
+let paneStartX = 0, paneStartY = 0, paneAxisLocked = null, paneDragging = false, paneCurrentTranslate = 0, paneNavigating = false;
+
+function paneViewportWidth() {
+  return $('tree-viewport').getBoundingClientRect().width;
+}
+
+function paneSwipeStart(clientX, clientY) {
+  if (paneNavigating) return false; // no arrancar un gesto nuevo con una navegación en curso
+  paneStartX = clientX; paneStartY = clientY;
+  paneAxisLocked = null;
+  paneDragging = true;
+  $('tree-viewport-inner').style.transition = 'none';
+  return true;
+}
+
+function paneSwipeMove(clientX, clientY) {
+  if (!paneDragging) return false;
+  const dx = clientX - paneStartX;
+  const dy = clientY - paneStartY;
+  if (paneAxisLocked === null) {
+    if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return false;
+    paneAxisLocked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+  }
+  if (paneAxisLocked !== 'x') return false;
+  const base = viewingArchived ? -paneViewportWidth() : 0;
+  paneCurrentTranslate = Math.min(0, Math.max(-paneViewportWidth(), base + dx));
+  $('tree-viewport-inner').style.transform = `translateX(${paneCurrentTranslate}px)`;
+  return true;
+}
+
+async function paneSwipeEnd() {
+  if (!paneDragging) return;
+  paneDragging = false;
+  const inner = $('tree-viewport-inner');
+
+  try {
+    if (paneAxisLocked === 'x') {
+      const base = viewingArchived ? -paneViewportWidth() : 0;
+      const delta = paneCurrentTranslate - base;
+      // Navigate first (await if async), THEN clear inline styles so CSS class transform can take over
+      if (!viewingArchived && delta < -PANE_SWIPE_THRESHOLD) {
+        paneNavigating = true;
+        await goToArchived();
+      } else if (viewingArchived && delta > PANE_SWIPE_THRESHOLD) {
+        paneNavigating = true;
+        goToActive();
+      }
+    }
+  } finally {
+    inner.style.transition = '';
+    inner.style.transform = '';
+    paneAxisLocked = null;
+    paneNavigating = false;
+  }
+}
+
+function initPaneSwipe() {
+  const viewport = $('tree-viewport');
+
+  viewport.addEventListener('touchstart', e => {
+    if (e.target.closest('.conv')) return; // una fila maneja su propio gesto (ver attachRowGestures)
+    const t = e.touches[0];
+    paneSwipeStart(t.clientX, t.clientY);
+  }, { passive: true });
+
+  viewport.addEventListener('touchmove', e => {
+    const t = e.touches[0];
+    if (paneSwipeMove(t.clientX, t.clientY)) e.preventDefault();
+  }, { passive: false });
+
+  viewport.addEventListener('touchend', paneSwipeEnd);
+  viewport.addEventListener('touchcancel', paneSwipeEnd);
+}
+initPaneSwipe();
+
 async function safeLoadTree() {
   try { await loadTree(); }
   catch (err) { toast('No se pudo actualizar la lista: ' + err.message); }
 }
+function pollTrees() {
+  safeLoadTree();
+  if (archivedPaneLoaded) safeLoadArchivedTree();
+}
 loadAccounts().then(() => safeLoadTree());
-setInterval(safeLoadTree, 15000);
+setInterval(pollTrees, 15000);
 
 // ── Configuración ──
 const SETTINGS_KEY = 'ccm.settings';
