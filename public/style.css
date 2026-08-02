@@ -139,6 +139,7 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
   cursor: pointer;
   border-bottom: 1px solid var(--border);
   transition: background .12s;
+  touch-action: pan-y;
   -webkit-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;

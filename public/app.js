@@ -336,7 +336,7 @@ function convElement(c) {
   div.querySelector('.conv-date').textContent = (c.lastActivity || '').slice(0, 16).replace('T', ' ');
   div._conv = c;
   div.onclick = () => selectConv(c.convId, c.name, c.model, c.lastModel, c.projectDir, c.responseMode);
-  attachContextMenu(div, c);
+  attachRowGestures(div, c);
   return div;
 }
 
@@ -472,11 +472,60 @@ function updateGlobalBusyIndicator() {
   else navigator.clearAppBadge().catch(() => {});
 }
 
-// ── Menú contextual (click derecho + long-press mobile) ──
-function attachContextMenu(el, conv) {
+function refreshAfterArchiveChange() {
+  safeLoadTree();
+  if (archivedPaneLoaded) safeLoadArchivedTree();
+}
+
+async function commitArchiveToggle(el, conv) {
+  const wasArchived = !!conv.archived;
+  const newArchived = !wasArchived;
+  el.style.transition = 'transform .18s ease, opacity .18s ease';
+  el.style.transform = 'translateX(100%)';
+  el.style.opacity = '0';
+  setTimeout(() => { el.remove(); }, 180);
+
+  try {
+    await api(`/conversations/${conv.convId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(withAccountBody({ archived: newArchived })),
+    });
+  } catch (err) {
+    toast('No se pudo actualizar: ' + err.message);
+    refreshAfterArchiveChange();
+    return;
+  }
+
+  const label = newArchived ? 'Conversación archivada' : 'Conversación desarchivada';
+  toast(label, 'info', 4000, {
+    label: 'Deshacer',
+    onClick: async () => {
+      try {
+        await api(`/conversations/${conv.convId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(withAccountBody({ archived: wasArchived })),
+        });
+      } catch (err) {
+        toast('No se pudo deshacer: ' + err.message);
+      }
+      refreshAfterArchiveChange();
+    },
+  });
+  refreshAfterArchiveChange();
+}
+
+// ── Menú contextual (click derecho + long-press mobile) + swipe-derecha para archivar ──
+const ROW_SWIPE_THRESHOLD = 80;
+
+function attachRowGestures(el, conv) {
   let touchTimer = null;
   let longPressed = false;
   let startX = 0, startY = 0;
+  let axisLocked = null;
+  let rowDragging = false;
+  let currentDx = 0;
 
   el.addEventListener('contextmenu', e => {
     e.preventDefault();
@@ -485,6 +534,9 @@ function attachContextMenu(el, conv) {
 
   el.addEventListener('touchstart', e => {
     longPressed = false;
+    axisLocked = null;
+    rowDragging = false;
+    currentDx = 0;
     const t = e.touches[0];
     startX = t.clientX; startY = t.clientY;
     touchTimer = setTimeout(() => {
@@ -496,17 +548,45 @@ function attachContextMenu(el, conv) {
   }, { passive: true });
 
   el.addEventListener('touchmove', e => {
-    if (!touchTimer) return;
     const t = e.touches[0];
-    if (Math.abs(t.clientX - startX) > 10 || Math.abs(t.clientY - startY) > 10) {
-      clearTimeout(touchTimer);
-      touchTimer = null;
+    const dx = t.clientX - startX;
+    const dy = t.clientY - startY;
+    if (axisLocked === null) {
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+      axisLocked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+      if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
     }
-  }, { passive: true });
+    if (axisLocked !== 'x') return;
+    e.preventDefault();
+    rowDragging = true;
+    currentDx = Math.max(0, dx);
+    el.style.transform = `translateX(${currentDx}px)`;
+    el.style.opacity = String(Math.max(0.3, 1 - currentDx / 200));
+  }, { passive: false });
+
+  function resetRow() {
+    el.style.transition = 'transform .2s ease, opacity .2s ease';
+    el.style.transform = '';
+    el.style.opacity = '';
+    setTimeout(() => { el.style.transition = ''; }, 200);
+  }
 
   el.addEventListener('touchend', () => {
     if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
-  }, { passive: true });
+    if (rowDragging) {
+      if (currentDx > ROW_SWIPE_THRESHOLD) commitArchiveToggle(el, conv);
+      else resetRow();
+    }
+    rowDragging = false;
+    axisLocked = null;
+  });
+
+  el.addEventListener('touchcancel', () => {
+    if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
+    if (rowDragging) resetRow();
+    rowDragging = false;
+    axisLocked = null;
+  });
 
   // Bloquear el click sintético que dispara touchend después del long-press
   // (si no, selecciona la conversación y cierra el menú)
@@ -562,7 +642,7 @@ function showConvMenu(x, y, conv) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withAccountBody(patch)),
       });
-      safeLoadTree();
+      if (action === 'archive') refreshAfterArchiveChange(); else safeLoadTree();
     } catch (err) { toast('No se pudo actualizar: ' + err.message); }
   };
 
