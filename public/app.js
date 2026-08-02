@@ -1510,6 +1510,58 @@ document.addEventListener('keydown', e => {
   selectConv(c.convId, c.name, c.model, c.lastModel, c.projectDir, c.responseMode);
 });
 
+// ── Swipe de pantalla (activas ↔ archivadas, solo táctil) ──
+(function initPaneSwipe() {
+  const viewport = $('tree-viewport');
+  const inner = $('tree-viewport-inner');
+  const SWIPE_THRESHOLD = 60;
+  let startX = 0, startY = 0, axisLocked = null, dragging = false, currentTranslate = 0;
+
+  const paneWidth = () => viewport.getBoundingClientRect().width;
+
+  viewport.addEventListener('touchstart', e => {
+    if (e.target.closest('.conv')) return;
+    const t = e.touches[0];
+    startX = t.clientX; startY = t.clientY;
+    axisLocked = null;
+    dragging = true;
+    inner.style.transition = 'none';
+  }, { passive: true });
+
+  viewport.addEventListener('touchmove', e => {
+    if (!dragging) return;
+    const t = e.touches[0];
+    const dx = t.clientX - startX;
+    const dy = t.clientY - startY;
+    if (axisLocked === null) {
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+      axisLocked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+    }
+    if (axisLocked !== 'x') return;
+    e.preventDefault();
+    const base = viewingArchived ? -paneWidth() : 0;
+    currentTranslate = Math.min(0, Math.max(-paneWidth(), base + dx));
+    inner.style.transform = `translateX(${currentTranslate}px)`;
+  }, { passive: false });
+
+  function endDrag() {
+    if (!dragging) return;
+    dragging = false;
+    inner.style.transition = '';
+    inner.style.transform = '';
+    if (axisLocked === 'x') {
+      const base = viewingArchived ? -paneWidth() : 0;
+      const delta = currentTranslate - base;
+      if (!viewingArchived && delta < -SWIPE_THRESHOLD) goToArchived();
+      else if (viewingArchived && delta > SWIPE_THRESHOLD) goToActive();
+    }
+    axisLocked = null;
+  }
+
+  viewport.addEventListener('touchend', endDrag);
+  viewport.addEventListener('touchcancel', endDrag);
+})();
+
 async function safeLoadTree() {
   try { await loadTree(); }
   catch (err) { toast('No se pudo actualizar la lista: ' + err.message); }
