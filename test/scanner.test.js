@@ -276,33 +276,75 @@ test('sessionInfo.contextTokens = 0 si no hay usage', () => {
   assert.equal(info.contextTokens, 0);
 });
 
-test('sessionInfo.cwd usa el cwd más reciente, no el primero (ej. al entrar a un git worktree a mitad de sesión)', () => {
-  _clearSessionInfoCache();
-  const before = userEntry('arrancamos en home');
-  const afterWorktree = JSON.stringify({
-    type: 'assistant', cwd: '/home/loctime/Proyectos/demo/.worktrees/feature',
-    sessionId: 'aaaa-1111', timestamp: '2026-07-12T10:05:00.000Z',
-    message: { role: 'assistant', content: [{ type: 'text', text: 'ya en el worktree' }] },
-  });
-  const { file } = tmpFile([before, afterWorktree]);
-  const info = sessionInfo(file);
-  assert.equal(info.cwd, '/home/loctime/Proyectos/demo/.worktrees/feature');
+// Helper: arma un projectsDir falso con una sesión adentro de la carpeta `folder`
+// (que en la realidad es el cwd con todo lo no alfanumérico reemplazado por "-").
+function tmpProjects(folder, sessionId, lines) {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-resolvecwd-'));
+  const projDir = path.join(base, folder);
+  fs.mkdirSync(projDir);
+  fs.writeFileSync(path.join(projDir, `${sessionId}.jsonl`), lines.join('\n'));
+  return base;
+}
+
+const entryWithCwd = (cwd, text, ts = '2026-07-12T10:05:00.000Z') => JSON.stringify({
+  type: 'assistant', cwd, sessionId: 'sess-x', timestamp: ts,
+  message: { role: 'assistant', content: [{ type: 'text', text }] },
 });
 
-test('resolveCwd usa el cwd real de la sesión activa en vez del projectDir guardado (que puede haber quedado stale tras un EnterWorktree)', () => {
+test('sessionInfo.cwd = el cwd que codifica a la carpeta donde vive el archivo, no el último que Claude tocó', () => {
   _clearSessionInfoCache();
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-resolvecwd-'));
-  const projDir = path.join(base, '-encoded-project');
-  fs.mkdirSync(projDir);
-  const relocated = JSON.stringify({
-    type: 'assistant', cwd: '/real/worktree/path', sessionId: 'sess-relocated',
-    timestamp: '2026-07-12T10:05:00.000Z',
-    message: { role: 'assistant', content: [{ type: 'text', text: 'reubicado' }] },
-  });
-  fs.writeFileSync(path.join(projDir, 'sess-relocated.jsonl'), [userEntry('hola'), relocated].join('\n'));
+  // Sesión lanzada en /home/loctime; Claude después trabajó dentro de un proyecto.
+  // El archivo sigue indexado bajo la carpeta de /home/loctime → ése es el cwd para --resume.
+  const base = tmpProjects('-home-loctime', 'sess-x', [
+    entryWithCwd('/home/loctime', 'arrancamos en home', '2026-07-12T10:00:00.000Z'),
+    entryWithCwd('/home/loctime/Proyectos/demo', 'ahora miro el proyecto'),
+  ]);
+  const info = sessionInfo(path.join(base, '-home-loctime', 'sess-x.jsonl'));
+  assert.equal(info.cwd, '/home/loctime');
+});
 
+test('sessionInfo.cwd sigue el archivo cuando EnterWorktree lo reubica a la carpeta del worktree', () => {
+  _clearSessionInfoCache();
+  const folder = '-home-loctime-Proyectos-demo--claude-worktrees-feature';
+  const base = tmpProjects(folder, 'sess-x', [
+    entryWithCwd('/home/loctime', 'arrancamos en home', '2026-07-12T10:00:00.000Z'),
+    entryWithCwd('/home/loctime/Proyectos/demo/.claude/worktrees/feature', 'ya en el worktree'),
+  ]);
+  const info = sessionInfo(path.join(base, folder, 'sess-x.jsonl'));
+  assert.equal(info.cwd, '/home/loctime/Proyectos/demo/.claude/worktrees/feature');
+});
+
+test('sessionInfo.cwd cae al cwd más reciente si ninguno codifica a la carpeta contenedora', () => {
+  _clearSessionInfoCache();
+  const base = tmpProjects('-carpeta-que-no-corresponde', 'sess-x', [
+    entryWithCwd('/home/loctime', 'hola', '2026-07-12T10:00:00.000Z'),
+    entryWithCwd('/home/loctime/otro', 'chau'),
+  ]);
+  const info = sessionInfo(path.join(base, '-carpeta-que-no-corresponde', 'sess-x.jsonl'));
+  assert.equal(info.cwd, '/home/loctime/otro');
+});
+
+test('resolveCwd devuelve el cwd donde Claude Code va a encontrar la sesión, no el projectDir guardado', () => {
+  _clearSessionInfoCache();
+  const folder = '-home-loctime-Proyectos-demo--claude-worktrees-feature';
+  const base = tmpProjects(folder, 'sess-relocated', [
+    entryWithCwd('/home/loctime', 'arrancamos en home', '2026-07-12T10:00:00.000Z'),
+    entryWithCwd('/home/loctime/Proyectos/demo/.claude/worktrees/feature', 'reubicado'),
+  ]);
   const conv = { currentSessionId: 'sess-relocated', projectDir: '/stale/home/dir' };
-  assert.equal(resolveCwd(conv, base), '/real/worktree/path');
+  assert.equal(resolveCwd(conv, base), '/home/loctime/Proyectos/demo/.claude/worktrees/feature');
+});
+
+test('resolveCwd NO se deja llevar por las subcarpetas que Claude visitó durante la charla', () => {
+  _clearSessionInfoCache();
+  // El caso que rompía el 2do mensaje: la sesión vive bajo el cwd de arranque (home),
+  // pero el último cwd del jsonl apunta a un proyecto → --resume ahí no la encuentra.
+  const base = tmpProjects('-home-loctime', 'sess-y', [
+    entryWithCwd('/home/loctime', 'hola', '2026-07-12T10:00:00.000Z'),
+    entryWithCwd('/home/loctime/Proyectos/demo/frontend', 'trabajando en el frontend'),
+  ]);
+  const conv = { currentSessionId: 'sess-y', projectDir: '/home/loctime' };
+  assert.equal(resolveCwd(conv, base), '/home/loctime');
 });
 
 test('resolveCwd cae al projectDir guardado cuando la conversación todavía no tiene sesión (mensaje inicial)', () => {

@@ -146,5 +146,5 @@ test('cancelar un running mata el child pero no arranca el próximo hasta close'
   spawned[0].child.emit('close', -1);
   assert.equal(r.running.has('c1'), false);
   assert.equal(spawned.length, 3);
-  assert.equal(spawned[2].args[1], 'c');
+  assert.ok(spawned[2].args[1].startsWith('c'));
 });

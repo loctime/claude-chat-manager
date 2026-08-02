@@ -2,7 +2,6 @@ const { spawn, execFileSync } = require('child_process');
 const { EventEmitter } = require('events');
 const os = require('os');
 const { CLAUDE_CMD } = require('./claude-cmd');
-const { responseModeInstruction } = require('./response-modes');
 
 const CURRENT_USER = os.userInfo().username;
 const IS_WIN = process.platform === 'win32';
@@ -69,8 +68,6 @@ class Runner extends EventEmitter {
         `AVISO INFRAESTRUCTURA: te está ejecutando claude-chat-manager (Node/Express) en ${host}:${this.selfPort}. Ese proceso es tu propio transporte hacia el usuario — si lo matás perdés el stream a la mitad y el usuario ve tu respuesta cortada. NO ejecutes comandos que apunten a ese puerto ni a ese proceso: nada de kill/pkill/fuser/lsof -ti:${this.selfPort} -k, ss ... | xargs kill, systemctl stop, etc. Si el usuario te pide reiniciar el chat-manager, explicale que lo tiene que hacer él desde otra terminal (o via PM2/systemd) porque vos no podés matar tu propio host.`
       );
     }
-    const modeInstruction = responseModeInstruction(job.responseMode);
-    if (modeInstruction) promptFragments.push(modeInstruction);
     if (promptFragments.length > 0) {
       args.push('--append-system-prompt', promptFragments.join('\n\n'));
     }

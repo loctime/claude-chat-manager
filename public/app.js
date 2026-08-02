@@ -311,7 +311,7 @@ function convElement(c) {
   div.querySelector('.conv-name-text').textContent = c.name;
   div.querySelector('.conv-date').textContent = (c.lastActivity || '').slice(0, 16).replace('T', ' ');
   div._conv = c;
-  div.onclick = () => selectConv(c.convId, c.name, c.model, c.lastModel, c.projectDir, c.responseMode);
+  div.onclick = () => selectConv(c.convId, c.name, c.model, c.lastModel, c.projectDir);
   attachContextMenu(div, c);
   return div;
 }
@@ -692,6 +692,98 @@ function renderTextWithPaths(container, text) {
   }
 }
 
+// Detecta adjuntos/paths sueltos que quedaron como texto plano dentro del HTML
+// ya parseado por marked, sin tocar lo que esté dentro de <code>/<pre>/<a>
+// (ahí un path es código o ya es un link, no queremos "enriquecerlo" de nuevo).
+function enrichPlainTextNodes(root) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      let p = node.parentElement;
+      while (p && p !== root) {
+        if (p.tagName === 'CODE' || p.tagName === 'PRE' || p.tagName === 'A') return NodeFilter.FILTER_REJECT;
+        p = p.parentElement;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+  const nodes = [];
+  let n;
+  while ((n = walker.nextNode())) nodes.push(n);
+  for (const node of nodes) {
+    const t = node.textContent;
+    if (!t || !/\[Archivo adjunto:|[A-Za-z]:[\\/]|\/(?:home|tmp|root|var|opt|usr)\S/.test(t)) continue;
+    const frag = document.createDocumentFragment();
+    renderTextWithPaths(frag, t);
+    node.replaceWith(frag);
+  }
+}
+
+// Mensajes del asistente: markdown real (negrita, listas, tablas, código) +
+// sanitizado, con el auto-linkeo de paths/adjuntos aplicado encima.
+function renderAssistantText(container, text) {
+  if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+    renderTextWithPaths(container, text);
+    return;
+  }
+  const html = DOMPurify.sanitize(marked.parse(text, { breaks: true, gfm: true }));
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  tpl.content.querySelectorAll('a[href]').forEach(a => {
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+  });
+  enrichPlainTextNodes(tpl.content);
+  container.appendChild(tpl.content);
+}
+
+// ── Auto-scroll pegado al fondo ──
+// Solo bajamos solos si el usuario ya estaba al fondo. Si subió a leer algo
+// mientras Claude sigue escribiendo, respetamos dónde está parado.
+const STICK_THRESHOLD = 120; // px de tolerancia para considerar "al fondo"
+let stickToBottom = true;
+let suppressAutoScroll = false; // activo mientras loadMessages() reconstruye la lista
+
+function isNearBottom() {
+  return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight <= STICK_THRESHOLD;
+}
+function scrollToBottom() {
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+// Botón "ir al final": aparece solo cuando estás despegado del fondo.
+// .new = llegó contenido mientras leías · .done = terminó el turno.
+const jumpBtn = $('jump-bottom');
+
+function syncJumpBtn() {
+  if (stickToBottom) {
+    jumpBtn.hidden = true;
+    jumpBtn.classList.remove('new', 'done');
+  } else {
+    jumpBtn.hidden = false;
+  }
+}
+function flagJumpBtn(kind) {
+  if (stickToBottom) return;
+  jumpBtn.hidden = false;
+  jumpBtn.classList.toggle('new', kind === 'new');
+  jumpBtn.classList.toggle('done', kind === 'done');
+}
+jumpBtn.addEventListener('click', () => {
+  stickToBottom = true;
+  syncJumpBtn();
+  messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: 'smooth' });
+});
+
+function autoScroll() {
+  if (suppressAutoScroll) return;
+  if (stickToBottom) scrollToBottom();
+  else flagJumpBtn('new');
+}
+messagesEl.addEventListener('scroll', () => {
+  if (suppressAutoScroll) return;
+  stickToBottom = isNearBottom();
+  syncJumpBtn();
+});
+
 function addMsg(role, text, opts = {}) {
   const existing = document.getElementById('empty-state');
   if (existing) existing.remove();
@@ -700,9 +792,10 @@ function addMsg(role, text, opts = {}) {
   div.className = 'msg ' + role;
   if (opts.compacted) div.classList.add('compacted');
   if (role !== 'error') {
-    const span = document.createElement('span');
+    const span = document.createElement('div');
     span.className = 'msg-text';
-    renderTextWithPaths(span, text);
+    if (role === 'assistant') renderAssistantText(span, text);
+    else renderTextWithPaths(span, text);
     const ttsBtn = makeTtsBtn(text, role === 'user' ? 'user' : 'assistant');
     const time = document.createElement('span');
     time.className = 'msg-time';
@@ -714,7 +807,7 @@ function addMsg(role, text, opts = {}) {
     div.textContent = text;
   }
   messagesEl.appendChild(div);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  autoScroll();
   return div;
 }
 
@@ -772,7 +865,7 @@ function addTool(name, input, output, opts = {}) {
   }
 
   messagesEl.appendChild(det);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  autoScroll();
 }
 
 function addCompactDivider() {
@@ -792,26 +885,38 @@ function addCompactDivider() {
 }
 
 async function loadMessages(convId) {
-  messagesEl.innerHTML = '';
-  const msgs = await api(withAccount(`/conversations/${convId}/messages`));
-  if (msgs.length === 0) {
-    messagesEl.innerHTML = '<div id="empty-state"><p>Sin mensajes aún</p></div>';
-    return;
-  }
-  let inCompacted = false;
-  let dividerPlaced = false;
-  for (const m of msgs) {
-    if (m.compacted && !inCompacted) inCompacted = true;
-    if (!m.compacted && inCompacted && !dividerPlaced) {
-      addCompactDivider();
-      dividerPlaced = true;
-      inCompacted = false;
+  // Esta función vacía y reconstruye toda la lista (la llama el evento `idle`
+  // del stream). Sin esto, el rebuild resetea el scroll y te tira al fondo
+  // aunque estuvieras leyendo más arriba.
+  const wasStuck = stickToBottom;
+  const prevTop = messagesEl.scrollTop;
+  suppressAutoScroll = true;
+  try {
+    messagesEl.innerHTML = '';
+    const msgs = await api(withAccount(`/conversations/${convId}/messages`));
+    if (msgs.length === 0) {
+      messagesEl.innerHTML = '<div id="empty-state"><p>Sin mensajes aún</p></div>';
+      return;
     }
-    const opts = { compacted: !!m.compacted };
-    if (m.role === 'tool') addTool(m.name, m.input, m.output, opts);
-    else addMsg(m.role, m.text, opts);
+    let inCompacted = false;
+    let dividerPlaced = false;
+    for (const m of msgs) {
+      if (m.compacted && !inCompacted) inCompacted = true;
+      if (!m.compacted && inCompacted && !dividerPlaced) {
+        addCompactDivider();
+        dividerPlaced = true;
+        inCompacted = false;
+      }
+      const opts = { compacted: !!m.compacted };
+      if (m.role === 'tool') addTool(m.name, m.input, m.output, opts);
+      else addMsg(m.role, m.text, opts);
+    }
+    if (inCompacted && !dividerPlaced) addCompactDivider();
+  } finally {
+    suppressAutoScroll = false;
+    if (wasStuck) scrollToBottom();
+    else messagesEl.scrollTop = prevTop;
   }
-  if (inCompacted && !dividerPlaced) addCompactDivider();
 }
 
 // ── Status ──
@@ -851,6 +956,8 @@ function openStream(convId) {
         // queda tapado al instante por el reload.
         loadMessages(convId).then(() => {
           if (payload.code !== 0 && payload.stderr) addMsg('error', 'Error: ' + payload.stderr);
+          // Turno terminado: si estás leyendo más arriba, el botón pasa a verde.
+          flagJumpBtn('done');
         });
         loadTree();
         refreshCostBadge(convId);
@@ -922,14 +1029,13 @@ async function refreshCostBadge(convId) {
 $('cost-badge').onclick = () => toast($('cost-badge').title, 'info', 5000);
 
 // ── Select conversation ──
-async function selectConv(convId, name, model, lastModel, projectDir, responseMode) {
+async function selectConv(convId, name, model, lastModel, projectDir) {
   if (currentConv) drafts.set(currentConv, $('input').value);
   currentConv = convId;
   $('input').value = drafts.get(convId) || '';
   autoResize($('input'));
   $('conv-title').textContent = name;
   $('model-select').value = model || 'sonnet';
-  $('response-mode-select').value = responseMode || 'directo';
   const folderEl = $('conv-folder');
   const dirName = (projectDir || '').split(/[\\/]/).filter(Boolean).pop();
   folderEl.textContent = dirName || '';
@@ -938,6 +1044,10 @@ async function selectConv(convId, name, model, lastModel, projectDir, responseMo
   setBusy(false);
   clearAttachments();
   openChat();
+  // Al abrir otra conversación siempre arrancamos abajo, sin heredar la
+  // posición de scroll de la anterior.
+  stickToBottom = true;
+  syncJumpBtn();
   await loadMessages(convId);
   openStream(convId);
   loadTree();
@@ -959,14 +1069,16 @@ function autoResize(el) {
 $('input').addEventListener('input', () => autoResize($('input')));
 
 // ── Keyboard ──
+// En móvil el Enter del teclado virtual hace punto aparte (no envía) — para enviar
+// está el botón. En desktop se mantiene Enter=enviar / Shift+Enter=nueva línea.
+const isTouchDevice = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+
 $('input').addEventListener('keydown', e => {
+  if (isTouchDevice) return;
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     if (!$('send').disabled) $('composer').requestSubmit();
   }
-});
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && currentConv && !$('cancel-btn').hidden) $('cancel-btn').click();
 });
 
 // ── Cancel ──
@@ -1184,7 +1296,7 @@ function addUserMsgWithFiles(text, attachments) {
   }
 
   if (text) {
-    const span = document.createElement('span');
+    const span = document.createElement('div');
     span.className = 'msg-text';
     span.textContent = text;
     div.appendChild(span);
@@ -1198,7 +1310,10 @@ function addUserMsgWithFiles(text, attachments) {
   div.appendChild(time);
 
   messagesEl.appendChild(div);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  // Mensaje propio: siempre bajamos y volvemos a "pegarnos" al fondo.
+  stickToBottom = true;
+  syncJumpBtn();
+  scrollToBottom();
 }
 
 // ── Send ──
@@ -1242,18 +1357,6 @@ $('model-select').onchange = async () => {
       body: JSON.stringify(withAccountBody({ model: $('model-select').value })),
     });
   } catch (err) { addMsg('error', 'No se pudo cambiar el modelo: ' + err.message); }
-};
-
-// ── Response mode change ──
-$('response-mode-select').onchange = async () => {
-  if (!currentConv) return;
-  try {
-    await api(`/conversations/${currentConv}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(withAccountBody({ responseMode: $('response-mode-select').value })),
-    });
-  } catch (err) { addMsg('error', 'No se pudo cambiar el modo de respuesta: ' + err.message); }
 };
 
 // ── Rename ──
@@ -1316,7 +1419,7 @@ $('new-form').onsubmit = async e => {
     $('vps-project').value = '';
     $('vps-project-custom').value = '';
     $('new-model').value = '';
-    await selectConv(convId, text ? text.slice(0, 60) : 'Nueva conversación', model, null, resolvedDir, undefined);
+    await selectConv(convId, text ? text.slice(0, 60) : 'Nueva conversación', model, null, resolvedDir);
     if (text) {
       addMsg('user', text);
       setBusy(true);
@@ -1387,7 +1490,7 @@ async function runSearch(q) {
 
 async function openSearchResult(r) {
   $('search-dialog').close();
-  await selectConv(r.convId, r.displayName || r.name, r.model, r.lastModel, r.cwd, r.responseMode);
+  await selectConv(r.convId, r.displayName || r.name, r.model, r.lastModel, r.cwd);
   // Scroll al match — buscamos por índice de mensaje
   requestAnimationFrame(() => {
     const nodes = messagesEl.querySelectorAll('.msg, details.tool');
@@ -1434,7 +1537,7 @@ document.addEventListener('keydown', e => {
   e.preventDefault();
   const target = top2[0]._conv.convId === currentConv ? top2[1] : top2[0];
   const c = target._conv;
-  selectConv(c.convId, c.name, c.model, c.lastModel, c.projectDir, c.responseMode);
+  selectConv(c.convId, c.name, c.model, c.lastModel, c.projectDir);
 });
 
 async function safeLoadTree() {
@@ -1453,7 +1556,44 @@ const DEFAULT_SETTINGS = {
   colorAccent: '',
   colorMe: '',
   colorAi: '',
+  fontFamily: '',
+  fontSize: '',
+  chatZoom: 1,
+  sidebarWidth: '',
+  sidebarHidden: false,
 };
+// Stacks 100% de fuentes de sistema (sin descargar nada, offline-friendly).
+// El label es el nombre real de la fuente para poder mostrar cada <option>
+// escrita en su propia tipografía y elegir a ojo.
+const FONT_FAMILY_OPTIONS = [
+  { value: '', label: 'Sistema', stack: "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" },
+  { value: 'arial', label: 'Arial', stack: "Arial, Helvetica, sans-serif" },
+  { value: 'verdana', label: 'Verdana', stack: "Verdana, Geneva, sans-serif" },
+  { value: 'tahoma', label: 'Tahoma', stack: "Tahoma, Geneva, sans-serif" },
+  { value: 'trebuchet', label: 'Trebuchet MS', stack: "'Trebuchet MS', sans-serif" },
+  { value: 'century', label: 'Century Gothic', stack: "'Century Gothic', CenturyGothic, Futura, sans-serif" },
+  { value: 'georgia', label: 'Georgia', stack: "Georgia, serif" },
+  { value: 'times', label: 'Times New Roman', stack: "'Times New Roman', Times, serif" },
+  { value: 'garamond', label: 'Garamond', stack: "Garamond, 'Palatino Linotype', serif" },
+  { value: 'mono', label: 'Consolas', stack: "Consolas, 'SFMono-Regular', Menlo, 'Courier New', monospace" },
+  { value: 'comic', label: 'Comic Sans MS', stack: "'Comic Sans MS', 'Comic Sans', cursive" },
+  { value: 'impact', label: 'Impact', stack: "Impact, 'Arial Narrow Bold', sans-serif" },
+];
+const FONT_FAMILY_MAP = Object.fromEntries(FONT_FAMILY_OPTIONS.map(f => [f.value, f.stack]));
+const FONT_SIZE_MAP = { sm: '13px', '': '14.5px', lg: '16.5px', xl: '19px' };
+
+function populateFontOptions() {
+  const sel = $('cfg-font-family');
+  sel.innerHTML = '';
+  for (const f of FONT_FAMILY_OPTIONS) {
+    const opt = document.createElement('option');
+    opt.value = f.value;
+    opt.textContent = f.label;
+    opt.style.fontFamily = f.stack;
+    sel.appendChild(opt);
+  }
+}
+populateFontOptions();
 const settings = { ...DEFAULT_SETTINGS, ...loadSettings() };
 
 function loadSettings() {
@@ -1486,8 +1626,56 @@ function applySettings() {
     if (textColor) root.style.setProperty(k, textColor);
     else root.style.removeProperty(k);
   }
+  root.style.setProperty('--chat-font', FONT_FAMILY_MAP[settings.fontFamily] || FONT_FAMILY_MAP['']);
+  const baseSize = parseFloat(FONT_SIZE_MAP[settings.fontSize] || FONT_SIZE_MAP['']);
+  const zoom = +settings.chatZoom || 1;
+  root.style.setProperty('--chat-size', (baseSize * zoom) + 'px');
+  root.style.setProperty('--chat-zoom', zoom);
+  if (settings.sidebarWidth) root.style.setProperty('--sidebar-width', settings.sidebarWidth);
+  document.body.classList.toggle('sidebar-hidden', !!settings.sidebarHidden);
 }
 applySettings();
+
+// ── Zoom del chat con Ctrl/Cmd + scroll (solo el contenido, no el sidebar) ──
+$('panel-chat').addEventListener('wheel', e => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  e.preventDefault();
+  const cur = +settings.chatZoom || 1;
+  const next = Math.min(1.8, Math.max(0.7, +(cur + (e.deltaY > 0 ? -0.05 : 0.05)).toFixed(2)));
+  if (next === cur) return;
+  settings.chatZoom = next;
+  applySettings(); saveSettings();
+}, { passive: false });
+
+// ── Sidebar: ancho arrastrable + ocultar/mostrar (solo desktop) ──
+$('sidebar-toggle-btn').onclick = () => {
+  settings.sidebarHidden = !settings.sidebarHidden;
+  applySettings(); saveSettings();
+};
+
+(() => {
+  const resizer = $('panel-resizer');
+  let dragging = false;
+  resizer.addEventListener('mousedown', e => {
+    dragging = true;
+    resizer.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const w = Math.min(640, Math.max(220, e.clientX));
+    document.documentElement.style.setProperty('--sidebar-width', w + 'px');
+  });
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    resizer.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    settings.sidebarWidth = getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width').trim();
+    saveSettings();
+  });
+})();
 
 function populateVoices() {
   const voices = speechSynthesis.getVoices();
@@ -1530,6 +1718,8 @@ function openSettings() {
   $('cfg-color-accent').value = settings.colorAccent || readComputedColor('--accent');
   $('cfg-color-me').value = settings.colorMe || readComputedColor('--bubble-me');
   $('cfg-color-ai').value = settings.colorAi || readComputedColor('--bubble-ai');
+  $('cfg-font-family').value = settings.fontFamily;
+  $('cfg-font-size').value = settings.fontSize;
   $('settings-dialog').showModal();
 }
 
@@ -1544,6 +1734,8 @@ $('cfg-voice-user').onchange = e => { settings.voiceUser = e.target.value; saveS
 $('cfg-color-accent').oninput = e => { settings.colorAccent = e.target.value; applySettings(); saveSettings(); };
 $('cfg-color-me').oninput = e => { settings.colorMe = e.target.value; applySettings(); saveSettings(); };
 $('cfg-color-ai').oninput = e => { settings.colorAi = e.target.value; applySettings(); saveSettings(); };
+$('cfg-font-family').onchange = e => { settings.fontFamily = e.target.value; applySettings(); saveSettings(); };
+$('cfg-font-size').onchange = e => { settings.fontSize = e.target.value; applySettings(); saveSettings(); };
 
 $('cfg-reset').onclick = () => {
   Object.assign(settings, DEFAULT_SETTINGS);

@@ -4,6 +4,11 @@ const os = require('os');
 
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 
+// Legado: los "modos de respuesta" (2026-07-26 → 2026-07-31) le pegaban esta marca
+// al final del mensaje del usuario. La feature ya no existe, pero las conversaciones
+// de esos días la tienen guardada en el jsonl — la seguimos sacando al mostrar.
+const LEGACY_MODE_MARKER_RE = /\n*\[\[modo:[^\]]*\]\]\s*$/;
+
 function parseJsonl(filePath) {
   let raw;
   try { raw = fs.readFileSync(filePath, 'utf8'); } catch { return []; }
@@ -16,8 +21,8 @@ function parseJsonl(filePath) {
 }
 
 function contentToText(c) {
-  if (typeof c === 'string') return c;
-  if (Array.isArray(c)) return c.filter(b => b.type === 'text').map(b => b.text).join('\n');
+  if (typeof c === 'string') return c.replace(LEGACY_MODE_MARKER_RE, '');
+  if (Array.isArray(c)) return c.filter(b => b.type === 'text').map(b => b.text).join('\n').replace(LEGACY_MODE_MARKER_RE, '');
   return '';
 }
 
@@ -36,6 +41,26 @@ function isChannelSession(entries) {
 // no tienen mensajes útiles — así no re-parseamos jsonl inservibles en cada tick).
 const _sessionInfoCache = new Map();
 
+// Claude Code indexa cada sesión en ~/.claude/projects/<cwd con todo lo no alfanumérico
+// reemplazado por "-">. Ej: C:\Users\User → C--Users-User.
+function encodeProjectDir(p) { return String(p).replace(/[^a-zA-Z0-9]/g, '-'); }
+
+// Con qué cwd hay que lanzar `claude --resume <sesión>`. La fuente de verdad es la carpeta
+// donde vive el .jsonl, NO los campos `cwd` de las entradas: esos van cambiando a medida que
+// Claude trabaja en subcarpetas (un subagente en Proyectos/X deja cwd=Proyectos/X) pero el
+// archivo sigue indexado bajo el cwd de arranque. Elegimos el cwd registrado que codifica a
+// esa carpeta — cubre tanto ese caso como el del worktree, donde EnterWorktree sí reubica el
+// archivo y el cwd nuevo es el que matchea.
+function _sessionCwd(filePath, entries) {
+  const folder = path.basename(path.dirname(filePath));
+  const cwds = entries.filter(e => e.cwd).map(e => e.cwd);
+  for (let i = cwds.length - 1; i >= 0; i--) {
+    if (encodeProjectDir(cwds[i]) === folder) return cwds[i];
+  }
+  // Ninguno matchea (jsonl importado, carpeta renombrada): el más reciente es la mejor apuesta.
+  return cwds.length ? cwds[cwds.length - 1] : null;
+}
+
 function _computeSessionInfo(filePath) {
   const entries = parseJsonl(filePath);
   if (isChannelSession(entries)) return null;
@@ -49,7 +74,7 @@ function _computeSessionInfo(filePath) {
   const lastAssistant = [...msgs].reverse().find(e => e.type === 'assistant' && e.message && e.message.model);
   return {
     sessionId: path.basename(filePath, '.jsonl'),
-    cwd: ([...entries].reverse().find(e => e.cwd) || {}).cwd || null,
+    cwd: _sessionCwd(filePath, entries),
     snippet,
     messageCount: msgs.length,
     lastActivity,

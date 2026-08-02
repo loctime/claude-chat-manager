@@ -11,7 +11,7 @@ PWA local para chatear con Claude Code desde el celular o el browser. Sidebar de
 - **Previews** — miniaturas inline para imágenes, cards para PDFs, lightbox fullscreen al tocar
 - **TTS** — botón 🔊 en cada mensaje reproduce el texto (Web Speech API)
 - **PWA** — instalable en Android/iOS, funciona con Cloudflare Tunnel para acceso remoto
-- **Multi-modelo** — selector de modelo por conversación (Opus / Sonnet / Haiku)
+- **Multi-modelo** — selector de modelo por conversación (Fable / Opus / Sonnet / Haiku)
 - **Cola FIFO** — máximo 2 procesos `claude` concurrentes
 
 ## Requisitos

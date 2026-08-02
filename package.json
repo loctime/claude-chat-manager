@@ -7,7 +7,9 @@
     "test": "node --test \"test/**/*.test.js\""
   },
   "dependencies": {
+    "dompurify": "^3.4.12",
     "express": "^5.2.1",
+    "marked": "^18.0.7",
     "multer": "^2.2.0"
   }
 }

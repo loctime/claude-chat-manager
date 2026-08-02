@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="J.A.R.V.I.S">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=24">
+  <link rel="stylesheet" href="style.css?v=30">
 </head>
 <body>
   <div id="app">
@@ -40,11 +40,16 @@
       <nav id="tree"></nav>
     </div>
 
+    <div id="panel-resizer" title="Arrastrá para cambiar el ancho"></div>
+
     <!-- Panel chat -->
     <div id="panel-chat">
       <header id="chat-header">
         <button id="back-btn" aria-label="Volver" title="Volver">
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+        </button>
+        <button id="sidebar-toggle-btn" aria-label="Ocultar/mostrar lista" title="Ocultar/mostrar lista">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M3 4h18v2H3V4zm0 7h18v2H3v-2zm0 7h18v2H3v-2z"/></svg>
         </button>
         <div id="conv-info">
           <span id="conv-title">Elegí una conversación</span>
@@ -54,21 +59,22 @@
         <select id="model-select" title="Modelo" aria-label="Modelo">
           <option value="sonnet">Sonnet</option>
           <option value="opus">Opus</option>
+          <option value="fable">Fable</option>
           <option value="haiku">Haiku</option>
-        </select>
-        <select id="response-mode-select" title="Modo de respuesta" aria-label="Modo de respuesta">
-          <option value="detallado">Detallado</option>
-          <option value="directo">Directo</option>
-          <option value="cavernicola">Cavernícola</option>
         </select>
         <span id="cost-badge" title="Costo estimado — tocar para ver el detalle" hidden></span>
       </header>
-      <section id="messages">
-        <div id="empty-state">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="48" height="48" opacity=".2"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
-          <p>Seleccioná una conversación</p>
-        </div>
-      </section>
+      <div id="messages-wrap">
+        <section id="messages">
+          <div id="empty-state">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="48" height="48" opacity=".2"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
+            <p>Seleccioná una conversación</p>
+          </div>
+        </section>
+        <button id="jump-bottom" type="button" hidden title="Ir al final" aria-label="Ir al final">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M12 16.5 5.5 10l1.4-1.4 5.1 5.1 5.1-5.1L18.5 10z"/></svg>
+        </button>
+      </div>
       <div id="composer-attachments"></div>
       <form id="composer">
         <input id="file-input" type="file" hidden accept="image/*,text/*,application/*" multiple>
@@ -126,6 +132,7 @@
         <select id="new-model">
           <option value="">Default</option>
           <option value="opus">Opus</option>
+          <option value="fable">Fable</option>
           <option value="sonnet">Sonnet</option>
           <option value="haiku">Haiku</option>
         </select>
@@ -153,6 +160,19 @@
 
       <label>Voz propia
         <select id="cfg-voice-user"><option value="">Default del sistema</option></select>
+      </label>
+
+      <label>Tipografía de los mensajes
+        <select id="cfg-font-family"></select>
+      </label>
+
+      <label>Tamaño de letra
+        <select id="cfg-font-size">
+          <option value="sm">Chico</option>
+          <option value="">Normal</option>
+          <option value="lg">Grande</option>
+          <option value="xl">Muy grande</option>
+        </select>
       </label>
 
       <div class="settings-colors">
@@ -187,6 +207,8 @@
     <button id="ios-tip-close" aria-label="Cerrar">✕</button>
   </div>
 
-  <script src="app.js?v=24"></script>
+  <script src="vendor/marked.min.js"></script>
+  <script src="vendor/purify.min.js"></script>
+  <script src="app.js?v=30"></script>
 </body>
 </html>

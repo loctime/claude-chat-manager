@@ -134,6 +134,9 @@ const sseClients = new Map(); // convId → Set<res>
 // Precios en USD por millón de tokens. Match por prefijo del model id.
 // Fuente: página pública de precios Anthropic (Ene 2026). Ajustar cuando cambien.
 const PRICE_TABLE = [
+  { prefix: 'claude-fable-5',     input: 10,   output: 50,  cacheWrite: 12.5,  cacheRead: 1 },
+  { prefix: 'claude-opus-5',      input: 5,    output: 25,  cacheWrite: 6.25,  cacheRead: 0.5 },
+  { prefix: 'claude-sonnet-5',    input: 3,    output: 15,  cacheWrite: 3.75,  cacheRead: 0.3 },
   { prefix: 'claude-opus-4',      input: 15,   output: 75,  cacheWrite: 18.75, cacheRead: 1.5 },
   { prefix: 'claude-sonnet-4',    input: 3,    output: 15,  cacheWrite: 3.75,  cacheRead: 0.3 },
   { prefix: 'claude-haiku-4',     input: 1,    output: 5,   cacheWrite: 1.25,  cacheRead: 0.1 },
@@ -148,6 +151,13 @@ function priceFor(model) {
 // Ventana de contexto en tokens. Todos los Claude 3.5/4 usan 200k por defecto.
 // Si en el futuro algún modelo cambia (o se habilita 1M en Sonnet), agregar prefijo acá.
 const CONTEXT_WINDOW_TABLE = [
+  { prefix: 'claude-fable-5',   tokens: 1_000_000 },
+  { prefix: 'claude-opus-5',    tokens: 1_000_000 },
+  { prefix: 'claude-sonnet-5',  tokens: 1_000_000 },
+  { prefix: 'claude-opus-4-6',  tokens: 1_000_000 },
+  { prefix: 'claude-opus-4-7',  tokens: 1_000_000 },
+  { prefix: 'claude-opus-4-8',  tokens: 1_000_000 },
+  { prefix: 'claude-sonnet-4-6', tokens: 1_000_000 },
   { prefix: 'claude-', tokens: 200_000 },
 ];
 function contextWindowFor(model) {
@@ -445,7 +455,6 @@ app.get('/api/tree', (req, res) => {
       lastActivity: s.lastActivity || null,
       messageCount: s.messageCount || 0,
       model: c.model || null,
-      responseMode: c.responseMode || null,
       lastModel: s.lastModel || null,
       pinned: !!c.pinned,
       archived: !!c.archived,
@@ -464,7 +473,6 @@ app.get('/api/tree', (req, res) => {
       lastActivity: s.lastActivity,
       messageCount: s.messageCount,
       model: null,
-      responseMode: null,
       lastModel: s.lastModel || null,
       pinned: false,
       archived: false,
@@ -511,7 +519,7 @@ app.get('/api/search', (req, res) => {
   const data = meta.load(accountMetaFile(acc));
   const bySessionId = new Map();
   for (const [convId, c] of Object.entries(data.conversations)) {
-    bySessionId.set(c.currentSessionId, { convId, name: c.name, responseMode: c.responseMode });
+    bySessionId.set(c.currentSessionId, { convId, name: c.name });
   }
   const enriched = results.map(r => {
     const ref = bySessionId.get(r.sessionId);
@@ -523,7 +531,6 @@ app.get('/api/search', (req, res) => {
       displayName: (ref && ref.name) || r.name,
       model: conv ? conv.model : null,
       lastModel: conv ? conv.lastModel : r.lastModel,
-      responseMode: ref ? (ref.responseMode || null) : null,
     };
   });
   res.json({ results: enriched });
@@ -592,7 +599,7 @@ app.post('/api/conversations/:id/message', (req, res) => {
   // proyecto y projectDir quedó desactualizado — resolveCwd busca dónde vive
   // realmente la sesión ahora.
   const cwd = (conv.projectDir || '').startsWith('VPS: ') ? accountHomeDir(acc) : scanner.resolveCwd(conv, accountProjectsDir(acc));
-  runner.send({ convId, sessionId: conv.currentSessionId, cwd, text: outgoing, model: conv.model, responseMode: conv.responseMode, account: acc });
+  runner.send({ convId, sessionId: conv.currentSessionId, cwd, text: outgoing, model: conv.model, account: acc });
   res.status(202).json({ queued: true });
 });
 
@@ -669,7 +676,6 @@ app.patch('/api/conversations/:id', (req, res) => {
     conv.aiTitle = false;
   }
   if ('model' in req.body) conv.model = (req.body.model || '').trim() || undefined;
-  if ('responseMode' in req.body) conv.responseMode = (req.body.responseMode || '').trim() || undefined;
   if ('pinned' in req.body) conv.pinned = !!req.body.pinned;
   if ('archived' in req.body) conv.archived = !!req.body.archived;
   meta.save(data, metaFile);

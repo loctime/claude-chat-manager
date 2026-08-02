@@ -16,6 +16,9 @@
   --input-bg:  #2a3942;
   --radius:    8px;
   --safe-b:    env(safe-area-inset-bottom, 0px);
+  --chat-font: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --chat-size: 14.5px;
+  --sidebar-width: 360px;
 }
 
 html, body { height: 100%; overflow: hidden; }
@@ -26,13 +29,43 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
 
 /* ── Panel lista ── */
 #panel-list {
-  width: 360px;
+  width: var(--sidebar-width, 360px);
   min-width: 280px;
   display: flex;
   flex-direction: column;
   background: var(--panel);
   border-right: 1px solid var(--border);
   flex-shrink: 0;
+  overflow: hidden;
+}
+
+/* ── Divisor arrastrable + colapso del sidebar (solo desktop) ── */
+#panel-resizer { display: none; }
+@media (min-width: 768px) {
+  #panel-resizer {
+    display: block;
+    width: 5px;
+    flex: 0 0 auto;
+    cursor: col-resize;
+    background: transparent;
+  }
+  #panel-resizer:hover, #panel-resizer.dragging { background: var(--accent); opacity: .35; }
+
+  body.sidebar-hidden #panel-list {
+    width: 64px;
+    min-width: 64px;
+  }
+  body.sidebar-hidden #panel-resizer { display: none; }
+  body.sidebar-hidden #list-header,
+  body.sidebar-hidden #ptr-indicator,
+  body.sidebar-hidden .project > summary,
+  body.sidebar-hidden .conv-body {
+    display: none;
+  }
+  body.sidebar-hidden .conv { justify-content: center; padding: 10px 0; }
+  /* Trabajando: en el rail mostramos solo el pulso, más grande, no el avatar de al lado */
+  body.sidebar-hidden .conv:has(.ping-dot.active) .conv-avatar { display: none; }
+  body.sidebar-hidden .conv .ping-dot { width: 26px; height: 26px; margin-right: 0; }
 }
 
 #list-header {
@@ -206,6 +239,18 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
 }
 #back-btn:hover { background: var(--border); }
 
+#sidebar-toggle-btn {
+  display: none;
+  background: none; border: none; color: var(--text2); cursor: pointer;
+  width: 36px; height: 36px; border-radius: 50%;
+  align-items: center; justify-content: center; transition: background .15s;
+  flex-shrink: 0;
+}
+#sidebar-toggle-btn:hover { background: var(--border); color: var(--text); }
+@media (min-width: 768px) {
+  #sidebar-toggle-btn { display: flex; }
+}
+
 #conv-info { flex: 1; min-width: 0; }
 #conv-title {
   display: block; font-size: 15px; font-weight: 600;
@@ -221,12 +266,6 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
   max-width: 110px; overflow: hidden; text-overflow: ellipsis;
 }
 
-#response-mode-select {
-  background: var(--input-bg); color: var(--text2); border: 1px solid var(--border);
-  border-radius: 6px; padding: 3px 6px; font-size: 12px; cursor: pointer;
-  max-width: 110px; overflow: hidden; text-overflow: ellipsis;
-}
-
 #conv-folder {
   flex: 0 0 auto;
   background: var(--input-bg); color: var(--text2); border: 1px solid var(--border);
@@ -236,6 +275,16 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
 }
 
 /* ── Mensajes ── */
+/* Envuelve el scroll para poder anclarle encima el botón "ir al final" sin
+   depender de la altura del composer (que crece con el textarea). */
+#messages-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
 #messages {
   flex: 1;
   overflow-y: auto;
@@ -248,6 +297,54 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
 #messages::-webkit-scrollbar { width: 4px; }
 #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
+/* Botón "ir al final": solo aparece cuando te despegaste del fondo.
+   .new = llegó contenido mientras leías · .done = terminó el turno. */
+#jump-bottom {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 5;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--header);
+  color: var(--text2);
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .35);
+  transition: background .2s ease, color .2s ease, border-color .2s ease;
+}
+#jump-bottom[hidden] { display: none; }
+#jump-bottom:hover { color: var(--text); }
+
+#jump-bottom.new {
+  color: var(--text);
+  border-color: var(--text2);
+  animation: jump-glow 1.4s ease-in-out infinite;
+}
+#jump-bottom.done {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0b141a;
+  animation: jump-glow-done 1.4s ease-in-out infinite;
+}
+
+@keyframes jump-glow {
+  0%, 100% { box-shadow: 0 2px 8px rgba(0, 0, 0, .35); }
+  50%      { box-shadow: 0 2px 8px rgba(0, 0, 0, .35), 0 0 0 5px rgba(134, 150, 160, .18); }
+}
+@keyframes jump-glow-done {
+  0%, 100% { box-shadow: 0 2px 8px rgba(0, 0, 0, .35); }
+  50%      { box-shadow: 0 2px 8px rgba(0, 0, 0, .35), 0 0 0 6px rgba(37, 211, 102, .28); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #jump-bottom.new, #jump-bottom.done { animation: none; }
+}
+
 #empty-state {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   flex: 1; gap: 12px; color: var(--text2); font-size: 14px;
@@ -255,12 +352,14 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
 }
 
 .msg {
-  max-width: min(72%, 540px);
+  max-width: 100%;
+  min-width: 100px;
   padding: 7px 12px 6px;
   border-radius: 7.5px;
   white-space: pre-wrap;
   line-height: 1.45;
-  font-size: 14.5px;
+  font-family: var(--chat-font);
+  font-size: var(--chat-size);
   position: relative;
   word-break: break-word;
 }
@@ -400,6 +499,53 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
   padding: 1px 5px;
   font-family: monospace;
   font-size: 12px;
+}
+
+/* ── Markdown en respuestas del asistente ── */
+.msg-text > :first-child { margin-top: 0; }
+.msg-text > :last-child { margin-bottom: 0; }
+.msg-text p { margin: 0 0 8px; }
+.msg-text ul, .msg-text ol { margin: 4px 0 8px; padding-left: 22px; }
+.msg-text li { margin: 2px 0; }
+.msg-text li > p { margin: 0; }
+.msg-text a { color: var(--accent); text-decoration: underline; word-break: break-word; }
+.msg-text strong { font-weight: 700; }
+.msg-text hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+.msg-text blockquote {
+  margin: 6px 0;
+  padding: 2px 10px;
+  border-left: 3px solid var(--accent);
+  color: var(--text2);
+}
+.msg-text table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+  width: max-content;
+  max-width: 100%;
+  margin: 6px 0 10px;
+  font-size: 13px;
+}
+.msg-text th, .msg-text td {
+  border: 1px solid rgba(255,255,255,.15);
+  padding: 4px 8px;
+  text-align: left;
+}
+.msg-text th { background: rgba(255,255,255,.06); font-weight: 600; }
+.msg-text pre {
+  background: #0d1b22;
+  border-radius: 6px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  margin: 6px 0;
+  white-space: pre;
+}
+.msg-text pre code {
+  background: none;
+  padding: 0;
+  font-size: 12.5px;
+  line-height: 1.4;
+  white-space: pre;
 }
 
 /* ── Botón TTS en mensajes ── */
