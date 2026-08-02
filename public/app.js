@@ -5,7 +5,6 @@ let treeLimit = 100;
 let treeHasMore = false;
 let treeTotal = 0;
 let archivedTotal = 0;
-let archivedTree = [];
 let archivedTreeLimit = 100;
 let archivedTreeHasMore = false;
 let archivedTreeTotal = 0;
@@ -267,6 +266,7 @@ async function refreshAll() {
   btn.classList.add('spinning');
   try {
     await loadTree();
+    if (archivedPaneLoaded) await loadArchivedTree();
     if (currentConv) await loadMessages(currentConv);
   } finally {
     btn.classList.remove('spinning');
@@ -397,7 +397,6 @@ async function loadArchivedTree() {
   const params = new URLSearchParams({ limit: String(archivedTreeLimit), archived: '1' });
   if (activeAccount) params.set('account', activeAccount);
   const resp = await api('/tree?' + params);
-  archivedTree = resp.tree;
   archivedTreeHasMore = resp.hasMore;
   archivedTreeTotal = resp.total;
   const nav = $('tree-archived');
@@ -454,7 +453,6 @@ function goToActive() {
 function resetArchivedPane() {
   archivedPaneLoaded = false;
   archivedTreeLimit = 100;
-  archivedTree = [];
   $('tree-archived').innerHTML = '';
   if (viewingArchived) goToActive();
 }
@@ -472,7 +470,7 @@ function updateGlobalBusyIndicator() {
   else navigator.clearAppBadge().catch(() => {});
 }
 
-function refreshAfterArchiveChange() {
+function refreshVisibleTrees() {
   safeLoadTree();
   if (archivedPaneLoaded) safeLoadArchivedTree();
 }
@@ -493,7 +491,7 @@ async function commitArchiveToggle(el, conv) {
     });
   } catch (err) {
     toast('No se pudo actualizar: ' + err.message);
-    refreshAfterArchiveChange();
+    setTimeout(refreshVisibleTrees, 200);
     return;
   }
 
@@ -510,10 +508,10 @@ async function commitArchiveToggle(el, conv) {
       } catch (err) {
         toast('No se pudo deshacer: ' + err.message);
       }
-      refreshAfterArchiveChange();
+      refreshVisibleTrees();
     },
   });
-  refreshAfterArchiveChange();
+  setTimeout(refreshVisibleTrees, 200);
 }
 
 // ── Menú contextual (click derecho + long-press mobile) + swipe-derecha para archivar ──
@@ -526,6 +524,7 @@ function attachRowGestures(el, conv) {
   let axisLocked = null;
   let rowDragging = false;
   let currentDx = 0;
+  let redirectedToPane = false;
 
   el.addEventListener('contextmenu', e => {
     e.preventDefault();
@@ -537,6 +536,7 @@ function attachRowGestures(el, conv) {
     axisLocked = null;
     rowDragging = false;
     currentDx = 0;
+    redirectedToPane = false;
     const t = e.touches[0];
     startX = t.clientX; startY = t.clientY;
     touchTimer = setTimeout(() => {
@@ -550,12 +550,26 @@ function attachRowGestures(el, conv) {
   el.addEventListener('touchmove', e => {
     if (longPressed) return; // el menú ya abrió para este gesto: no arrastrar la fila
     const t = e.touches[0];
+
+    if (redirectedToPane) {
+      if (paneSwipeMove(t.clientX, t.clientY)) e.preventDefault();
+      return;
+    }
+
     const dx = t.clientX - startX;
     const dy = t.clientY - startY;
     if (axisLocked === null) {
       if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
       axisLocked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
       if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
+      if (axisLocked === 'x' && dx < 0) {
+        // Arrastre hacia la izquierda: nunca archiva (solo la derecha lo
+        // hace) — se lo cedemos al swipe de pantalla, porque en una lista
+        // llena casi no queda fondo tocable fuera de las filas.
+        redirectedToPane = true;
+        if (paneSwipeStart(startX, startY) && paneSwipeMove(t.clientX, t.clientY)) e.preventDefault();
+        return;
+      }
     }
     if (axisLocked !== 'x') return;
     e.preventDefault();
@@ -572,21 +586,27 @@ function attachRowGestures(el, conv) {
     setTimeout(() => { el.style.transition = ''; }, 200);
   }
 
-  el.addEventListener('touchend', () => {
+  el.addEventListener('touchend', async () => {
     if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
-    if (rowDragging && !longPressed) {
+    if (redirectedToPane) {
+      await paneSwipeEnd();
+    } else if (rowDragging && !longPressed) {
       if (currentDx > ROW_SWIPE_THRESHOLD) commitArchiveToggle(el, conv);
       else resetRow();
-    } else if (rowDragging) {
-      resetRow();
     }
+    redirectedToPane = false;
     rowDragging = false;
     axisLocked = null;
   });
 
   el.addEventListener('touchcancel', () => {
     if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
-    if (rowDragging) resetRow();
+    if (redirectedToPane) {
+      paneSwipeEnd();
+    } else if (rowDragging) {
+      resetRow();
+    }
+    redirectedToPane = false;
     rowDragging = false;
     axisLocked = null;
   });
@@ -632,7 +652,7 @@ function showConvMenu(x, y, conv) {
           body: JSON.stringify(withAccountBody({})),
         });
         toast(`Compactado (${r.messagesCompacted} mensajes resumidos)`, 'info', 3000);
-        safeLoadTree();
+        refreshVisibleTrees();
       } catch (err) { toast('No se pudo compactar: ' + err.message); }
       return;
     }
@@ -645,7 +665,7 @@ function showConvMenu(x, y, conv) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(withAccountBody(patch)),
       });
-      if (action === 'archive') refreshAfterArchiveChange(); else safeLoadTree();
+      refreshVisibleTrees();
     } catch (err) { toast('No se pudo actualizar: ' + err.message); }
   };
 
@@ -1025,15 +1045,15 @@ function openStream(convId) {
         loadMessages(convId).then(() => {
           if (payload.code !== 0 && payload.stderr) addMsg('error', 'Error: ' + payload.stderr);
         });
-        loadTree();
+        refreshVisibleTrees();
         refreshCostBadge(convId);
       } else {
         setBusy(true);
-        loadTree();
+        refreshVisibleTrees();
       }
     } else if (payload.kind === 'meta') {
       if (payload.name) $('conv-title').textContent = payload.name;
-      loadTree();
+      refreshVisibleTrees();
     }
   };
   eventSource.onerror = () => {
@@ -1046,7 +1066,7 @@ function openStream(convId) {
     setTimeout(() => {
       if (convId !== currentConv) return;
       loadMessages(convId);
-      loadTree();
+      refreshVisibleTrees();
     }, 1500);
   };
 }
@@ -1611,76 +1631,96 @@ document.addEventListener('keydown', e => {
 });
 
 // ── Swipe de pantalla (activas ↔ archivadas, solo táctil) ──
-(function initPaneSwipe() {
-  const viewport = $('tree-viewport');
-  const inner = $('tree-viewport-inner');
-  const SWIPE_THRESHOLD = 60;
-  let startX = 0, startY = 0, axisLocked = null, dragging = false, currentTranslate = 0, navigating = false;
+// Expuesto como funciones (no IIFE) porque attachRowGestures también las
+// invoca cuando detecta un arrastre hacia la izquierda que empieza sobre
+// una fila (ver Finding 2 del review final: con la lista llena de filas,
+// casi no queda fondo tocable para iniciar el swipe de pantalla).
+const PANE_SWIPE_THRESHOLD = 60;
+let paneStartX = 0, paneStartY = 0, paneAxisLocked = null, paneDragging = false, paneCurrentTranslate = 0, paneNavigating = false;
 
-  const paneWidth = () => viewport.getBoundingClientRect().width;
+function paneViewportWidth() {
+  return $('tree-viewport').getBoundingClientRect().width;
+}
+
+function paneSwipeStart(clientX, clientY) {
+  if (paneNavigating) return false; // no arrancar un gesto nuevo con una navegación en curso
+  paneStartX = clientX; paneStartY = clientY;
+  paneAxisLocked = null;
+  paneDragging = true;
+  $('tree-viewport-inner').style.transition = 'none';
+  return true;
+}
+
+function paneSwipeMove(clientX, clientY) {
+  if (!paneDragging) return false;
+  const dx = clientX - paneStartX;
+  const dy = clientY - paneStartY;
+  if (paneAxisLocked === null) {
+    if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return false;
+    paneAxisLocked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+  }
+  if (paneAxisLocked !== 'x') return false;
+  const base = viewingArchived ? -paneViewportWidth() : 0;
+  paneCurrentTranslate = Math.min(0, Math.max(-paneViewportWidth(), base + dx));
+  $('tree-viewport-inner').style.transform = `translateX(${paneCurrentTranslate}px)`;
+  return true;
+}
+
+async function paneSwipeEnd() {
+  if (!paneDragging) return;
+  paneDragging = false;
+  const inner = $('tree-viewport-inner');
+
+  try {
+    if (paneAxisLocked === 'x') {
+      const base = viewingArchived ? -paneViewportWidth() : 0;
+      const delta = paneCurrentTranslate - base;
+      // Navigate first (await if async), THEN clear inline styles so CSS class transform can take over
+      if (!viewingArchived && delta < -PANE_SWIPE_THRESHOLD) {
+        paneNavigating = true;
+        await goToArchived();
+      } else if (viewingArchived && delta > PANE_SWIPE_THRESHOLD) {
+        paneNavigating = true;
+        goToActive();
+      }
+    }
+  } finally {
+    inner.style.transition = '';
+    inner.style.transform = '';
+    paneAxisLocked = null;
+    paneNavigating = false;
+  }
+}
+
+function initPaneSwipe() {
+  const viewport = $('tree-viewport');
 
   viewport.addEventListener('touchstart', e => {
-    if (e.target.closest('.conv')) return;
-    if (navigating) return;  // Guard: don't start a new gesture while navigation is in flight
+    if (e.target.closest('.conv')) return; // una fila maneja su propio gesto (ver attachRowGestures)
     const t = e.touches[0];
-    startX = t.clientX; startY = t.clientY;
-    axisLocked = null;
-    dragging = true;
-    inner.style.transition = 'none';
+    paneSwipeStart(t.clientX, t.clientY);
   }, { passive: true });
 
   viewport.addEventListener('touchmove', e => {
-    if (!dragging) return;
     const t = e.touches[0];
-    const dx = t.clientX - startX;
-    const dy = t.clientY - startY;
-    if (axisLocked === null) {
-      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
-      axisLocked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
-    }
-    if (axisLocked !== 'x') return;
-    e.preventDefault();
-    const base = viewingArchived ? -paneWidth() : 0;
-    currentTranslate = Math.min(0, Math.max(-paneWidth(), base + dx));
-    inner.style.transform = `translateX(${currentTranslate}px)`;
+    if (paneSwipeMove(t.clientX, t.clientY)) e.preventDefault();
   }, { passive: false });
 
-  async function endDrag() {
-    if (!dragging) return;
-    dragging = false;
-
-    try {
-      if (axisLocked === 'x') {
-        const base = viewingArchived ? -paneWidth() : 0;
-        const delta = currentTranslate - base;
-        // Navigate first (await if async), THEN clear inline styles so CSS class transform can take over
-        if (!viewingArchived && delta < -SWIPE_THRESHOLD) {
-          navigating = true;
-          await goToArchived();
-        } else if (viewingArchived && delta > SWIPE_THRESHOLD) {
-          navigating = true;
-          goToActive();
-        }
-      }
-    } finally {
-      // Clear styles and reset state regardless of navigation outcome; guard against reentrant gestures
-      inner.style.transition = '';
-      inner.style.transform = '';
-      axisLocked = null;
-      navigating = false;
-    }
-  }
-
-  viewport.addEventListener('touchend', endDrag);
-  viewport.addEventListener('touchcancel', endDrag);
-})();
+  viewport.addEventListener('touchend', paneSwipeEnd);
+  viewport.addEventListener('touchcancel', paneSwipeEnd);
+}
+initPaneSwipe();
 
 async function safeLoadTree() {
   try { await loadTree(); }
   catch (err) { toast('No se pudo actualizar la lista: ' + err.message); }
 }
+function pollTrees() {
+  safeLoadTree();
+  if (archivedPaneLoaded) safeLoadArchivedTree();
+}
 loadAccounts().then(() => safeLoadTree());
-setInterval(safeLoadTree, 15000);
+setInterval(pollTrees, 15000);
 
 // ── Configuración ──
 const SETTINGS_KEY = 'ccm.settings';
