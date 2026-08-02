@@ -548,6 +548,7 @@ function attachRowGestures(el, conv) {
   }, { passive: true });
 
   el.addEventListener('touchmove', e => {
+    if (longPressed) return; // el menú ya abrió para este gesto: no arrastrar la fila
     const t = e.touches[0];
     const dx = t.clientX - startX;
     const dy = t.clientY - startY;
@@ -573,9 +574,11 @@ function attachRowGestures(el, conv) {
 
   el.addEventListener('touchend', () => {
     if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
-    if (rowDragging) {
+    if (rowDragging && !longPressed) {
       if (currentDx > ROW_SWIPE_THRESHOLD) commitArchiveToggle(el, conv);
       else resetRow();
+    } else if (rowDragging) {
+      resetRow();
     }
     rowDragging = false;
     axisLocked = null;
