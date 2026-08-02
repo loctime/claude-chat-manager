@@ -1544,17 +1544,24 @@ document.addEventListener('keydown', e => {
     inner.style.transform = `translateX(${currentTranslate}px)`;
   }, { passive: false });
 
-  function endDrag() {
+  async function endDrag() {
     if (!dragging) return;
     dragging = false;
-    inner.style.transition = '';
-    inner.style.transform = '';
+
     if (axisLocked === 'x') {
       const base = viewingArchived ? -paneWidth() : 0;
       const delta = currentTranslate - base;
-      if (!viewingArchived && delta < -SWIPE_THRESHOLD) goToArchived();
-      else if (viewingArchived && delta > SWIPE_THRESHOLD) goToActive();
+      // Navigate first (await if async), THEN clear inline styles so CSS class transform can take over
+      if (!viewingArchived && delta < -SWIPE_THRESHOLD) {
+        await goToArchived();
+      } else if (viewingArchived && delta > SWIPE_THRESHOLD) {
+        goToActive();
+      }
     }
+
+    // Clear styles only after navigation is complete, so CSS class transform drives the final animation
+    inner.style.transition = '';
+    inner.style.transform = '';
     axisLocked = null;
   }
 
