@@ -5,7 +5,12 @@ let treeLimit = 100;
 let treeHasMore = false;
 let treeTotal = 0;
 let archivedTotal = 0;
-let showArchived = false;
+let archivedTree = [];
+let archivedTreeLimit = 100;
+let archivedTreeHasMore = false;
+let archivedTreeTotal = 0;
+let viewingArchived = false;
+let archivedPaneLoaded = false;
 let activeAccount = null;
 const drafts = new Map();
 
@@ -45,6 +50,7 @@ async function loadAccounts() {
       });
       activeAccount = sel.value;
       treeLimit = 100;
+      resetArchivedPane();
       loadTree();
     };
   } catch {}
@@ -252,30 +258,31 @@ async function refreshAll() {
 $('refresh-btn').onclick = refreshAll;
 
 // ── Pull-to-refresh en el panel lista ──
-(function initPTR() {
-  const nav = $('tree');
+function initPTR(navEl, loadFn) {
   const indicator = $('ptr-indicator');
   let startY = 0;
   let pulling = false;
 
-  nav.addEventListener('touchstart', e => {
-    if (nav.scrollTop === 0) { startY = e.touches[0].clientY; pulling = true; }
+  navEl.addEventListener('touchstart', e => {
+    if (navEl.scrollTop === 0) { startY = e.touches[0].clientY; pulling = true; }
   }, { passive: true });
 
-  nav.addEventListener('touchmove', e => {
+  navEl.addEventListener('touchmove', e => {
     if (!pulling) return;
     if (e.touches[0].clientY - startY > 60) indicator.hidden = false;
   }, { passive: true });
 
-  nav.addEventListener('touchend', async () => {
+  navEl.addEventListener('touchend', async () => {
     if (!pulling) return;
     pulling = false;
     if (!indicator.hidden) {
-      await loadTree();
+      await loadFn();
       indicator.hidden = true;
     }
   });
-})();
+}
+initPTR($('tree'), safeLoadTree);
+initPTR($('tree-archived'), safeLoadArchivedTree);
 
 // ── Tree ──
 function badge(status) {
@@ -316,18 +323,9 @@ function convElement(c) {
   return div;
 }
 
-async function loadTree() {
-  const params = new URLSearchParams({ limit: String(treeLimit) });
-  if (showArchived) params.set('archived', '1');
-  if (activeAccount) params.set('account', activeAccount);
-  const resp = await api('/tree?' + params);
-  tree = resp.tree;
-  treeHasMore = resp.hasMore;
-  treeTotal = resp.total;
-  archivedTotal = resp.archivedTotal || 0;
-  const nav = $('tree');
-  nav.innerHTML = '';
-  for (const proj of tree) {
+function buildTreePane(navEl, treeData) {
+  navEl.innerHTML = '';
+  for (const proj of treeData.tree) {
     const det = document.createElement('details');
     det.className = 'project';
     det.open = true;
@@ -336,8 +334,20 @@ async function loadTree() {
     sum.title = proj.projectDir;
     det.appendChild(sum);
     for (const c of proj.conversations) det.appendChild(convElement(c));
-    nav.appendChild(det);
+    navEl.appendChild(det);
   }
+}
+
+async function loadTree() {
+  const params = new URLSearchParams({ limit: String(treeLimit) });
+  if (activeAccount) params.set('account', activeAccount);
+  const resp = await api('/tree?' + params);
+  tree = resp.tree;
+  treeHasMore = resp.hasMore;
+  treeTotal = resp.total;
+  archivedTotal = resp.archivedTotal || 0;
+  const nav = $('tree');
+  buildTreePane(nav, resp);
 
   if (treeHasMore) {
     const more = document.createElement('button');
@@ -354,19 +364,82 @@ async function loadTree() {
     nav.appendChild(more);
   }
 
-  // Toggle archivadas
-  if (archivedTotal > 0 || showArchived) {
+  if (archivedTotal > 0) {
     const t = document.createElement('button');
     t.className = 'archived-toggle';
     t.type = 'button';
-    t.textContent = showArchived
-      ? `← Volver a activas`
-      : `Ver archivadas (${archivedTotal})`;
-    t.onclick = () => { showArchived = !showArchived; treeLimit = 100; safeLoadTree(); };
+    t.textContent = `Ver archivadas (${archivedTotal})`;
+    t.onclick = () => { goToArchived(); };
     nav.appendChild(t);
   }
 
   updateGlobalBusyIndicator();
+}
+
+async function loadArchivedTree() {
+  const params = new URLSearchParams({ limit: String(archivedTreeLimit), archived: '1' });
+  if (activeAccount) params.set('account', activeAccount);
+  const resp = await api('/tree?' + params);
+  archivedTree = resp.tree;
+  archivedTreeHasMore = resp.hasMore;
+  archivedTreeTotal = resp.total;
+  const nav = $('tree-archived');
+  buildTreePane(nav, resp);
+
+  const back = document.createElement('button');
+  back.className = 'archived-back';
+  back.type = 'button';
+  back.textContent = '← Volver a activas';
+  back.onclick = () => { goToActive(); };
+  nav.insertBefore(back, nav.firstChild);
+
+  if (archivedTreeHasMore) {
+    const more = document.createElement('button');
+    more.id = 'load-more-archived-btn';
+    more.className = 'load-more';
+    more.type = 'button';
+    more.textContent = `Cargar más (${archivedTreeTotal - archivedTreeLimit} restantes)`;
+    more.onclick = async () => {
+      more.disabled = true;
+      archivedTreeLimit += 100;
+      try { await loadArchivedTree(); }
+      catch (err) { toast('No se pudo cargar más: ' + err.message); more.disabled = false; }
+    };
+    nav.appendChild(more);
+  }
+}
+
+async function safeLoadArchivedTree() {
+  try { await loadArchivedTree(); }
+  catch (err) { toast('No se pudo actualizar archivadas: ' + err.message); }
+}
+
+async function goToArchived() {
+  if (viewingArchived) return;
+  if (!archivedPaneLoaded) {
+    try {
+      await loadArchivedTree();
+      archivedPaneLoaded = true;
+    } catch (err) {
+      toast('No se pudo cargar archivadas: ' + err.message);
+      return;
+    }
+  }
+  viewingArchived = true;
+  $('tree-viewport-inner').classList.add('showing-archived');
+}
+
+function goToActive() {
+  viewingArchived = false;
+  $('tree-viewport-inner').classList.remove('showing-archived');
+}
+
+function resetArchivedPane() {
+  archivedPaneLoaded = false;
+  archivedTreeLimit = 100;
+  archivedTree = [];
+  $('tree-archived').innerHTML = '';
+  if (viewingArchived) goToActive();
 }
 
 // ── Indicador global de "procesando" (icono ping + título + badge de la app instalada) ──
