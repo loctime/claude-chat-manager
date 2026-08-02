@@ -922,6 +922,9 @@ body.hide-tools details.tool { display: none !important; }
   max-width: calc(100vw - 32px);
 }
 .toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   background: var(--header);
   color: var(--text);
   border: 1px solid var(--border);
@@ -936,6 +939,18 @@ body.hide-tools details.tool { display: none !important; }
   pointer-events: auto;
   animation: toast-in .18s ease-out;
 }
+.toast span { flex: 1; }
+.toast-action {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px;
+}
+.toast-action:hover { text-decoration: underline; }
 .toast.info { border-left-color: var(--accent); }
 @keyframes toast-in {
   from { opacity: 0; transform: translateX(20px); }

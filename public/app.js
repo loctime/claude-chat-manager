@@ -57,7 +57,7 @@ async function loadAccounts() {
 }
 
 // ── Toast ──
-function toast(msg, kind = 'error', ttl = 4000) {
+function toast(msg, kind = 'error', ttl = 4000, action = null) {
   let container = document.getElementById('toast-container');
   if (!container) {
     container = document.createElement('div');
@@ -66,13 +66,30 @@ function toast(msg, kind = 'error', ttl = 4000) {
   }
   const t = document.createElement('div');
   t.className = 'toast ' + kind;
-  t.textContent = msg;
-  container.appendChild(t);
-  setTimeout(() => {
+  const text = document.createElement('span');
+  text.textContent = msg;
+  t.appendChild(text);
+
+  let removed = false;
+  const remove = () => {
+    if (removed) return;
+    removed = true;
     t.style.opacity = '0';
     t.style.transition = 'opacity .2s';
     setTimeout(() => t.remove(), 220);
-  }, ttl);
+  };
+
+  if (action) {
+    const btn = document.createElement('button');
+    btn.className = 'toast-action';
+    btn.type = 'button';
+    btn.textContent = action.label;
+    btn.onclick = () => { remove(); action.onClick(); };
+    t.appendChild(btn);
+  }
+
+  container.appendChild(t);
+  setTimeout(remove, ttl);
 }
 
 // ── PWA service worker + install ──
