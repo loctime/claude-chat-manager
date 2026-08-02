@@ -450,6 +450,10 @@ app.get('/api/tree', (req, res) => {
     convs.push({
       convId,
       projectDir: c.projectDir,
+      // Carpeta real donde vive la sesión ahora mismo (puede diferir de projectDir,
+      // que queda anclado a home a propósito — ver /conversations POST). Sirve
+      // solo para mostrar en el header del chat, no para agrupar en el sidebar.
+      currentDir: s.cwd || c.projectDir,
       name: c.name || s.snippet || '(nueva conversación)',
       snippet: s.snippet || '',
       lastActivity: s.lastActivity || null,
@@ -468,6 +472,7 @@ app.get('/api/tree', (req, res) => {
     convs.push({
       convId: s.sessionId,
       projectDir: s.cwd || '(desconocido)',
+      currentDir: s.cwd || '(desconocido)',
       name: s.snippet,
       snippet: s.snippet,
       lastActivity: s.lastActivity,

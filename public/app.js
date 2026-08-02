@@ -335,7 +335,7 @@ function convElement(c) {
   div.querySelector('.conv-name-text').textContent = c.name;
   div.querySelector('.conv-date').textContent = (c.lastActivity || '').slice(0, 16).replace('T', ' ');
   div._conv = c;
-  div.onclick = () => selectConv(c.convId, c.name, c.model, c.lastModel, c.projectDir, c.responseMode);
+  div.onclick = () => selectConv(c.convId, c.name, c.model, c.lastModel, c.currentDir || c.projectDir, c.responseMode);
   attachRowGestures(div, c);
   return div;
 }
@@ -1730,7 +1730,7 @@ document.addEventListener('keydown', e => {
   e.preventDefault();
   const target = top2[0]._conv.convId === currentConv ? top2[1] : top2[0];
   const c = target._conv;
-  selectConv(c.convId, c.name, c.model, c.lastModel, c.projectDir);
+  selectConv(c.convId, c.name, c.model, c.lastModel, c.currentDir || c.projectDir);
 });
 
 // ── Swipe de pantalla (activas ↔ archivadas, solo táctil) ──
