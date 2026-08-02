@@ -1515,12 +1515,13 @@ document.addEventListener('keydown', e => {
   const viewport = $('tree-viewport');
   const inner = $('tree-viewport-inner');
   const SWIPE_THRESHOLD = 60;
-  let startX = 0, startY = 0, axisLocked = null, dragging = false, currentTranslate = 0;
+  let startX = 0, startY = 0, axisLocked = null, dragging = false, currentTranslate = 0, navigating = false;
 
   const paneWidth = () => viewport.getBoundingClientRect().width;
 
   viewport.addEventListener('touchstart', e => {
     if (e.target.closest('.conv')) return;
+    if (navigating) return;  // Guard: don't start a new gesture while navigation is in flight
     const t = e.touches[0];
     startX = t.clientX; startY = t.clientY;
     axisLocked = null;
@@ -1548,21 +1549,26 @@ document.addEventListener('keydown', e => {
     if (!dragging) return;
     dragging = false;
 
-    if (axisLocked === 'x') {
-      const base = viewingArchived ? -paneWidth() : 0;
-      const delta = currentTranslate - base;
-      // Navigate first (await if async), THEN clear inline styles so CSS class transform can take over
-      if (!viewingArchived && delta < -SWIPE_THRESHOLD) {
-        await goToArchived();
-      } else if (viewingArchived && delta > SWIPE_THRESHOLD) {
-        goToActive();
+    try {
+      if (axisLocked === 'x') {
+        const base = viewingArchived ? -paneWidth() : 0;
+        const delta = currentTranslate - base;
+        // Navigate first (await if async), THEN clear inline styles so CSS class transform can take over
+        if (!viewingArchived && delta < -SWIPE_THRESHOLD) {
+          navigating = true;
+          await goToArchived();
+        } else if (viewingArchived && delta > SWIPE_THRESHOLD) {
+          navigating = true;
+          goToActive();
+        }
       }
+    } finally {
+      // Clear styles and reset state regardless of navigation outcome; guard against reentrant gestures
+      inner.style.transition = '';
+      inner.style.transform = '';
+      axisLocked = null;
+      navigating = false;
     }
-
-    // Clear styles only after navigation is complete, so CSS class transform drives the final animation
-    inner.style.transition = '';
-    inner.style.transform = '';
-    axisLocked = null;
   }
 
   viewport.addEventListener('touchend', endDrag);
