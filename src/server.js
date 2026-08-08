@@ -244,19 +244,25 @@ function _groqTitle(excerpt) {
   });
 }
 
-const SUMMARIZE_SYSTEM_PROMPT = 'Sos un compresor de contexto. El usuario te pasa una conversación entre él (user) y un asistente (assistant). Devolvés un resumen estructurado en español que preserve: (1) el objetivo/tema de la charla, (2) las decisiones tomadas, (3) los archivos/paths/comandos relevantes mencionados, (4) el estado actual (qué está hecho y qué falta), y (5) cualquier información no obvia que se necesite para continuar. Sin saludos, sin conclusiones, sin comentarios sobre tu tarea — solo el resumen en prosa concisa con bullets cuando ayude. Longitud: 200-500 palabras según lo que amerite.';
-
-function _claudeSummarize(excerpt) {
+// Compact nativo: en vez de armar un excerpt y pedirle a un claude aparte que lo
+// resuma en prosa (perdía tool calls, se truncaba a 120k caracteres y ese mismo
+// excerpt pasado como argumento de spawn reventaba ENAMETOOLONG en Windows con
+// conversaciones largas), le mandamos "/compact" al propio `claude --resume
+// <sessionId>` — es el mismo mecanismo que corre solo en la consola interactiva,
+// pero invocado a mano. Ve la sesión completa (no un recorte de texto), y el
+// resultado queda en la MISMA sesión (mismo session_id, con un entry
+// type:"system", subtype:"compact_boundary" en su jsonl) en vez de generar un
+// resumen aparte que había que reinyectar a mano en el próximo mensaje.
+function _claudeCompact(sessionId, cwd) {
   return new Promise((resolve, reject) => {
-    const prompt = `${SUMMARIZE_SYSTEM_PROMPT}\n\n--- CONVERSACIÓN A RESUMIR ---\n\n${excerpt}`;
-    const args = ['-p', prompt, '--model', 'claude-sonnet-4-6', '--dangerously-skip-permissions'];
-    const child = spawn(CLAUDE_CMD, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const args = ['--resume', sessionId, '-p', '/compact', '--dangerously-skip-permissions', '--output-format', 'json'];
+    const child = spawn(CLAUDE_CMD, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
-      reject(new Error('timeout (120s) resumiendo con claude'));
-    }, 120_000);
+      reject(new Error('timeout (5min) compactando con claude'));
+    }, 300_000);
     child.stdout.on('data', d => { stdout += d.toString(); });
     child.stderr.on('data', d => { stderr += d.toString(); });
     child.on('error', err => {
@@ -270,12 +276,27 @@ function _claudeSummarize(excerpt) {
         console.error('[compact] claude exit', code, 'stderr:', stderr.slice(0, 500));
         return reject(new Error(`claude salió con código ${code}: ${(stderr || '').slice(0, 200)}`));
       }
-      const t = (stdout || '').trim();
-      if (!t) return reject(new Error('resumen vacío de claude'));
-      resolve(t);
+      resolve();
     });
   });
 }
+
+// Lee el jsonl recién compactado y devuelve la metadata del último boundary —
+// para mostrarle al usuario "de Xk a Yk tokens" en vez de un simple "listo".
+function _lastCompactMetadata(file) {
+  const entries = scanner.parseJsonl(file);
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e.type === 'system' && e.subtype === 'compact_boundary') return e.compactMetadata || null;
+  }
+  return null;
+}
+
+// convId → true mientras un /compact está en curso. Necesario para: (1) no
+// pisarlo con un /message que le mande --resume al mismo tiempo (dos procesos
+// tocando la misma sesión), y (2) que el status del árbol de conversaciones
+// muestre el mismo ping-dot "procesando" que ya existe para runner.running.
+const compacting = new Set();
 
 async function maybeGenerateTitle(convId, acc = activeAccount) {
   if (!GROQ_API_KEY) return;
@@ -464,7 +485,7 @@ app.get('/api/tree', (req, res) => {
       archived: !!c.archived,
       aiTitle: !!c.aiTitle,
       contextPct: contextPctFor(s),
-      status: runner.running.has(convId) ? 'running' : (runner.isBusy(convId) ? 'queued' : 'idle'),
+      status: (runner.running.has(convId) || compacting.has(convId)) ? 'running' : (runner.isBusy(convId) ? 'queued' : 'idle'),
     });
   }
   for (const s of sessions) {
@@ -482,7 +503,7 @@ app.get('/api/tree', (req, res) => {
       pinned: false,
       archived: false,
       contextPct: contextPctFor(s),
-      status: runner.running.has(s.sessionId) ? 'running' : (runner.isBusy(s.sessionId) ? 'queued' : 'idle'),
+      status: (runner.running.has(s.sessionId) || compacting.has(s.sessionId)) ? 'running' : (runner.isBusy(s.sessionId) ? 'queued' : 'idle'),
     });
   }
 
@@ -587,6 +608,7 @@ app.post('/api/conversations/:id/message', (req, res) => {
   const text = (req.body.text || '').trim();
   if (!text) return res.status(400).json({ error: 'mensaje vacío' });
   if (runner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación ya está procesando un mensaje' });
+  if (compacting.has(convId)) return res.status(409).json({ error: 'esa conversación se está compactando' });
   const acc = req.body.account || activeAccount;
   const { data, conv, metaFile } = resolveConv(convId, acc);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
@@ -608,12 +630,13 @@ app.post('/api/conversations/:id/message', (req, res) => {
   res.status(202).json({ queued: true });
 });
 
-app.post('/api/conversations/:id/compact', async (req, res) => {
+app.post('/api/conversations/:id/compact', (req, res) => {
   const convId = req.params.id;
   if (runner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación está procesando un mensaje' });
+  if (compacting.has(convId)) return res.status(409).json({ error: 'ya se está compactando esta conversación' });
   const acc = req.body.account || activeAccount;
   const projDir = accountProjectsDir(acc);
-  const { data, conv, metaFile } = resolveConv(convId, acc);
+  const { conv } = resolveConv(convId, acc);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
   if (!conv.currentSessionId) return res.status(400).json({ error: 'la conversación no tiene sesión activa' });
   const file = scanner.findSessionFile(conv.currentSessionId, projDir);
@@ -621,32 +644,29 @@ app.post('/api/conversations/:id/compact', async (req, res) => {
   const messages = scanner.getMessagesIncremental(file).filter(m => m.role === 'user' || m.role === 'assistant');
   if (messages.length < 2) return res.status(400).json({ error: 'nada útil para compactar (menos de 2 mensajes)' });
 
-  const MAX_CHARS_PER_MSG = 2000;
-  const MAX_TOTAL_CHARS = 120000;
-  let total = 0;
-  const chunks = [];
-  for (const m of messages) {
-    const t = (m.text || '').slice(0, MAX_CHARS_PER_MSG);
-    const line = `${m.role}: ${t}`;
-    if (total + line.length > MAX_TOTAL_CHARS) { chunks.push('[... resto omitido por límite ...]'); break; }
-    chunks.push(line);
-    total += line.length;
-  }
-  const excerpt = chunks.join('\n\n');
-
-  let summary;
-  try { summary = await _claudeSummarize(excerpt); }
-  catch (err) { return res.status(500).json({ error: 'no se pudo resumir: ' + err.message }); }
-
-  const old = conv.currentSessionId;
-  if (old && !data.superseded.includes(old)) data.superseded.push(old);
-  conv.compactedFromSession = old;
-  conv.currentSessionId = null;
-  conv.compactedSummary = summary;
-  conv.compactedAt = new Date().toISOString();
-  meta.save(data, metaFile);
-  broadcast(convId, { kind: 'compacted', summary });
-  res.json({ ok: true, summary, messagesCompacted: messages.length });
+  // La compactación real puede tardar bastante en sesiones largas — justo el
+  // caso que más lo necesita — y una respuesta HTTP colgada esperando eso corre
+  // el mismo riesgo que ya documentamos para /stream: el túnel Cloudflare corta
+  // conexiones idle. Por eso responde 202 al toque y hace el trabajo en
+  // background, avisando por el mismo canal SSE que ya usan los mensajes
+  // normales (heartbeat cada 20s incluido).
+  const cwd = (conv.projectDir || '').startsWith('VPS: ') ? accountHomeDir(acc) : scanner.resolveCwd(conv, projDir);
+  compacting.add(convId);
+  broadcast(convId, { kind: 'status', status: 'running' });
+  _claudeCompact(conv.currentSessionId, cwd)
+    .then(() => {
+      compacting.delete(convId);
+      const cm = _lastCompactMetadata(file);
+      if (!cm) console.warn('[compact] terminó sin error pero no encontré el compact_boundary en el jsonl:', file);
+      broadcast(convId, { kind: 'compacted', ...cm });
+      broadcast(convId, { kind: 'status', status: 'idle', code: 0 });
+    })
+    .catch(err => {
+      compacting.delete(convId);
+      console.error('[compact] falló:', err.message);
+      broadcast(convId, { kind: 'status', status: 'idle', code: -1, stderr: 'No se pudo compactar: ' + err.message });
+    });
+  res.status(202).json({ queued: true });
 });
 
 app.post('/api/conversations', (req, res) => {

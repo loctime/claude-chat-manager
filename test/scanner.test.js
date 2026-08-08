@@ -90,6 +90,44 @@ test('toChatMessages ignora entradas meta y tool_results como mensajes de usuari
   assert.equal(msgs[0].text, 'hola');
 });
 
+test('toChatMessages no muestra la plomería que deja /compact (resumen crudo, command-name, local-command-stdout)', () => {
+  // Forma real tomada de una sesión compactada de verdad (2026-08-06).
+  const entries = [
+    JSON.parse(userEntry('hola')),
+    JSON.parse(assistantEntry([{ type: 'text', text: 'hola de vuelta' }])),
+    { type: 'system', subtype: 'compact_boundary', compactMetadata: { trigger: 'manual', preTokens: 100, postTokens: 10 } },
+    {
+      type: 'user', isVisibleInTranscriptOnly: true, isCompactSummary: true,
+      message: { role: 'user', content: 'This session is being continued from a previous conversation...' },
+    },
+    { type: 'user', isMeta: true, message: { role: 'user', content: '<local-command-caveat>Caveat: ...</local-command-caveat>' } },
+    { type: 'user', message: { role: 'user', content: '<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>' } },
+    { type: 'user', message: { role: 'user', content: '<local-command-stdout>Compacted (ctrl+o to see full summary)</local-command-stdout>' } },
+    JSON.parse(userEntry('seguimos')),
+  ];
+  const msgs = toChatMessages(entries);
+  assert.deepEqual(msgs.map(m => m.role), ['user', 'assistant', 'system-compact', 'user']);
+  assert.equal(msgs[0].text, 'hola');
+  assert.equal(msgs[3].text, 'seguimos');
+});
+
+test('toChatMessages expone el compact_boundary (manual o automático) como item system-compact', () => {
+  const entries = [
+    JSON.parse(userEntry('hola')),
+    JSON.parse(assistantEntry([{ type: 'text', text: 'hola de vuelta' }])),
+    {
+      type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted',
+      compactMetadata: { trigger: 'manual', preTokens: 44409, postTokens: 5239 },
+    },
+    JSON.parse(userEntry('seguimos')),
+  ];
+  const msgs = toChatMessages(entries);
+  assert.deepEqual(msgs.map(m => m.role), ['user', 'assistant', 'system-compact', 'user']);
+  assert.equal(msgs[2].trigger, 'manual');
+  assert.equal(msgs[2].preTokens, 44409);
+  assert.equal(msgs[2].postTokens, 5239);
+});
+
 test('sessionInfo cachea por mtime: dos llamadas consecutivas devuelven el mismo objeto', () => {
   _clearSessionInfoCache();
   const { file } = tmpFile([userEntry('primer mensaje')]);

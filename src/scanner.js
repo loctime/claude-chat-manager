@@ -26,6 +26,13 @@ function contentToText(c) {
   return '';
 }
 
+// El CLI arma turnos "user" sintéticos cuando corrés un slash command a mano
+// (ej. /compact): un <command-name>...</command-name> con el comando invocado
+// y un <local-command-stdout>...</local-command-stdout> con su output local.
+// Son plomería del CLI, no algo que el usuario escribió — no van en el chat.
+const LOCAL_COMMAND_RE = /^<(command-name|local-command-stdout|local-command-caveat)>/;
+function isLocalCommandArtifact(text) { return LOCAL_COMMAND_RE.test((text || '').trim()); }
+
 function isChannelSession(entries) {
   for (const e of entries) {
     if (e.type !== 'assistant' || !Array.isArray(e.message && e.message.content)) continue;
@@ -304,9 +311,25 @@ function toChatMessages(entries) {
   }
   const items = [];
   for (const e of entries) {
+    // El boundary de /compact (manual o automático) no tiene `.message` — es un
+    // evento de sistema propio del CLI, no un turno. Lo mostramos como marcador
+    // inline para que ambos tipos de compactación queden visibles en el historial
+    // (antes eran invisibles: ni el stream ni acá los leían).
+    if (e.type === 'system' && e.subtype === 'compact_boundary') {
+      const cm = e.compactMetadata || {};
+      items.push({ role: 'system-compact', trigger: cm.trigger || 'manual', preTokens: cm.preTokens || 0, postTokens: cm.postTokens || 0 });
+      continue;
+    }
+    // El resumen real que genera /compact viene como turno "user" con
+    // isVisibleInTranscriptOnly:true — es literalmente la convención del CLI
+    // para "esto es para el jsonl crudo, no lo muestres en una UI de chat".
+    // Sin este chequeo aparecía como si el usuario hubiera escrito un mensaje
+    // gigante con instrucciones internas (bug reportado en vivo 2026-08-06).
+    if (e.isVisibleInTranscriptOnly) continue;
     if (!e.message || e.isMeta) continue;
     if (e.type === 'user') {
       const text = contentToText(e.message.content);
+      if (isLocalCommandArtifact(text)) continue;
       if (text.trim()) items.push({ role: 'user', text });
     } else if (e.type === 'assistant' && Array.isArray(e.message.content)) {
       for (const b of e.message.content) {

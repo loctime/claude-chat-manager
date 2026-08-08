@@ -56,6 +56,9 @@ async function loadAccounts() {
 }
 
 // ── Toast ──
+// ttl = 0 → toast persistente, no se autodescarta (usalo para operaciones
+// largas como compactar: mostrás "en curso…" y vos mismo lo cerrás cuando
+// llega el resultado). Devuelve { remove } para eso.
 function toast(msg, kind = 'error', ttl = 4000, action = null) {
   let container = document.getElementById('toast-container');
   if (!container) {
@@ -88,7 +91,8 @@ function toast(msg, kind = 'error', ttl = 4000, action = null) {
   }
 
   container.appendChild(t);
-  setTimeout(remove, ttl);
+  if (ttl > 0) setTimeout(remove, ttl);
+  return { remove };
 }
 
 // ── PWA service worker + install ──
@@ -199,8 +203,50 @@ window.addEventListener('popstate', (e) => {
 });
 
 // ── API ──
+// ── Red ──
+// En el celu la PWA se suspende cada vez que salís de la app — y salís siempre
+// que adjuntás una foto, porque se abre la galería/cámara. Al volver, la
+// conexión TLS/HTTP2 con el túnel de Cloudflare puede estar muerta: el primer
+// fetch revienta con TypeError "Failed to fetch" sin que la request llegue
+// nunca al server (por eso no aparece en ningún log). Reintentar una vez fuerza
+// una conexión nueva y pasa.
+function isNetworkError(err) {
+  return err instanceof TypeError;
+}
+
+// Traduce el TypeError críptico del browser a algo que se entienda.
+function netError(err) {
+  if (!isNetworkError(err)) return err;
+  const e = new Error(navigator.onLine === false
+    ? 'Sin conexión — no salió'
+    : 'No se pudo contactar a Jarvis (conexión caída o server sin responder)');
+  e.isNetwork = true;
+  return e;
+}
+
+// fetch con un reintento ante fallo de red. Solo para requests seguras de
+// repetir (GET o subidas, que a lo sumo dejan un archivo huérfano).
+async function netFetch(url, opts) {
+  try {
+    return await fetch(url, opts);
+  } catch (err) {
+    if (!isNetworkError(err)) throw err;
+    await new Promise(r => setTimeout(r, 600));
+    try {
+      return await fetch(url, opts);
+    } catch (err2) {
+      throw netError(err2);
+    }
+  }
+}
+
 async function api(path, opts) {
-  const res = await fetch('/api' + path, opts);
+  const method = (opts && opts.method) || 'GET';
+  // Los POST/PATCH que mutan no se reintentan solos acá: no sabemos si el
+  // primer intento llegó. El envío de mensaje lo maneja aparte sendMessage().
+  const res = method === 'GET'
+    ? await netFetch('/api' + path, opts)
+    : await fetch('/api' + path, opts).catch(err => { throw netError(err); });
   if (!res.ok && res.status !== 202) throw new Error((await res.json()).error || res.statusText);
   return res.json();
 }
@@ -242,9 +288,20 @@ function speak(text, btn, kind = 'assistant') {
 }
 
 function cleanForTTS(text) {
-  return text
+  let plain = text;
+  // Pasar por el mismo parser Markdown que usa el render visual y quedarnos
+  // solo con el texto: así el TTS nunca ve *, `, #, [](), etc. y no los lee
+  // como si fueran palabras ("asterisco", "numeral", "comillas").
+  if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+    const html = DOMPurify.sanitize(marked.parse(text, { breaks: true, gfm: true }));
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    plain = tpl.content.textContent || '';
+  }
+  return plain
     .replace(/\[Archivo adjunto:[^\]]+\]/g, '')
     .replace(/`?\/(?:home|tmp|root|var|opt|usr)[^\s`'"]+`?/g, '')
+    .replace(/["""«»'']/g, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
@@ -643,15 +700,17 @@ function showConvMenu(x, y, conv) {
     document.removeEventListener('click', dismiss, true);
     document.removeEventListener('touchstart', dismiss, true);
     if (action === 'compact') {
-      if (!confirm('Compactar la conversación?\n\nSe genera un resumen y la sesión actual queda archivada. La próxima respuesta arranca sesión nueva con el resumen inyectado.')) return;
+      if (!confirm('Compactar la conversación?\n\nEjecuta el /compact nativo de Claude Code sobre la sesión actual — reduce el contexto sin perder la sesión. Puede tardar bastante en charlas largas.')) return;
       try {
-        toast('Compactando…', 'info', 2000);
-        const r = await api(`/conversations/${conv.convId}/compact`, {
+        await api(`/conversations/${conv.convId}/compact`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(withAccountBody({})),
         });
-        toast(`Compactado (${r.messagesCompacted} mensajes resumidos)`, 'info', 3000);
+        // El resultado real llega por SSE (kind:'compacted') si esta conversación
+        // está abierta ahí mismo. Si no, el ping-dot del árbol (poblado por
+        // refreshVisibleTrees) es el único indicador hasta que la abras.
+        toast('Compactando… puede tardar, corre en background', 'info', 4000);
         refreshVisibleTrees();
       } catch (err) { toast('No se pudo compactar: ' + err.message); }
       return;
@@ -1061,6 +1120,19 @@ function addTool(name, input, output, opts = {}) {
   autoScroll();
 }
 
+// Marcador inline para un boundary de /compact real (mismo session_id antes y
+// después — a diferencia de addCompactDivider(), que es el remanente del
+// sistema viejo por resumen-y-sesión-nueva). Se muestra tanto si lo disparó el
+// botón "Compactar" (trigger:'manual') como si el CLI lo hizo solo por límite
+// de contexto (trigger:'auto') — antes esto último era invisible en Jarvis.
+function addCompactBoundary(m) {
+  const div = document.createElement('div');
+  div.className = 'compact-divider';
+  const label = m.trigger === 'auto' ? 'Contexto compactado automáticamente' : 'Contexto compactado';
+  div.innerHTML = `<span>🗜️ ${label} — ${fmtTokens(m.preTokens)} → ${fmtTokens(m.postTokens)} tokens</span>`;
+  messagesEl.appendChild(div);
+}
+
 function addCompactDivider() {
   const div = document.createElement('div');
   div.className = 'compact-divider';
@@ -1100,6 +1172,7 @@ async function loadMessages(convId) {
         dividerPlaced = true;
         inCompacted = false;
       }
+      if (m.role === 'system-compact') { addCompactBoundary(m); continue; }
       const opts = { compacted: !!m.compacted };
       if (m.role === 'tool') addTool(m.name, m.input, m.output, opts);
       else addMsg(m.role, m.text, opts);
@@ -1158,6 +1231,13 @@ function openStream(convId) {
         setBusy(true);
         refreshVisibleTrees();
       }
+    } else if (payload.kind === 'compacted') {
+      // El 'status':'idle' que sigue a esto ya dispara loadMessages/refreshCostBadge
+      // (así aparece el divider de /compact en el historial) — acá solo avisamos
+      // el resultado numérico, que no viaja en el evento de status.
+      const pre = fmtTokens(payload.preTokens || 0);
+      const post = fmtTokens(payload.postTokens || 0);
+      toast(`Compactado: ${pre} → ${post} tokens`, 'info', 4000);
     } else if (payload.kind === 'meta') {
       if (payload.name) $('conv-title').textContent = payload.name;
       refreshVisibleTrees();
@@ -1177,6 +1257,23 @@ function openStream(convId) {
     }, 1500);
   };
 }
+
+// Volver del background (en el celu pasa cada vez que abrís la galería para
+// adjuntar una foto) deja el stream SSE muerto y la conexión con el túnel
+// posiblemente también. Reabrirlo apenas volvés reestablece la conexión antes
+// de que toques enviar, y de paso recupera lo que Claude haya respondido
+// mientras no mirabas. Solo si estuvo oculta un rato, para no recargar el
+// historial cada vez que cambiás de ventana en la compu.
+let hiddenSince = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { hiddenSince = Date.now(); return; }
+  const wasHiddenFor = hiddenSince ? Date.now() - hiddenSince : 0;
+  hiddenSince = 0;
+  if (wasHiddenFor < 3000 || !currentConv) return;
+  openStream(currentConv);
+  loadMessages(currentConv);
+  refreshVisibleTrees();
+});
 
 // ── Cost badge ──
 function fmtTokens(n) {
@@ -1331,6 +1428,72 @@ function addAttachmentChip(name, filePath, localFile) {
   $('composer-attachments').appendChild(chip);
 }
 
+// Un File que sale del selector de fotos del celu no es un archivo en memoria:
+// es un handle a algo del sistema (content:// en Android, la fototeca en iOS).
+// Si subís los 6MB crudos, el handle tiene que seguir vivo el minuto largo que
+// tarda el uplink móvil — y si el sistema lo invalida antes (la app pasó a
+// background, presión de memoria, permiso temporal del picker vencido), el
+// stream se corta y fetch tira TypeError. El reintento falla igual, porque el
+// File ya está muerto.
+//
+// Solución: materializar el archivo en memoria antes de subirlo, y si es una
+// foto grande, reducirla acá mismo. El server la iba a comprimir a 2048px/q82
+// igual, así que no perdemos calidad final y la subida pasa de ~60s a ~3s.
+const MAX_UPLOAD_DIM = 2048;
+const CLIENT_COMPRESS_BYTES = 1.5 * 1024 * 1024; // mismo umbral que el server
+const CLIENT_COMPRESS_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;      // límite de multer en el server
+const MATERIALIZE_MAX_BYTES = 25 * 1024 * 1024; // arriba de esto no copiamos a RAM
+
+async function prepareForUpload(file, displayName) {
+  // El server rechaza arriba de 50MB: mejor avisar acá que subir varios minutos
+  // por el uplink del celu para terminar en un error.
+  if (file.size > MAX_UPLOAD_BYTES) {
+    const e = new Error(`pesa ${(file.size / 1048576).toFixed(0)}MB y el máximo es 50MB`);
+    e.isTooBig = true;
+    throw e;
+  }
+
+  const materialize = async () => {
+    // Falla acá = el archivo ya no se puede leer, y eso no lo arregla ningún
+    // reintento: hay que volver a elegir la foto.
+    try {
+      return new Blob([await file.arrayBuffer()], { type: file.type || 'application/octet-stream' });
+    } catch {
+      const e = new Error('no se pudo leer el archivo desde el celu — volvé a elegirlo');
+      e.isUnreadable = true;
+      throw e;
+    }
+  };
+
+  // Un video de decenas de MB copiado a memoria puede tumbar la pestaña en el
+  // celu. Esos van derecho desde el archivo, asumiendo el riesgo del handle.
+  if (file.size > MATERIALIZE_MAX_BYTES) return { blob: file, name: displayName };
+
+  if (!CLIENT_COMPRESS_TYPES.has(file.type) || file.size <= CLIENT_COMPRESS_BYTES) {
+    return { blob: await materialize(), name: displayName };
+  }
+
+  try {
+    // imageOrientation respeta el EXIF: sin esto las fotos verticales del celu
+    // se suben rotadas.
+    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    const scale = Math.min(1, MAX_UPLOAD_DIM / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.85));
+    if (!blob) throw new Error('toBlob vacío');
+    const name = displayName.replace(/\.[^.]+$/, '') + '.jpg';
+    return { blob, name };
+  } catch {
+    // Cualquier problema del canvas: seguimos con el archivo tal cual.
+    return { blob: await materialize(), name: displayName };
+  }
+}
+
 async function uploadAttachment(file) {
   if (!currentConv) { addMsg('error', 'Elegí una conversación antes de adjuntar'); return; }
   const displayName = file.name || `pegado-${Date.now()}.${(file.type.split('/')[1] || 'bin')}`;
@@ -1340,18 +1503,29 @@ async function uploadAttachment(file) {
   loadingChip.querySelector('.attach-chip-name').textContent = displayName;
   $('composer-attachments').appendChild(loadingChip);
 
+  const t0 = Date.now();
+  let sentBytes = 0;
   try {
+    const { blob, name: uploadName } = await prepareForUpload(file, displayName);
+    file = blob; // a partir de acá el preview también usa la copia en memoria
+    sentBytes = blob.size;
     const fd = new FormData();
-    fd.append('file', file, displayName);
-    const res = await fetch('/api/upload', { method: 'POST', body: fd });
+    fd.append('file', blob, uploadName);
+    const res = await netFetch('/api/upload', { method: 'POST', body: fd });
     if (!res.ok) throw new Error((await res.json()).error || res.statusText);
     const { path: filePath, name } = await res.json();
     loadingChip.remove();
-    pendingAttachments.push({ path: filePath, name });
+    pendingAttachments.push({ path: filePath, name, file });
     addAttachmentChip(name, filePath, file);
   } catch (err) {
     loadingChip.remove();
-    addMsg('error', 'No se pudo subir: ' + err.message);
+    // Dejamos rastro de tamaño y duración: si falla al instante es el archivo o
+    // la conexión; si falla tras decenas de segundos, se cortó a mitad de la
+    // subida. Sin esto el error no dice nada y volvemos a quedar adivinando.
+    const detalle = sentBytes
+      ? ` [${(sentBytes / 1024 / 1024).toFixed(1)}MB, ${((Date.now() - t0) / 1000).toFixed(1)}s]`
+      : ` [falló al preparar, ${((Date.now() - t0) / 1000).toFixed(1)}s]`;
+    addMsg('error', 'No se pudo subir: ' + err.message + detalle);
   }
 }
 
@@ -1507,36 +1681,84 @@ function addUserMsgWithFiles(text, attachments) {
   stickToBottom = true;
   syncJumpBtn();
   scrollToBottom();
+  return div;
 }
 
 // ── Send ──
+// Un fallo de red acá significa "no hubo respuesta", no "no llegó": la request
+// pudo haber entrado igual. Por eso el reintento mira el 409 — si el server
+// dice que la conversación ya está procesando, es que el primer intento sí
+// llegó y Claude ya está trabajando, así que lo damos por enviado.
+async function sendMessage(convId, text) {
+  const url = `/api/conversations/${convId}/message`;
+  const opts = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(withAccountBody({ text })),
+  };
+  let res;
+  try {
+    res = await fetch(url, opts);
+  } catch (err) {
+    if (!isNetworkError(err)) throw err;
+    await new Promise(r => setTimeout(r, 600));
+    try {
+      res = await fetch(url, opts);
+    } catch (err2) {
+      throw netError(err2);
+    }
+    if (res.status === 409) return; // el primer intento entró
+  }
+  if (!res.ok && res.status !== 202) throw new Error((await res.json()).error || res.statusText);
+}
+
+// Devuelve texto y adjuntos al composer para poder reintentar sin volver a
+// elegir las fotos (lo más molesto de que falle el envío desde el celu).
+function restoreComposer(text, attachments) {
+  const input = $('input');
+  if (text) {
+    input.value = input.value ? text + '\n' + input.value : text;
+    autoResize(input);
+    if (currentConv) drafts.set(currentConv, input.value);
+  }
+  for (const a of attachments) {
+    if (pendingAttachments.some(p => p.path === a.path)) continue;
+    pendingAttachments.push(a);
+    addAttachmentChip(a.name, a.path, a.file);
+  }
+}
+
 $('composer').onsubmit = async e => {
   e.preventDefault();
   const rawText = $('input').value.trim();
   if ((!rawText && pendingAttachments.length === 0) || !currentConv) return;
 
+  const attachments = [...pendingAttachments];
   let text = rawText;
-  if (pendingAttachments.length > 0) {
-    const paths = pendingAttachments.map(a => `[Archivo adjunto: ${a.path}]`).join('\n');
+  if (attachments.length > 0) {
+    const paths = attachments.map(a => `[Archivo adjunto: ${a.path}]`).join('\n');
     text = paths + (rawText ? '\n\n' + rawText : '');
   }
 
   // Mostrar mensaje con previews de archivos adjuntos
-  addUserMsgWithFiles(rawText, [...pendingAttachments]);
+  const bubble = addUserMsgWithFiles(rawText, attachments);
   $('input').value = '';
   autoResize($('input'));
   drafts.delete(currentConv);
   clearAttachments();
   setBusy(true);
   try {
-    await api(`/conversations/${currentConv}/message`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(withAccountBody({ text })),
-    });
+    await sendMessage(currentConv, text);
   } catch (err) {
-    addMsg('error', err.message);
     setBusy(false);
+    if (err.isNetwork) {
+      // No se envió: sacamos la burbuja optimista y devolvemos todo al composer.
+      if (bubble) bubble.remove();
+      restoreComposer(rawText, attachments);
+      addMsg('error', err.message + ' — tocá enviar de nuevo');
+    } else {
+      addMsg('error', err.message);
+    }
   }
 };
 
