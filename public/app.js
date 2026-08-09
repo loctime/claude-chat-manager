@@ -750,6 +750,170 @@ function showConvMenu(x, y, conv) {
   }, 350);
 }
 
+// ── Menú contextual de mensajes (click derecho / long-press en burbujas) ──
+
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // Fallback para contextos sin Clipboard API (http plano, browsers viejos)
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } finally { ta.remove(); }
+  }
+  toast('Copiado', 'info', 1500);
+}
+
+// Cita el texto en el composer estilo chat: "> línea" por línea, tope de 500
+// caracteres para no inundar el input con una respuesta larga de Claude.
+function quoteIntoComposer(text) {
+  const input = $('input');
+  let t = text.trim();
+  if (t.length > 500) t = t.slice(0, 500) + '…';
+  const quoted = t.split('\n').map(l => '> ' + l).join('\n') + '\n\n';
+  input.value = quoted + input.value;
+  autoResize(input);
+  if (currentConv) drafts.set(currentConv, input.value);
+  input.focus();
+  input.selectionStart = input.selectionEnd = input.value.length;
+}
+
+async function doRewind(ctx) {
+  const ok = confirm('Rebobinar hasta acá?\n\nElimina esta pregunta y TODO lo que vino después — Claude lo olvida de verdad, como si nunca hubiera pasado. La conversación sigue desde la respuesta anterior.\n\n(Queda un backup del archivo de sesión por las dudas.)');
+  if (!ok) return;
+  try {
+    const r = await api(`/conversations/${currentConv}/rewind`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(withAccountBody({ uuid: ctx.uuid })),
+    });
+    toast(`Rebobinado (${r.removed} entradas eliminadas)`, 'info', 3000);
+    await loadMessages(currentConv);
+    refreshCostBadge(currentConv);
+    refreshVisibleTrees();
+  } catch (err) {
+    toast('No se pudo rebobinar: ' + err.message);
+  }
+}
+
+function showMsgMenu(x, y, ctx) {
+  document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  const canRewind = ctx.role === 'user' && ctx.uuid && !ctx.compacted;
+  menu.innerHTML = `
+    <button data-action="copy">📋 Copiar</button>
+    <button data-action="quote">↩️ Citar</button>
+    ${canRewind ? '<button data-action="rewind" class="ctx-danger">⏪ Rebobinar hasta acá</button>' : ''}
+  `;
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = Math.min(x, window.innerWidth - rect.width - 8) + 'px';
+  menu.style.top = Math.min(y, window.innerHeight - rect.height - 8) + 'px';
+
+  const doAction = (action) => {
+    menu.remove();
+    document.removeEventListener('click', dismiss, true);
+    document.removeEventListener('touchstart', dismiss, true);
+    if (action === 'copy') copyToClipboard(ctx.text);
+    else if (action === 'quote') quoteIntoComposer(ctx.text);
+    else if (action === 'rewind') doRewind(ctx);
+  };
+
+  menu.addEventListener('click', e => {
+    e.stopPropagation();
+    const action = e.target.dataset && e.target.dataset.action;
+    if (action) doAction(action);
+  });
+  menu.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+  function dismiss(e) {
+    if (menu.contains(e.target)) return;
+    menu.remove();
+    document.removeEventListener('click', dismiss, true);
+    document.removeEventListener('touchstart', dismiss, true);
+  }
+  // Mismo delay que showConvMenu: saltear el click sintético del long-press
+  setTimeout(() => {
+    document.addEventListener('click', dismiss, true);
+    document.addEventListener('touchstart', dismiss, true);
+  }, 350);
+}
+
+function attachMsgGestures(el, ctx) {
+  let touchTimer = null;
+  let longPressed = false;
+  let startX = 0, startY = 0;
+
+  el.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    showMsgMenu(e.clientX, e.clientY, ctx);
+  });
+
+  el.addEventListener('touchstart', e => {
+    longPressed = false;
+    const t = e.touches[0];
+    startX = t.clientX; startY = t.clientY;
+    touchTimer = setTimeout(() => {
+      longPressed = true;
+      touchTimer = null;
+      showMsgMenu(startX, startY, ctx);
+      if (navigator.vibrate) { try { navigator.vibrate(30); } catch {} }
+    }, 500);
+  }, { passive: true });
+
+  el.addEventListener('touchmove', e => {
+    if (!touchTimer) return;
+    const t = e.touches[0];
+    // Se movió: es scroll, no long-press
+    if (Math.abs(t.clientX - startX) > 10 || Math.abs(t.clientY - startY) > 10) {
+      clearTimeout(touchTimer); touchTimer = null;
+    }
+  }, { passive: true });
+
+  el.addEventListener('touchend', () => {
+    if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
+  });
+  el.addEventListener('touchcancel', () => {
+    if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
+  });
+
+  // Bloquear el click sintético post-long-press (mismo truco que las filas)
+  el.addEventListener('click', e => {
+    if (longPressed) {
+      longPressed = false;
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }, { capture: true });
+}
+
+// Chip "copiar" flotante sobre un bloque de código del markdown. El pre es su
+// propio scroll container horizontal, así que un absolute adentro se iría con
+// el scroll — se envuelve en un wrapper relative y el chip cuelga del wrapper.
+function addCodeCopyChip(pre) {
+  const wrap = document.createElement('div');
+  wrap.className = 'code-wrap';
+  pre.parentNode.insertBefore(wrap, pre);
+  wrap.appendChild(pre);
+  const btn = document.createElement('button');
+  btn.className = 'code-copy';
+  btn.title = 'Copiar código';
+  btn.textContent = '⧉';
+  btn.onclick = e => {
+    e.stopPropagation();
+    const code = pre.querySelector('code');
+    copyToClipboard((code || pre).innerText.replace(/\n$/, ''));
+    btn.textContent = '✓';
+    setTimeout(() => { btn.textContent = '⧉'; }, 1200);
+  };
+  wrap.appendChild(btn);
+}
+
 // ── Messages ──
 function now() {
   return new Date().toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
@@ -1046,8 +1210,12 @@ function addMsg(role, text, opts = {}) {
   if (role !== 'error') {
     const span = document.createElement('div');
     span.className = 'msg-text';
-    if (role === 'assistant') renderAssistantText(span, text);
-    else renderTextWithPaths(span, text);
+    if (role === 'assistant') {
+      renderAssistantText(span, text);
+      span.querySelectorAll('pre').forEach(addCodeCopyChip);
+    } else {
+      renderTextWithPaths(span, text);
+    }
     const ttsBtn = makeTtsBtn(text, role === 'user' ? 'user' : 'assistant');
     const time = document.createElement('span');
     time.className = 'msg-time';
@@ -1055,6 +1223,7 @@ function addMsg(role, text, opts = {}) {
     div.appendChild(span);
     div.appendChild(ttsBtn);
     div.appendChild(time);
+    attachMsgGestures(div, { role, text, uuid: opts.uuid, compacted: !!opts.compacted });
   } else {
     div.textContent = text;
   }
@@ -1075,6 +1244,21 @@ function addTool(name, input, output, opts = {}) {
   det.querySelector('summary').textContent = `▸ ${name}: ${summary}`;
   det.querySelector('.in').textContent = JSON.stringify(input, null, 2);
   det.querySelector('.out').textContent = output || '';
+
+  // Copiar el comando entero (los summaries se truncan a 120 chars): botón en
+  // el summary que no togglea el details.
+  if (typeof input === 'object' && input && typeof input.command === 'string' && input.command.trim()) {
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'tool-copy';
+    copyBtn.title = 'Copiar comando entero';
+    copyBtn.textContent = '⧉';
+    copyBtn.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      copyToClipboard(input.command);
+    });
+    det.querySelector('summary').appendChild(copyBtn);
+  }
 
   // Botón descarga / preview para tool Write / Edit
   if ((name === 'Write' || name === 'Edit') && input && input.file_path) {
@@ -1173,7 +1357,7 @@ async function loadMessages(convId) {
         inCompacted = false;
       }
       if (m.role === 'system-compact') { addCompactBoundary(m); continue; }
-      const opts = { compacted: !!m.compacted };
+      const opts = { compacted: !!m.compacted, uuid: m.uuid };
       if (m.role === 'tool') addTool(m.name, m.input, m.output, opts);
       else addMsg(m.role, m.text, opts);
     }
@@ -1675,6 +1859,9 @@ function addUserMsgWithFiles(text, attachments) {
   time.textContent = now();
   div.appendChild(ttsBtn);
   div.appendChild(time);
+  // Burbuja optimista: todavía no tiene uuid en el jsonl (aparece recién al
+  // recargar en el idle), así que el menú ofrece copiar/citar pero no rebobinar.
+  if (text) attachMsgGestures(div, { role: 'user', text, uuid: null, compacted: false });
 
   messagesEl.appendChild(div);
   // Mensaje propio: siempre bajamos y volvemos a "pegarnos" al fondo.

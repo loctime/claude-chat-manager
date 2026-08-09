@@ -389,3 +389,67 @@ test('resolveCwd cae al projectDir guardado cuando la conversación todavía no 
   const conv = { currentSessionId: null, projectDir: '/elegido/por/el/usuario' };
   assert.equal(resolveCwd(conv, '/no/existe'), '/elegido/por/el/usuario');
 });
+
+// ── Rewind ──
+const { rewindCutIndex, rewindSessionFile } = require('../src/scanner');
+
+// Cadena estilo lab 2026-08-09: user T1 → assistant T1 → plomería → user T2 → assistant T2
+function rewindFixtureLines() {
+  const mk = o => JSON.stringify(o);
+  return [
+    mk({ type: 'queue-operation', operation: 'enqueue' }),
+    mk({ type: 'user', uuid: 'u1', parentUuid: null, sessionId: 's1', message: { role: 'user', content: 'primera pregunta' } }),
+    mk({ type: 'assistant', uuid: 'a1', parentUuid: 'u1', sessionId: 's1', message: { role: 'assistant', content: [{ type: 'text', text: 'primera respuesta' }] } }),
+    mk({ type: 'last-prompt', leafUuid: 'a1', lastPrompt: 'primera pregunta', sessionId: 's1' }),
+    mk({ type: 'system', subtype: 'compact_boundary', compactMetadata: { trigger: 'auto', preTokens: 10, postTokens: 5 } }),
+    mk({ type: 'mode', mode: 'normal' }),
+    mk({ type: 'queue-operation', operation: 'enqueue' }),
+    mk({ type: 'attachment', parentUuid: 'a1', attachment: { type: 'hook_success' } }),
+    mk({ type: 'user', uuid: 'u2', parentUuid: 'a1', sessionId: 's1', message: { role: 'user', content: 'pregunta fuera de tema' } }),
+    mk({ type: 'assistant', uuid: 'a2', parentUuid: 'u2', sessionId: 's1', message: { role: 'assistant', content: [{ type: 'text', text: 'respuesta fuera de tema' }] } }),
+    mk({ type: 'last-prompt', leafUuid: 'a2', lastPrompt: 'pregunta fuera de tema', sessionId: 's1' }),
+  ];
+}
+
+test('rewindCutIndex corta antes del user y arrastra la plomería previa, sin tocar system', () => {
+  const parsed = rewindFixtureLines().map(l => JSON.parse(l));
+  // El corte para u2 debe caer justo después del compact_boundary (system se conserva),
+  // llevándose mode + queue-operation + attachment + u2 + a2 + last-prompt.
+  assert.equal(rewindCutIndex(parsed, 'u2'), 5);
+});
+
+test('rewindCutIndex rechaza uuid inexistente y rebobinar el primer mensaje', () => {
+  const parsed = rewindFixtureLines().map(l => JSON.parse(l));
+  assert.equal(rewindCutIndex(parsed, 'no-existe'), -1);
+  // u1 es el primer turno: cortarlo dejaría la sesión sin mensajes
+  assert.equal(rewindCutIndex(parsed, 'u1'), -1);
+});
+
+test('rewindSessionFile trunca el archivo, deja backup e invalida caches', () => {
+  const { file } = tmpFile(rewindFixtureLines());
+  const result = rewindSessionFile(file, 'u2');
+  assert.equal(result.removed, 6);
+  assert.ok(fs.existsSync(result.backup));
+  const kept = fs.readFileSync(file, 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  assert.equal(kept.length, 5);
+  assert.equal(kept[kept.length - 1].subtype, 'compact_boundary');
+  // El backup conserva el contenido original completo
+  assert.equal(fs.readFileSync(result.backup, 'utf8').trim().split('\n').length, 11);
+  // La vista de chat post-rewind ya no incluye el turno cortado
+  const msgs = toChatMessages(kept);
+  assert.ok(!msgs.some(m => m.text && m.text.includes('fuera de tema')));
+});
+
+test('rewindSessionFile devuelve null si el uuid no está', () => {
+  const { file } = tmpFile(rewindFixtureLines());
+  assert.equal(rewindSessionFile(file, 'nope'), null);
+  // y no dejó backup huérfano
+  assert.ok(!fs.readdirSync(path.dirname(file)).some(f => f.includes('bak-rewind')));
+});
+
+test('toChatMessages expone uuid en los mensajes user', () => {
+  const { file } = tmpFile(rewindFixtureLines());
+  const msgs = toChatMessages(parseJsonl(file));
+  const users = msgs.filter(m => m.role === 'user');
+  assert.deepEqual(users.map(u => u.uuid), ['u1', 'u2']);
+});

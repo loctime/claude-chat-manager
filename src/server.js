@@ -669,6 +669,31 @@ app.post('/api/conversations/:id/compact', (req, res) => {
   res.status(202).json({ queued: true });
 });
 
+// Rebobinar: elimina un turno user y todo lo posterior del jsonl de la sesión.
+// Ver scanner.rewindSessionFile para el porqué de que esto es seguro (cadena
+// parentUuid estilo git, cortada en borde de turno). Es rápido (reescritura
+// local del archivo), así que responde sincrónico — no necesita el baile de
+// 202+SSE del compact.
+app.post('/api/conversations/:id/rewind', (req, res) => {
+  const convId = req.params.id;
+  const uuid = (req.body.uuid || '').trim();
+  if (!uuid) return res.status(400).json({ error: 'falta uuid del mensaje' });
+  if (runner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación está procesando un mensaje' });
+  if (compacting.has(convId)) return res.status(409).json({ error: 'esa conversación se está compactando' });
+  const acc = req.body.account || activeAccount;
+  const { conv } = resolveConv(convId, acc);
+  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  if (!conv.currentSessionId) return res.status(400).json({ error: 'la conversación no tiene sesión activa' });
+  const file = scanner.findSessionFile(conv.currentSessionId, accountProjectsDir(acc));
+  if (!file) return res.status(404).json({ error: 'archivo de sesión no encontrado' });
+  let result;
+  try { result = scanner.rewindSessionFile(file, uuid); }
+  catch (err) { return res.status(500).json({ error: 'no se pudo rebobinar: ' + err.message }); }
+  if (!result) return res.status(400).json({ error: 'no se puede rebobinar ahí (mensaje no encontrado en la sesión actual, o dejaría la conversación vacía)' });
+  broadcast(convId, { kind: 'status', status: 'idle', code: 0 });
+  res.json({ ok: true, removed: result.removed });
+});
+
 app.post('/api/conversations', (req, res) => {
   const { text, model } = req.body;
   const acc = req.body.account || activeAccount;

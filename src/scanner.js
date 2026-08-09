@@ -330,7 +330,7 @@ function toChatMessages(entries) {
     if (e.type === 'user') {
       const text = contentToText(e.message.content);
       if (isLocalCommandArtifact(text)) continue;
-      if (text.trim()) items.push({ role: 'user', text });
+      if (text.trim()) items.push({ role: 'user', text, uuid: e.uuid });
     } else if (e.type === 'assistant' && Array.isArray(e.message.content)) {
       for (const b of e.message.content) {
         if (b.type === 'text' && b.text.trim()) items.push({ role: 'assistant', text: b.text });
@@ -341,8 +341,51 @@ function toChatMessages(entries) {
   return items;
 }
 
+// ── Rewind: cortar la sesión justo antes de un turno user ──
+// El jsonl es una cadena estilo git: cada user/assistant apunta a su padre por
+// parentUuid, y al resumir el CLI camina esa cadena hacia atrás desde el último
+// mensaje del archivo (verificado empíricamente 2026-08-09 — mover el leafUuid
+// del last-prompt no hace nada; truncar el archivo sí). Cortar en un borde de
+// turno deja la cadena intacta, así que la sesión resume perfecto y Claude
+// olvida todo lo posterior.
+
+// Plomería que el CLI escribe entre el fin de un turno y el user del siguiente.
+// Se corta junto con el user al que precede. Las entradas `system` NO entran acá:
+// pueden ser un compact_boundary del turno anterior y hay que conservarlas.
+const TURN_PRELUDE_TYPES = new Set(['queue-operation', 'attachment', 'mode', 'permission-mode', 'file-history-snapshot']);
+
+// Devuelve el índice de línea donde cortar para rebobinar hasta antes del user
+// `uuid`, o -1 si no se puede (uuid inexistente, o el corte dejaría la sesión
+// sin ningún mensaje). Separada de la escritura para poder testearla pura.
+function rewindCutIndex(parsedLines, uuid) {
+  let idx = parsedLines.findIndex(e => e && e.type === 'user' && e.uuid === uuid);
+  if (idx < 0) return -1;
+  while (idx > 0 && TURN_PRELUDE_TYPES.has(parsedLines[idx - 1] && parsedLines[idx - 1].type)) idx--;
+  const remaining = parsedLines.slice(0, idx);
+  if (!remaining.some(e => e && (e.type === 'user' || e.type === 'assistant') && e.message)) return -1;
+  return idx;
+}
+
+// Opera sobre las líneas crudas (no re-serializa lo que se conserva) y hace
+// backup al lado del archivo antes de escribir. El sufijo no es .jsonl, así
+// que ni el CLI ni listSessions lo levantan como sesión.
+function rewindSessionFile(filePath, uuid) {
+  const raw = fs.readFileSync(filePath, 'utf8');
+  const lines = raw.split('\n').filter(l => l.trim());
+  const parsed = lines.map(l => { try { return JSON.parse(l); } catch { return null; } });
+  const idx = rewindCutIndex(parsed, uuid);
+  if (idx < 0) return null;
+  const backup = filePath + '.bak-rewind-' + Date.now();
+  fs.copyFileSync(filePath, backup);
+  fs.writeFileSync(filePath, lines.slice(0, idx).join('\n') + '\n');
+  _tailCache.delete(filePath);
+  _sessionInfoCache.delete(filePath);
+  return { removed: lines.length - idx, backup };
+}
+
 module.exports = {
   parseJsonl, sessionInfo, listSessions, findSessionFile, resolveCwd, toChatMessages, contentToText,
   getMessagesIncremental, sumUsage, searchSessions, PROJECTS_DIR,
+  rewindCutIndex, rewindSessionFile,
   _clearSessionInfoCache, _clearTailCache,
 };
