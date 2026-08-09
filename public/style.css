@@ -970,9 +970,17 @@ body.hide-tools details.tool { display: none !important; }
 .tool-copy:hover { background: rgba(255,255,255,.12); color: var(--text); }
 
 /* En táctil el long-press abre el menú (que ya tiene Copiar) — sin esto, el
-   navegador pelea con su propia selección de texto nativa. Estilo WhatsApp. */
+   navegador pelea con su propia selección de texto nativa. Estilo WhatsApp.
+   "🔤 Seleccionar texto" del menú habilita la selección puntualmente vía
+   .selecting (mayor especificidad que la regla de arriba, la pisa sin !important). */
 @media (pointer: coarse) {
   .msg .msg-text { -webkit-user-select: none; user-select: none; }
+  .msg.selecting .msg-text { -webkit-user-select: text; user-select: text; }
+}
+.msg.selecting {
+  outline: 1px dashed var(--accent);
+  outline-offset: 3px;
+  border-radius: var(--radius);
 }
 
 .msg.compacted, .tool.compacted { opacity: 0.42; }

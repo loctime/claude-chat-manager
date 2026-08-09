@@ -800,6 +800,38 @@ async function doRewind(ctx) {
   }
 }
 
+// Mobile tiene user-select:none en las burbujas (si no, el long-press pelea
+// entre nuestro menú y la selección nativa — ver CSS). Esta función habilita
+// la selección puntualmente en UNA burbuja y arranca con todo el texto ya
+// seleccionado, para que el usuario solo tenga que arrastrar los handles
+// nativos hasta la parte que quiere y copiar con el menú del sistema.
+let _endSelectionMode = null;
+function enterSelectionMode(el) {
+  if (_endSelectionMode) _endSelectionMode();
+  const textEl = el.querySelector('.msg-text');
+  if (!textEl) return;
+  el.classList.add('selecting');
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(textEl);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  } catch { /* Selection API no disponible: igual queda seleccionable a mano */ }
+
+  const exit = () => {
+    el.classList.remove('selecting');
+    document.removeEventListener('pointerdown', onOutside, true);
+    if (_endSelectionMode === exit) _endSelectionMode = null;
+  };
+  // Tocar fuera de la burbuja sale del modo selección. Adentro no: así se
+  // puede arrastrar los handles nativos sin que se cierre solo.
+  const onOutside = e => { if (!el.contains(e.target)) exit(); };
+  // Delay para no comerse el mismo tap que abrió el menú y disparó esto.
+  setTimeout(() => document.addEventListener('pointerdown', onOutside, true), 300);
+  _endSelectionMode = exit;
+}
+
 function showMsgMenu(x, y, ctx) {
   document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
   const menu = document.createElement('div');
@@ -807,6 +839,7 @@ function showMsgMenu(x, y, ctx) {
   const canRewind = ctx.role === 'user' && ctx.uuid && !ctx.compacted;
   menu.innerHTML = `
     <button data-action="copy">📋 Copiar</button>
+    <button data-action="select">🔤 Seleccionar texto</button>
     <button data-action="quote">↩️ Citar</button>
     ${canRewind ? '<button data-action="rewind" class="ctx-danger">⏪ Rebobinar hasta acá</button>' : ''}
   `;
@@ -820,6 +853,7 @@ function showMsgMenu(x, y, ctx) {
     document.removeEventListener('click', dismiss, true);
     document.removeEventListener('touchstart', dismiss, true);
     if (action === 'copy') copyToClipboard(ctx.text);
+    else if (action === 'select') enterSelectionMode(ctx.el);
     else if (action === 'quote') quoteIntoComposer(ctx.text);
     else if (action === 'rewind') doRewind(ctx);
   };
@@ -845,16 +879,21 @@ function showMsgMenu(x, y, ctx) {
 }
 
 function attachMsgGestures(el, ctx) {
+  ctx.el = el; // referencia para poder habilitar la selección de texto desde el menú
   let touchTimer = null;
   let longPressed = false;
   let startX = 0, startY = 0;
 
   el.addEventListener('contextmenu', e => {
+    if (el.classList.contains('selecting')) return; // dejamos el nativo (copiar/etc) mandar
     e.preventDefault();
     showMsgMenu(e.clientX, e.clientY, ctx);
   });
 
   el.addEventListener('touchstart', e => {
+    // En modo selección no reabrimos el menú: dejamos que el usuario arrastre
+    // los handles nativos tranquilo (ver enterSelectionMode).
+    if (el.classList.contains('selecting')) return;
     longPressed = false;
     const t = e.touches[0];
     startX = t.clientX; startY = t.clientY;

@@ -15,7 +15,7 @@ PWA local para chatear con Claude Code desde el celular o el browser. Sidebar de
 - **Cola FIFO** — máximo 2 procesos `claude` concurrentes
 - **Compactar** — dispara el `/compact` nativo de Claude Code sobre la sesión (mantiene el mismo `session_id`, corre en background y avisa por streaming)
 - **Archivadas** — pantalla aparte para conversaciones archivadas, con swipe en mobile o botón en desktop, y deshacer
-- **Menú de mensaje** — click derecho / long-press en una burbuja: copiar texto, citar (prefill en el composer) y, en tus propios mensajes, rebobinar la sesión hasta ahí (Claude olvida ese turno y todo lo posterior)
+- **Menú de mensaje** — click derecho / long-press en una burbuja: copiar texto, seleccionar texto (para copiar solo una parte), citar (prefill en el composer) y, en tus propios mensajes, rebobinar la sesión hasta ahí (Claude olvida ese turno y todo lo posterior)
 - **Copiar código y comandos** — chip ⧉ en cada bloque de código de las respuestas y en las tool cards con comando (copia el comando entero aunque el resumen esté truncado)
 
 ## Requisitos
