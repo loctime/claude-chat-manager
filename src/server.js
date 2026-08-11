@@ -805,6 +805,20 @@ app.get('/api/conversations/:id/stream', (req, res) => {
   });
 });
 
-app.listen(PORT, HOST, () => {
+const server = app.listen(PORT, HOST, () => {
   console.log(`Claude Chat Manager en http://${HOST}:${PORT}`);
 });
+
+// Cloudflare Tunnel mantiene conexiones al origin en su pool y las reutiliza
+// hasta ~100s de idle (mismo límite que ya documentamos arriba para SSE) —
+// pero el keepAliveTimeout default de Node es de solo 5s. Si cloudflared
+// reutiliza un socket que Node ya cerró en esa ventana de 5-100s, la request
+// falla del lado del túnel con "context canceled"/"Failed to proxy HTTP" sin
+// relación con el tamaño o tipo de request — es pura carrera entre los dos
+// timeouts. Visto en jarvis-tunnel-err.log: ~50 cortes en una hora, cada
+// 30-90s, constante, sin importar si había tráfico activo o no. Alineamos el
+// timeout de Node por encima del límite del túnel para que Node nunca cierre
+// primero. headersTimeout tiene que ser mayor a keepAliveTimeout (Node lo
+// exige internamente).
+server.keepAliveTimeout = 110_000;
+server.headersTimeout = 115_000;
