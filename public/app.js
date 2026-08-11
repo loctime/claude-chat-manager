@@ -2599,3 +2599,43 @@ $('notes-composer').addEventListener('submit', async e => {
     toast('No se pudo guardar la nota: ' + err.message);
   }
 });
+
+// ── Notas: adjuntar archivos ──
+async function uploadNoteFile(file) {
+  const loadingChip = document.createElement('div');
+  loadingChip.className = 'attach-chip attach-chip-loading';
+  loadingChip.innerHTML = `<span class="attach-spinner"></span><span class="attach-chip-name"></span>`;
+  loadingChip.querySelector('.attach-chip-name').textContent = file.name || 'archivo';
+  $('notes-attachments').appendChild(loadingChip);
+
+  try {
+    const fd = new FormData();
+    fd.append('file', file, file.name);
+    const res = await netFetch('/api/notes/upload', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+    const entry = await res.json();
+    notesData.push(entry);
+    renderNotes();
+  } catch (err) {
+    toast('No se pudo subir el archivo: ' + err.message);
+  } finally {
+    loadingChip.remove();
+  }
+}
+
+$('notes-attach-btn').onclick = () => { $('notes-file-input').click(); };
+$('notes-file-input').onchange = async () => {
+  const files = Array.from($('notes-file-input').files);
+  $('notes-file-input').value = '';
+  for (const f of files) await uploadNoteFile(f);
+};
+
+// ── Notas: sincronización entre dispositivos por polling ──
+// 5s (no los 15s del árbol de chats) porque un uso central es "mandar un
+// archivo del celu y pasar a la PC a buscarlo enseguida". Sin SSE nuevo: ver
+// razones documentadas en la spec (mismo problema de conexiones idle que ya
+// se resolvió a los ponchazos para /stream).
+setInterval(() => { if (activePane === 2) safeLoadNotes(); }, 5000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && activePane === 2) safeLoadNotes();
+});
