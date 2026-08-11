@@ -2637,23 +2637,44 @@ $('notes-composer').addEventListener('submit', async e => {
 });
 
 // ── Notas: adjuntar archivos ──
+// Mismo problema que ya resolvimos para el composer de chat (ver el comentario
+// de prepareForUpload, arriba): un File que sale del picker de galería del
+// celu es un handle a content:// (Android) o a la fototeca (iOS), no bytes en
+// memoria. Subir ese handle crudo tal cual, sin materializarlo, funciona con
+// una foto recién sacada de la cámara (el handle está fresco) pero falla con
+// una elegida de la galería si el uplink móvil tarda y el sistema invalida el
+// handle a mitad de camino — fetch tira un TypeError crudo que el usuario ve
+// como "conexión caída o server sin responder". prepareForUpload ya resuelve
+// esto (materializa a Blob + comprime fotos grandes) — reusarlo acá en vez de
+// mandar `file` directo.
 async function uploadNoteFile(file) {
+  const displayName = file.name || `pegado-${Date.now()}.${(file.type.split('/')[1] || 'bin')}`;
   const loadingChip = document.createElement('div');
   loadingChip.className = 'attach-chip attach-chip-loading';
   loadingChip.innerHTML = `<span class="attach-spinner"></span><span class="attach-chip-name"></span>`;
-  loadingChip.querySelector('.attach-chip-name').textContent = file.name || 'archivo';
+  loadingChip.querySelector('.attach-chip-name').textContent = displayName;
   $('notes-attachments').appendChild(loadingChip);
 
+  const t0 = Date.now();
+  let sentBytes = 0;
   try {
+    const { blob, name: uploadName } = await prepareForUpload(file, displayName);
+    sentBytes = blob.size;
     const fd = new FormData();
-    fd.append('file', file, file.name);
+    fd.append('file', blob, uploadName);
     const res = await netFetch('/api/notes/upload', { method: 'POST', body: fd });
     if (!res.ok) throw new Error((await res.json()).error || res.statusText);
     const entry = await res.json();
     notesData.push(entry);
     renderNotes();
   } catch (err) {
-    toast('No se pudo subir el archivo: ' + err.message);
+    // Mismo rastro de tamaño/duración que uploadAttachment: si falla al
+    // instante es el archivo o la conexión; si falla tras varios segundos, se
+    // cortó a mitad de la subida.
+    const detalle = sentBytes
+      ? ` [${(sentBytes / 1024 / 1024).toFixed(1)}MB, ${((Date.now() - t0) / 1000).toFixed(1)}s]`
+      : ` [falló al preparar, ${((Date.now() - t0) / 1000).toFixed(1)}s]`;
+    toast('No se pudo subir el archivo: ' + err.message + detalle);
   } finally {
     loadingChip.remove();
   }
