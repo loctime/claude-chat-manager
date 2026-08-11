@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="J.A.R.V.I.S">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=32">
+  <link rel="stylesheet" href="style.css?v=33">
 </head>
 <body>
   <div id="app">
@@ -33,14 +33,37 @@
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.17L4 17.17V4h16v12z"/></svg>
         </button>
       </header>
+      <nav id="pane-tabs">
+        <button type="button" class="pane-tab active" data-pane="0">Chats</button>
+        <button type="button" class="pane-tab" data-pane="1">Archivado</button>
+        <button type="button" class="pane-tab" data-pane="2">📝 Notas</button>
+      </nav>
       <div id="ptr-indicator" hidden>
         <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
         Actualizando…
       </div>
       <div id="tree-viewport">
-        <div id="tree-viewport-inner">
+        <div id="tree-viewport-inner" data-pane="0">
           <nav id="tree" class="tree-pane"></nav>
           <nav id="tree-archived" class="tree-pane"></nav>
+          <div id="tree-notes" class="tree-pane notes-pane">
+            <div class="notes-header">
+              <button type="button" id="notes-back" class="archived-back">← Volver a chats</button>
+              <h2>📝 Notas</h2>
+            </div>
+            <div id="notes-messages" class="notes-messages"></div>
+            <div id="notes-attachments" class="notes-attachments"></div>
+            <form id="notes-composer" class="notes-composer">
+              <input id="notes-file-input" type="file" hidden multiple>
+              <button id="notes-attach-btn" type="button" title="Adjuntar archivo" aria-label="Adjuntar archivo">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5a2.5 2.5 0 0 1 5 0v10.5c0 .83-.67 1.5-1.5 1.5s-1.5-.67-1.5-1.5V6H9v9.5a2.5 2.5 0 0 0 5 0V5c0-2.21-1.79-4-4-4S6 2.79 6 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>
+              </button>
+              <textarea id="notes-input" rows="1" placeholder="Escribí una nota…"></textarea>
+              <button id="notes-send" type="submit" aria-label="Enviar">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+              </button>
+            </form>
+          </div>
         </div>
       </div>
     </div>
@@ -214,6 +237,6 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=32"></script>
+  <script src="app.js?v=33"></script>
 </body>
 </html>

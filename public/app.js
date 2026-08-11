@@ -8,7 +8,117 @@ let archivedTotal = 0;
 let archivedTreeLimit = 100;
 let archivedTreeHasMore = false;
 let archivedTreeTotal = 0;
-let viewingArchived = false;
+let activePane = 0; // 0=chats 1=archived 2=notas
+let notesPaneLoaded = false;
+let notesData = [];
+
+function noteTimeLabel(ts) {
+  return new Date(ts).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
+}
+
+function renderNoteBubble(entry) {
+  const div = document.createElement('div');
+  div.className = 'note-bubble';
+
+  if (entry.type === 'file') {
+    div.classList.add('note-bubble-file');
+    const ext = (entry.fileName.split('.').pop() || '').toLowerCase();
+    if (IMAGE_EXTS.has(ext)) {
+      const img = document.createElement('img');
+      img.className = 'note-file-thumb';
+      img.alt = entry.fileName;
+      img.src = '/api/thumbnail?path=' + encodeURIComponent(entry.filePath);
+      div.appendChild(img);
+    }
+    const name = document.createElement('div');
+    name.className = 'note-file-name';
+    name.textContent = entry.fileName;
+    div.appendChild(name);
+    const meta = document.createElement('div');
+    meta.className = 'note-file-meta';
+    meta.textContent = (entry.size ? (entry.size / 1024).toFixed(0) + ' KB · ' : '') + entry.filePath;
+    div.appendChild(meta);
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'note-copy-btn';
+    copyBtn.textContent = 'Copiar ruta';
+    copyBtn.onclick = () => copyToClipboard(entry.filePath);
+    div.appendChild(copyBtn);
+  } else {
+    div.classList.add('note-bubble-text');
+    const text = document.createElement('div');
+    text.className = 'note-text';
+    text.textContent = entry.text;
+    div.appendChild(text);
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'note-copy-btn';
+    copyBtn.textContent = 'Copiar';
+    copyBtn.onclick = () => copyToClipboard(entry.text);
+    div.appendChild(copyBtn);
+  }
+
+  const time = document.createElement('div');
+  time.className = 'note-time';
+  time.textContent = noteTimeLabel(entry.ts);
+  div.appendChild(time);
+
+  return div;
+}
+
+function renderNotes(scrollToBottom = true) {
+  const wrap = $('notes-messages');
+  wrap.innerHTML = '';
+  for (const entry of notesData) wrap.appendChild(renderNoteBubble(entry));
+  if (scrollToBottom) wrap.scrollTop = wrap.scrollHeight;
+}
+
+// Combina lo que devuelve el server con lo que ya tenemos en memoria: un push
+// optimista (composer de texto / upload) puede no estar todavía en la
+// respuesta de un poll que salió antes de que el POST terminara. Si lo
+// pisáramos sin más, la nota recién mandada desaparece hasta el próximo poll.
+// Une por id (así una entrada optimista se reemplaza por la del server en
+// cuanto aparece ahí, sin quedar duplicada) y ordena por ts.
+function mergeNotes(incoming, current) {
+  const byId = new Map(incoming.map(n => [n.id, n]));
+  for (const entry of current) {
+    if (!byId.has(entry.id)) byId.set(entry.id, entry);
+  }
+  return Array.from(byId.values()).sort((a, b) => a.ts - b.ts);
+}
+
+async function loadNotes() {
+  const { notes } = await api('/notes');
+  const merged = mergeNotes(notes, notesData);
+
+  // Nada cambió (mismo largo y mismo último id): no tocar el DOM ni el
+  // scroll. Evita que el poll de 5s le arruine al usuario una selección de
+  // texto o lo empuje al final si estaba leyendo notas viejas más arriba.
+  const prevLast = notesData[notesData.length - 1];
+  const mergedLast = merged[merged.length - 1];
+  const unchanged = merged.length === notesData.length &&
+    (!mergedLast || (prevLast && mergedLast.id === prevLast.id));
+  if (unchanged) return;
+
+  const wrap = $('notes-messages');
+  const wasNearBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 80;
+
+  notesData = merged;
+  renderNotes(wasNearBottom);
+}
+
+let notesPolling = false;
+async function safeLoadNotes() {
+  if (notesPolling) return; // ya hay un poll en vuelo, no pisarlo con otro
+  notesPolling = true;
+  try { await loadNotes(); }
+  // Falla silenciosa: es polling de fondo, el próximo tick a los 5s se
+  // autocura. Tostar acá produciría un toast casi continuo con conexión
+  // inestable. El error SÍ se muestra en la carga inicial (goToPane →
+  // loadNotes directo, con su propio try/catch).
+  catch { /* noop */ }
+  finally { notesPolling = false; }
+}
 let archivedPaneLoaded = false;
 let activeAccount = null;
 const drafts = new Map();
@@ -438,14 +548,8 @@ async function loadTree() {
     nav.appendChild(more);
   }
 
-  if (archivedTotal > 0) {
-    const t = document.createElement('button');
-    t.className = 'archived-toggle';
-    t.type = 'button';
-    t.textContent = `Ver archivadas (${archivedTotal})`;
-    t.onclick = () => { goToArchived(); };
-    nav.appendChild(t);
-  }
+  const archTab = document.querySelector('.pane-tab[data-pane="1"]');
+  if (archTab) archTab.textContent = archivedTotal > 0 ? `Archivado (${archivedTotal})` : 'Archivado';
 
   updateGlobalBusyIndicator();
 }
@@ -463,7 +567,7 @@ async function loadArchivedTree() {
   back.className = 'archived-back';
   back.type = 'button';
   back.textContent = '← Volver a activas';
-  back.onclick = () => { goToActive(); };
+  back.onclick = () => { goToPane(0); };
   nav.insertBefore(back, nav.firstChild);
 
   if (archivedTreeHasMore) {
@@ -487,32 +591,59 @@ async function safeLoadArchivedTree() {
   catch (err) { toast('No se pudo actualizar archivadas: ' + err.message); }
 }
 
-async function goToArchived() {
-  if (viewingArchived) return;
-  if (!archivedPaneLoaded) {
+let paneNavGeneration = 0;
+let paneNavTarget = 0; // pane que debe quedar activo una vez termine la navegación en curso
+
+async function goToPane(index) {
+  if (index === paneNavTarget) return;
+  // paneNavTarget (no activePane) es lo que compara el guard de arriba: activePane
+  // recién se actualiza al final, así que si hay una navegación en vuelo (p.ej.
+  // click rápido Archivado→Notas→Chats) activePane todavía dice "0" aunque ya
+  // vamos camino a otro pane. paneNavGeneration hace que solo la llamada más
+  // nueva pueda escribir el estado final tras su await; las anteriores se abortan.
+  paneNavTarget = index;
+  const myGeneration = ++paneNavGeneration;
+  if (index === 1 && !archivedPaneLoaded) {
     try {
       await loadArchivedTree();
       archivedPaneLoaded = true;
     } catch (err) {
       toast('No se pudo cargar archivadas: ' + err.message);
+      // Solo limpiar paneNavTarget si nadie navegó de nuevo mientras esperábamos;
+      // si no, dejarlo como está para no pisar el target de esa llamada más nueva.
+      if (myGeneration === paneNavGeneration) paneNavTarget = activePane;
       return;
     }
   }
-  viewingArchived = true;
-  $('tree-viewport-inner').classList.add('showing-archived');
-}
-
-function goToActive() {
-  viewingArchived = false;
-  $('tree-viewport-inner').classList.remove('showing-archived');
+  if (index === 2 && !notesPaneLoaded) {
+    try {
+      await loadNotes();
+      notesPaneLoaded = true;
+    } catch (err) {
+      toast('No se pudo cargar notas: ' + err.message);
+      if (myGeneration === paneNavGeneration) paneNavTarget = activePane;
+      return;
+    }
+  }
+  if (myGeneration !== paneNavGeneration) return; // otra navegación más nueva ya tomó el control
+  activePane = index;
+  $('tree-viewport-inner').dataset.pane = String(index);
+  document.querySelectorAll('.pane-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.pane === String(index));
+  });
 }
 
 function resetArchivedPane() {
   archivedPaneLoaded = false;
   archivedTreeLimit = 100;
   $('tree-archived').innerHTML = '';
-  if (viewingArchived) goToActive();
+  if (activePane === 1) goToPane(0);
 }
+
+document.querySelectorAll('.pane-tab').forEach(btn => {
+  btn.onclick = () => goToPane(Number(btn.dataset.pane));
+});
+$('notes-back').onclick = () => goToPane(0);
 
 // ── Indicador global de "procesando" (icono ping + título + badge de la app instalada) ──
 let globalBusy = false;
@@ -2202,6 +2333,8 @@ function paneSwipeStart(clientX, clientY) {
   return true;
 }
 
+const PANE_COUNT = 3;
+
 function paneSwipeMove(clientX, clientY) {
   if (!paneDragging) return false;
   const dx = clientX - paneStartX;
@@ -2211,8 +2344,9 @@ function paneSwipeMove(clientX, clientY) {
     paneAxisLocked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
   }
   if (paneAxisLocked !== 'x') return false;
-  const base = viewingArchived ? -paneViewportWidth() : 0;
-  paneCurrentTranslate = Math.min(0, Math.max(-paneViewportWidth(), base + dx));
+  const base = -activePane * paneViewportWidth();
+  const min = -(PANE_COUNT - 1) * paneViewportWidth();
+  paneCurrentTranslate = Math.min(0, Math.max(min, base + dx));
   $('tree-viewport-inner').style.transform = `translateX(${paneCurrentTranslate}px)`;
   return true;
 }
@@ -2224,15 +2358,15 @@ async function paneSwipeEnd() {
 
   try {
     if (paneAxisLocked === 'x') {
-      const base = viewingArchived ? -paneViewportWidth() : 0;
+      const base = -activePane * paneViewportWidth();
       const delta = paneCurrentTranslate - base;
-      // Navigate first (await if async), THEN clear inline styles so CSS class transform can take over
-      if (!viewingArchived && delta < -PANE_SWIPE_THRESHOLD) {
+      // Navigate first (await if async), THEN clear inline styles so CSS attribute transform can take over
+      if (delta < -PANE_SWIPE_THRESHOLD && activePane < PANE_COUNT - 1) {
         paneNavigating = true;
-        await goToArchived();
-      } else if (viewingArchived && delta > PANE_SWIPE_THRESHOLD) {
+        await goToPane(activePane + 1);
+      } else if (delta > PANE_SWIPE_THRESHOLD && activePane > 0) {
         paneNavigating = true;
-        goToActive();
+        await goToPane(activePane - 1);
       }
     }
   } finally {
@@ -2469,3 +2603,75 @@ $('cfg-reset').onclick = () => {
   openSettings();
   toast('Configuración restaurada', 'info', 2000);
 };
+
+// ── Notas: composer de texto ──
+$('notes-input').addEventListener('input', () => autoResize($('notes-input')));
+$('notes-input').addEventListener('keydown', e => {
+  if (isTouchDevice) return;
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    $('notes-composer').requestSubmit();
+  }
+});
+
+$('notes-composer').addEventListener('submit', async e => {
+  e.preventDefault();
+  const input = $('notes-input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  autoResize(input);
+  try {
+    const entry = await api('/notes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    notesData.push(entry);
+    renderNotes();
+  } catch (err) {
+    input.value = text;
+    autoResize(input);
+    toast('No se pudo guardar la nota: ' + err.message);
+  }
+});
+
+// ── Notas: adjuntar archivos ──
+async function uploadNoteFile(file) {
+  const loadingChip = document.createElement('div');
+  loadingChip.className = 'attach-chip attach-chip-loading';
+  loadingChip.innerHTML = `<span class="attach-spinner"></span><span class="attach-chip-name"></span>`;
+  loadingChip.querySelector('.attach-chip-name').textContent = file.name || 'archivo';
+  $('notes-attachments').appendChild(loadingChip);
+
+  try {
+    const fd = new FormData();
+    fd.append('file', file, file.name);
+    const res = await netFetch('/api/notes/upload', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+    const entry = await res.json();
+    notesData.push(entry);
+    renderNotes();
+  } catch (err) {
+    toast('No se pudo subir el archivo: ' + err.message);
+  } finally {
+    loadingChip.remove();
+  }
+}
+
+$('notes-attach-btn').onclick = () => { $('notes-file-input').click(); };
+$('notes-file-input').onchange = async () => {
+  const files = Array.from($('notes-file-input').files);
+  $('notes-file-input').value = '';
+  for (const f of files) await uploadNoteFile(f);
+};
+
+// ── Notas: sincronización entre dispositivos por polling ──
+// 5s (no los 15s del árbol de chats) porque un uso central es "mandar un
+// archivo del celu y pasar a la PC a buscarlo enseguida". Sin SSE nuevo: ver
+// razones documentadas en la spec (mismo problema de conexiones idle que ya
+// se resolvió a los ponchazos para /stream).
+setInterval(() => { if (activePane === 2) safeLoadNotes(); }, 5000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && activePane === 2) safeLoadNotes();
+});

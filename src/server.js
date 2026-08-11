@@ -6,6 +6,7 @@ const os = require('os');
 const { execFile, execFileSync, spawn } = require('child_process');
 const multer = require('multer');
 const scanner = require('./scanner');
+const notes = require('./notes');
 const meta = require('./meta');
 const { Runner } = require('./runner');
 const { CLAUDE_CMD } = require('./claude-cmd');
@@ -448,6 +449,50 @@ app.get('/api/files', (req, res) => {
   const filename = path.basename(filePath);
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   fs.createReadStream(filePath).pipe(res);
+});
+
+// ── Notas (anotador sin IA, sin sesión de Claude) ──
+// Ver docs/superpowers/specs/2026-08-11-notas-jarvis-design.md
+const notesUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      try {
+        notes.ensureFilesDir();
+        cb(null, notes.FILES_DIR);
+      } catch (err) { cb(err); }
+    },
+    filename: (req, file, cb) => {
+      cb(null, notes.resolveDestName(notes.FILES_DIR, file.originalname));
+    },
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 },
+});
+
+app.get('/api/notes', (req, res) => {
+  res.json({ notes: notes.readAll() });
+});
+
+app.post('/api/notes', (req, res) => {
+  const text = (req.body.text || '').trim();
+  if (!text) return res.status(400).json({ error: 'texto vacío' });
+  const entry = { id: crypto.randomUUID(), ts: Date.now(), type: 'text', text };
+  notes.append(entry);
+  res.status(201).json(entry);
+});
+
+app.post('/api/notes/upload', notesUpload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'no se recibió archivo' });
+  const entry = {
+    id: crypto.randomUUID(),
+    ts: Date.now(),
+    type: 'file',
+    fileName: req.file.originalname,
+    filePath: path.join(notes.FILES_DIR, req.file.filename),
+    mime: req.file.mimetype || '',
+    size: req.file.size,
+  };
+  notes.append(entry);
+  res.status(201).json(entry);
 });
 
 const DEFAULT_TREE_LIMIT = 100;
