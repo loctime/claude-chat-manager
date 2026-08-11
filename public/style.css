@@ -1165,3 +1165,23 @@ body.hide-tools details.tool { display: none !important; }
   from { opacity: 0; transform: translateX(20px); }
   to   { opacity: 1; transform: translateX(0); }
 }
+
+/* ── Notas: burbujas ── */
+.note-bubble {
+  align-self: flex-start; max-width: 90%;
+  background: var(--bubble-me); border-radius: var(--radius);
+  padding: 7px 12px 18px; position: relative;
+  font-family: var(--chat-font); font-size: var(--chat-size);
+  white-space: pre-wrap; word-break: break-word;
+}
+.note-text { line-height: 1.45; }
+.note-file-name { font-weight: 600; }
+.note-file-meta { font-size: 11px; color: var(--text2); word-break: break-all; margin-top: 2px; }
+.note-file-thumb { max-width: 180px; max-height: 180px; border-radius: 6px; display: block; margin-bottom: 6px; }
+.note-copy-btn {
+  display: block; margin-top: 6px;
+  background: var(--input-bg); border: none; color: var(--text2);
+  border-radius: 12px; padding: 3px 10px; font-size: 11px; cursor: pointer;
+}
+.note-copy-btn:hover { color: var(--text); }
+.note-time { position: absolute; right: 10px; bottom: 4px; font-size: 10px; color: var(--text2); opacity: .8; }

@@ -12,9 +12,77 @@ let activePane = 0; // 0=chats 1=archived 2=notas
 let notesPaneLoaded = false;
 let notesData = [];
 
-// Implementación real en el próximo task — acá solo evita que goToPane(2)
-// rompa mientras no existe el fetch/render todavía.
-async function loadNotes() { notesData = []; }
+function noteTimeLabel(ts) {
+  return new Date(ts).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
+}
+
+function renderNoteBubble(entry) {
+  const div = document.createElement('div');
+  div.className = 'note-bubble';
+
+  if (entry.type === 'file') {
+    div.classList.add('note-bubble-file');
+    const ext = (entry.fileName.split('.').pop() || '').toLowerCase();
+    if (IMAGE_EXTS.has(ext)) {
+      const img = document.createElement('img');
+      img.className = 'note-file-thumb';
+      img.alt = entry.fileName;
+      img.src = '/api/thumbnail?path=' + encodeURIComponent(entry.filePath);
+      div.appendChild(img);
+    }
+    const name = document.createElement('div');
+    name.className = 'note-file-name';
+    name.textContent = entry.fileName;
+    div.appendChild(name);
+    const meta = document.createElement('div');
+    meta.className = 'note-file-meta';
+    meta.textContent = (entry.size ? (entry.size / 1024).toFixed(0) + ' KB · ' : '') + entry.filePath;
+    div.appendChild(meta);
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'note-copy-btn';
+    copyBtn.textContent = 'Copiar ruta';
+    copyBtn.onclick = () => copyToClipboard(entry.filePath);
+    div.appendChild(copyBtn);
+  } else {
+    div.classList.add('note-bubble-text');
+    const text = document.createElement('div');
+    text.className = 'note-text';
+    text.textContent = entry.text;
+    div.appendChild(text);
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'note-copy-btn';
+    copyBtn.textContent = 'Copiar';
+    copyBtn.onclick = () => copyToClipboard(entry.text);
+    div.appendChild(copyBtn);
+  }
+
+  const time = document.createElement('div');
+  time.className = 'note-time';
+  time.textContent = noteTimeLabel(entry.ts);
+  div.appendChild(time);
+
+  return div;
+}
+
+function renderNotes() {
+  const wrap = $('notes-messages');
+  wrap.innerHTML = '';
+  for (const entry of notesData) wrap.appendChild(renderNoteBubble(entry));
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+async function loadNotes() {
+  const { notes } = await api('/notes');
+  notesData = notes;
+  renderNotes();
+}
+
+async function safeLoadNotes() {
+  try { await loadNotes(); }
+  catch (err) { toast('No se pudo actualizar notas: ' + err.message); }
+}
 let archivedPaneLoaded = false;
 let activeAccount = null;
 const drafts = new Map();
@@ -2499,3 +2567,35 @@ $('cfg-reset').onclick = () => {
   openSettings();
   toast('Configuración restaurada', 'info', 2000);
 };
+
+// ── Notas: composer de texto ──
+$('notes-input').addEventListener('input', () => autoResize($('notes-input')));
+$('notes-input').addEventListener('keydown', e => {
+  if (isTouchDevice) return;
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    $('notes-composer').requestSubmit();
+  }
+});
+
+$('notes-composer').addEventListener('submit', async e => {
+  e.preventDefault();
+  const input = $('notes-input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  autoResize(input);
+  try {
+    const entry = await api('/notes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    notesData.push(entry);
+    renderNotes();
+  } catch (err) {
+    input.value = text;
+    autoResize(input);
+    toast('No se pudo guardar la nota: ' + err.message);
+  }
+});
