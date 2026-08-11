@@ -704,6 +704,16 @@ dialog button:hover { background: var(--border); }
 body.hide-tools details.tool { display: none !important; }
 
 /* ── Install bar ── */
+/* full-width fixed en bottom:0, arriba de TODO — incluidos los composers de
+   chat y de Notas, que quedan geométricamente en la misma franja. Antes de
+   este fix, mientras el banner estaba visible, se comía los clicks de
+   Enviar/Adjuntar de cualquier composer (el de Notas ni con z-index alto se
+   salva: #tree-viewport-inner usa transform para el deslizado de paneles, y
+   eso crea su propio stacking context que atrapa el z-index adentro). En vez
+   de perseguir stacking contexts, dejamos pasar los clicks por el fondo del
+   banner (pointer-events: none) y solo los recuperamos en sus propios
+   botones (pointer-events: auto) — así el banner se ve/tapa igual, pero deja
+   de bloquear lo que hay debajo salvo que sea uno de sus propios botones. */
 #install-bar, #ios-tip {
   position: fixed;
   bottom: 0; left: 0; right: 0;
@@ -716,6 +726,7 @@ body.hide-tools details.tool { display: none !important; }
   border-top: 1px solid var(--accent);
   font-size: 14px;
   animation: slideUp .3s ease;
+  pointer-events: none;
 }
 #install-bar[hidden], #ios-tip[hidden] { display: none; }
 @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
@@ -724,9 +735,11 @@ body.hide-tools details.tool { display: none !important; }
   background: var(--accent); color: #fff; border: none;
   border-radius: 8px; padding: 7px 16px; font-size: 14px;
   cursor: pointer; font-weight: 600; white-space: nowrap;
+  pointer-events: auto;
 }
 #install-dismiss, #ios-tip-close {
   background: none; border: none; color: var(--text2);
+  pointer-events: auto;
   font-size: 16px; cursor: pointer; padding: 4px 6px;
   border-radius: 4px; flex-shrink: 0;
 }
