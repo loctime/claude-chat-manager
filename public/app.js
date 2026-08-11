@@ -487,14 +487,27 @@ async function safeLoadArchivedTree() {
   catch (err) { toast('No se pudo actualizar archivadas: ' + err.message); }
 }
 
+let paneNavGeneration = 0;
+let paneNavTarget = 0; // pane que debe quedar activo una vez termine la navegación en curso
+
 async function goToPane(index) {
-  if (index === activePane) return;
+  if (index === paneNavTarget) return;
+  // paneNavTarget (no activePane) es lo que compara el guard de arriba: activePane
+  // recién se actualiza al final, así que si hay una navegación en vuelo (p.ej.
+  // click rápido Archivado→Notas→Chats) activePane todavía dice "0" aunque ya
+  // vamos camino a otro pane. paneNavGeneration hace que solo la llamada más
+  // nueva pueda escribir el estado final tras su await; las anteriores se abortan.
+  paneNavTarget = index;
+  const myGeneration = ++paneNavGeneration;
   if (index === 1 && !archivedPaneLoaded) {
     try {
       await loadArchivedTree();
       archivedPaneLoaded = true;
     } catch (err) {
       toast('No se pudo cargar archivadas: ' + err.message);
+      // Solo limpiar paneNavTarget si nadie navegó de nuevo mientras esperábamos;
+      // si no, dejarlo como está para no pisar el target de esa llamada más nueva.
+      if (myGeneration === paneNavGeneration) paneNavTarget = activePane;
       return;
     }
   }
@@ -504,9 +517,11 @@ async function goToPane(index) {
       notesPaneLoaded = true;
     } catch (err) {
       toast('No se pudo cargar notas: ' + err.message);
+      if (myGeneration === paneNavGeneration) paneNavTarget = activePane;
       return;
     }
   }
+  if (myGeneration !== paneNavGeneration) return; // otra navegación más nueva ya tomó el control
   activePane = index;
   $('tree-viewport-inner').dataset.pane = String(index);
   document.querySelectorAll('.pane-tab').forEach(t => {
