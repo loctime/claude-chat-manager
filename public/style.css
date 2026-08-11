@@ -58,6 +58,7 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
   body.sidebar-hidden #panel-resizer { display: none; }
   body.sidebar-hidden #list-header,
   body.sidebar-hidden #ptr-indicator,
+  body.sidebar-hidden #pane-tabs,
   body.sidebar-hidden .project > summary,
   body.sidebar-hidden .conv-body {
     display: none;
@@ -176,7 +177,7 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
 .notes-header .archived-back { width: auto; margin: 0; padding: 6px 8px; border: none; font-size: 13px; }
 .notes-messages { flex: 1; overflow-y: auto; padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; }
 .notes-attachments { padding: 0 12px; display: flex; flex-wrap: wrap; gap: 6px; }
-.notes-composer { display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--border); align-items: flex-end; flex: none; }
+.notes-composer { display: flex; gap: 6px; padding: 8px 12px calc(8px + var(--safe-b)); border-top: 1px solid var(--border); align-items: flex-end; flex: none; }
 .notes-composer textarea {
   flex: 1; resize: none; max-height: 120px; padding: 8px 10px;
   background: var(--input-bg); border: none; border-radius: var(--radius);

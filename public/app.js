@@ -66,22 +66,58 @@ function renderNoteBubble(entry) {
   return div;
 }
 
-function renderNotes() {
+function renderNotes(scrollToBottom = true) {
   const wrap = $('notes-messages');
   wrap.innerHTML = '';
   for (const entry of notesData) wrap.appendChild(renderNoteBubble(entry));
-  wrap.scrollTop = wrap.scrollHeight;
+  if (scrollToBottom) wrap.scrollTop = wrap.scrollHeight;
+}
+
+// Combina lo que devuelve el server con lo que ya tenemos en memoria: un push
+// optimista (composer de texto / upload) puede no estar todavía en la
+// respuesta de un poll que salió antes de que el POST terminara. Si lo
+// pisáramos sin más, la nota recién mandada desaparece hasta el próximo poll.
+// Une por id (así una entrada optimista se reemplaza por la del server en
+// cuanto aparece ahí, sin quedar duplicada) y ordena por ts.
+function mergeNotes(incoming, current) {
+  const byId = new Map(incoming.map(n => [n.id, n]));
+  for (const entry of current) {
+    if (!byId.has(entry.id)) byId.set(entry.id, entry);
+  }
+  return Array.from(byId.values()).sort((a, b) => a.ts - b.ts);
 }
 
 async function loadNotes() {
   const { notes } = await api('/notes');
-  notesData = notes;
-  renderNotes();
+  const merged = mergeNotes(notes, notesData);
+
+  // Nada cambió (mismo largo y mismo último id): no tocar el DOM ni el
+  // scroll. Evita que el poll de 5s le arruine al usuario una selección de
+  // texto o lo empuje al final si estaba leyendo notas viejas más arriba.
+  const prevLast = notesData[notesData.length - 1];
+  const mergedLast = merged[merged.length - 1];
+  const unchanged = merged.length === notesData.length &&
+    (!mergedLast || (prevLast && mergedLast.id === prevLast.id));
+  if (unchanged) return;
+
+  const wrap = $('notes-messages');
+  const wasNearBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 80;
+
+  notesData = merged;
+  renderNotes(wasNearBottom);
 }
 
+let notesPolling = false;
 async function safeLoadNotes() {
+  if (notesPolling) return; // ya hay un poll en vuelo, no pisarlo con otro
+  notesPolling = true;
   try { await loadNotes(); }
-  catch (err) { toast('No se pudo actualizar notas: ' + err.message); }
+  // Falla silenciosa: es polling de fondo, el próximo tick a los 5s se
+  // autocura. Tostar acá produciría un toast casi continuo con conexión
+  // inestable. El error SÍ se muestra en la carga inicial (goToPane →
+  // loadNotes directo, con su propio try/catch).
+  catch { /* noop */ }
+  finally { notesPolling = false; }
 }
 let archivedPaneLoaded = false;
 let activeAccount = null;
