@@ -8,7 +8,13 @@ let archivedTotal = 0;
 let archivedTreeLimit = 100;
 let archivedTreeHasMore = false;
 let archivedTreeTotal = 0;
-let viewingArchived = false;
+let activePane = 0; // 0=chats 1=archived 2=notas
+let notesPaneLoaded = false;
+let notesData = [];
+
+// Implementación real en el próximo task — acá solo evita que goToPane(2)
+// rompa mientras no existe el fetch/render todavía.
+async function loadNotes() { notesData = []; }
 let archivedPaneLoaded = false;
 let activeAccount = null;
 const drafts = new Map();
@@ -438,14 +444,8 @@ async function loadTree() {
     nav.appendChild(more);
   }
 
-  if (archivedTotal > 0) {
-    const t = document.createElement('button');
-    t.className = 'archived-toggle';
-    t.type = 'button';
-    t.textContent = `Ver archivadas (${archivedTotal})`;
-    t.onclick = () => { goToArchived(); };
-    nav.appendChild(t);
-  }
+  const archTab = document.querySelector('.pane-tab[data-pane="1"]');
+  if (archTab) archTab.textContent = archivedTotal > 0 ? `Archivado (${archivedTotal})` : 'Archivado';
 
   updateGlobalBusyIndicator();
 }
@@ -463,7 +463,7 @@ async function loadArchivedTree() {
   back.className = 'archived-back';
   back.type = 'button';
   back.textContent = '← Volver a activas';
-  back.onclick = () => { goToActive(); };
+  back.onclick = () => { goToPane(0); };
   nav.insertBefore(back, nav.firstChild);
 
   if (archivedTreeHasMore) {
@@ -487,9 +487,9 @@ async function safeLoadArchivedTree() {
   catch (err) { toast('No se pudo actualizar archivadas: ' + err.message); }
 }
 
-async function goToArchived() {
-  if (viewingArchived) return;
-  if (!archivedPaneLoaded) {
+async function goToPane(index) {
+  if (index === activePane) return;
+  if (index === 1 && !archivedPaneLoaded) {
     try {
       await loadArchivedTree();
       archivedPaneLoaded = true;
@@ -498,21 +498,33 @@ async function goToArchived() {
       return;
     }
   }
-  viewingArchived = true;
-  $('tree-viewport-inner').classList.add('showing-archived');
-}
-
-function goToActive() {
-  viewingArchived = false;
-  $('tree-viewport-inner').classList.remove('showing-archived');
+  if (index === 2 && !notesPaneLoaded) {
+    try {
+      await loadNotes();
+      notesPaneLoaded = true;
+    } catch (err) {
+      toast('No se pudo cargar notas: ' + err.message);
+      return;
+    }
+  }
+  activePane = index;
+  $('tree-viewport-inner').dataset.pane = String(index);
+  document.querySelectorAll('.pane-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.pane === String(index));
+  });
 }
 
 function resetArchivedPane() {
   archivedPaneLoaded = false;
   archivedTreeLimit = 100;
   $('tree-archived').innerHTML = '';
-  if (viewingArchived) goToActive();
+  if (activePane === 1) goToPane(0);
 }
+
+document.querySelectorAll('.pane-tab').forEach(btn => {
+  btn.onclick = () => goToPane(Number(btn.dataset.pane));
+});
+$('notes-back').onclick = () => goToPane(0);
 
 // ── Indicador global de "procesando" (icono ping + título + badge de la app instalada) ──
 let globalBusy = false;
@@ -2202,6 +2214,8 @@ function paneSwipeStart(clientX, clientY) {
   return true;
 }
 
+const PANE_COUNT = 3;
+
 function paneSwipeMove(clientX, clientY) {
   if (!paneDragging) return false;
   const dx = clientX - paneStartX;
@@ -2211,8 +2225,9 @@ function paneSwipeMove(clientX, clientY) {
     paneAxisLocked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
   }
   if (paneAxisLocked !== 'x') return false;
-  const base = viewingArchived ? -paneViewportWidth() : 0;
-  paneCurrentTranslate = Math.min(0, Math.max(-paneViewportWidth(), base + dx));
+  const base = -activePane * paneViewportWidth();
+  const min = -(PANE_COUNT - 1) * paneViewportWidth();
+  paneCurrentTranslate = Math.min(0, Math.max(min, base + dx));
   $('tree-viewport-inner').style.transform = `translateX(${paneCurrentTranslate}px)`;
   return true;
 }
@@ -2224,15 +2239,15 @@ async function paneSwipeEnd() {
 
   try {
     if (paneAxisLocked === 'x') {
-      const base = viewingArchived ? -paneViewportWidth() : 0;
+      const base = -activePane * paneViewportWidth();
       const delta = paneCurrentTranslate - base;
-      // Navigate first (await if async), THEN clear inline styles so CSS class transform can take over
-      if (!viewingArchived && delta < -PANE_SWIPE_THRESHOLD) {
+      // Navigate first (await if async), THEN clear inline styles so CSS attribute transform can take over
+      if (delta < -PANE_SWIPE_THRESHOLD && activePane < PANE_COUNT - 1) {
         paneNavigating = true;
-        await goToArchived();
-      } else if (viewingArchived && delta > PANE_SWIPE_THRESHOLD) {
+        await goToPane(activePane + 1);
+      } else if (delta > PANE_SWIPE_THRESHOLD && activePane > 0) {
         paneNavigating = true;
-        goToActive();
+        await goToPane(activePane - 1);
       }
     }
   } finally {
