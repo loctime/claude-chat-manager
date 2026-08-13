@@ -1136,12 +1136,10 @@ function fileIcon(ext) {
   return '📎';
 }
 
-// "Mostrar en carpeta" solo tiene sentido si el navegador está corriendo en
-// la misma PC donde vive Jarvis — accedido por la URL local, no por el
-// túnel público (jarvis.controlapps.ar), donde el botón abriría una ventana
-// del Explorador en una PC que no estás mirando.
-const IS_LOCAL_HOST = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
-
+// "Mostrar en carpeta"/"Abrir carpeta" siempre abre el Explorador en la PC
+// donde corre Jarvis, sea cual sea el dominio desde el que se navegue
+// (local o túnel público) — decisión de Diego: lo usa siempre por dominio,
+// y quiere que Fernando (que entra por otro dominio) también lo tenga.
 async function revealInFolder(filePath) {
   try {
     const r = await fetch('/api/reveal?path=' + encodeURIComponent(filePath));
@@ -1212,7 +1210,32 @@ function makeFileCard(filePath) {
   dl.textContent = 'Descargar';
   info.appendChild(nameEl);
   info.appendChild(dl);
-  if (IS_LOCAL_HOST) info.appendChild(makeRevealBtn(filePath));
+  info.appendChild(makeRevealBtn(filePath));
+  card.appendChild(info);
+  return card;
+}
+
+// Card para una carpeta detectada en el texto (sin extensión) — no hay
+// nada para descargar, solo el botón que la abre en el Explorador.
+function makeFolderCard(folderPath) {
+  const name = folderPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || folderPath;
+
+  const card = document.createElement('div');
+  card.className = 'file-card';
+
+  const icon = document.createElement('span');
+  icon.className = 'file-card-icon';
+  icon.textContent = '📁';
+  card.appendChild(icon);
+
+  const info = document.createElement('div');
+  info.className = 'file-card-info';
+  const nameEl = document.createElement('span');
+  nameEl.className = 'file-card-name';
+  nameEl.textContent = name;
+  nameEl.title = folderPath;
+  info.appendChild(nameEl);
+  info.appendChild(makeRevealBtn(folderPath));
   card.appendChild(info);
   return card;
 }
@@ -1242,7 +1265,7 @@ function renderTextWithPaths(container, text) {
         img.onclick = () => openLightbox(dlHref, dlHref, img.alt);
         img.onerror = () => { wrap.innerHTML = ''; wrap.appendChild(document.createTextNode(att.path)); };
         wrap.appendChild(img);
-        if (IS_LOCAL_HOST) wrap.appendChild(makeRevealBtn(att.path));
+        wrap.appendChild(makeRevealBtn(att.path));
         container.appendChild(wrap);
       } else {
         container.appendChild(makeFileCard(att.path));
@@ -1262,6 +1285,10 @@ function renderTextWithPaths(container, text) {
   // no fusionar dos paths distintos en el mismo mensaje
   // (ej. "C:\a\foto A.png y C:\b\foto B.png"). Un path relativo tipo
   // "server.js:445" no matchea — falta el prefijo absoluto.
+  // Carpetas (sin extensión) también matchean vía la segunda alternativa
+  // del regex, pero solo si el path no tiene espacios — una carpeta con
+  // espacios en el nombre (ej. "Notas Jarvis") no se detecta acá, mismo
+  // límite que ya existía antes para no confundir prosa con path.
   const PATH_WORD = "[^\\s`'\"(){}<>\\[\\]:]";
   const PATH_RE = new RegExp(
     "(`?)((?:[A-Za-z]:[\\\\/]|/(?:home|tmp|root|var|opt|usr))" +
@@ -1278,8 +1305,12 @@ function renderTextWithPaths(container, text) {
     }
     const filePath = match[2];
     const name = filePath.split('/').pop();
-    const ext = filePath.split('.').pop().toLowerCase();
-    const isImage = IMAGE_EXTS.has(ext);
+    // Heurística file vs. carpeta: si el último segmento no termina en
+    // ".ext" lo tratamos como carpeta (mismo criterio que ya usa el resto
+    // del regex para exigir extensión en paths con espacios).
+    const hasExt = /\.[A-Za-z0-9]{1,8}$/.test(filePath);
+    const ext = hasExt ? filePath.split('.').pop().toLowerCase() : '';
+    const isImage = hasExt && IMAGE_EXTS.has(ext);
 
     if (isImage) {
       // Mostrar thumbnail clicable + link de descarga
@@ -1312,13 +1343,16 @@ function renderTextWithPaths(container, text) {
       wrap.appendChild(img);
       wrap.appendChild(document.createElement('br'));
       wrap.appendChild(dl);
-      if (IS_LOCAL_HOST) wrap.appendChild(makeRevealBtn(filePath));
+      wrap.appendChild(makeRevealBtn(filePath));
       container.appendChild(wrap);
-    } else {
+    } else if (hasExt) {
       // Cualquier otra extensión (pdf/audio/video con preview especial,
       // y cualquier tipo de archivo — html, docx, csv, zip, etc. — con
       // ícono genérico) — makeFileCard ya resuelve ambos casos.
       container.appendChild(makeFileCard(filePath));
+    } else {
+      // Sin extensión → lo tratamos como carpeta, no hay nada para descargar.
+      container.appendChild(makeFolderCard(filePath));
     }
     last = match.index + match[0].length;
   }

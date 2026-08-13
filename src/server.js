@@ -480,12 +480,14 @@ app.get('/api/reveal', (req, res) => {
   try {
     stat = fs.statSync(filePath);
   } catch {
-    return res.status(404).json({ error: 'archivo no encontrado' });
+    return res.status(404).json({ error: 'no encontrado' });
   }
-  if (!stat.isFile()) return res.status(400).json({ error: 'no es un archivo (¿es una carpeta?)' });
-  // explorer.exe /select,<path> devuelve exit code 1 aunque abra bien —
+  // Si es carpeta la abrimos directo; si es archivo, abrimos su carpeta
+  // contenedora con el archivo ya seleccionado.
+  const args = stat.isDirectory() ? [filePath] : ['/select,' + filePath];
+  // explorer.exe devuelve exit code 1 aunque abra bien —
   // gotcha conocido de Windows, no lo tratamos como error real.
-  execFile('explorer.exe', ['/select,' + filePath], () => {
+  execFile('explorer.exe', args, () => {
     res.json({ ok: true });
   });
 });
