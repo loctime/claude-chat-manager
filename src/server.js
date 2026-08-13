@@ -504,12 +504,24 @@ app.get('/api/reveal', (req, res) => {
       return res.status(500).json({ error: 'no se pudo convertir el path (wslpath)' });
     }
   }
+  // 'explorer.exe' a secas depende de que el PATH del proceso incluya el
+  // Windows PATH via interop de WSL — verificado en vivo que NO es
+  // confiable (a veces no está, según cómo se haya lanzado el proceso). En
+  // WSL usamos la ruta absoluta directo; en Windows nativo 'explorer.exe'
+  // ya se resuelve solo desde System32.
+  const explorerBin = IS_WSL ? '/mnt/c/Windows/explorer.exe' : 'explorer.exe';
   // Si es carpeta la abrimos directo; si es archivo, abrimos su carpeta
   // contenedora con el archivo ya seleccionado.
   const args = stat.isDirectory() ? [explorerPath] : ['/select,' + explorerPath];
-  // explorer.exe devuelve exit code 1 aunque abra bien —
-  // gotcha conocido de Windows, no lo tratamos como error real.
-  execFile('explorer.exe', args, () => {
+  execFile(explorerBin, args, (err) => {
+    // explorer.exe devuelve exit code 1 aunque abra bien (gotcha conocido
+    // de Windows) — err.code es un número en ese caso, no lo tratamos como
+    // error real. Un fallo real de lanzamiento (binario no encontrado,
+    // permisos) trae err.code como string ('ENOENT', 'EACCES', etc.).
+    if (err && typeof err.code !== 'number') {
+      console.error('[api/reveal] no se pudo lanzar', explorerBin, ':', err.message);
+      return res.status(500).json({ error: 'no se pudo abrir el explorador: ' + err.message });
+    }
     res.json({ ok: true });
   });
 });
