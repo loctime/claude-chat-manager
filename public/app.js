@@ -1461,7 +1461,7 @@ function enrichPlainTextNodes(root) {
   while ((n = walker.nextNode())) nodes.push(n);
   for (const node of nodes) {
     const t = node.textContent;
-    if (!t || !/\[Archivo adjunto:|[A-Za-z]:[\\/]|\/(?:home|tmp|root|var|opt|usr)\S/.test(t)) continue;
+    if (!t || !/\[Archivo adjunto:|[A-Za-z]:[\\/]|\/(?:home|tmp|root|var|opt|usr|mnt)\S/.test(t)) continue;
     const frag = document.createDocumentFragment();
     renderTextWithPaths(frag, t);
     node.replaceWith(frag);
