@@ -451,8 +451,8 @@ app.get('/api/files', (req, res) => {
   fs.createReadStream(filePath).pipe(res);
 });
 
-// ── Notas (anotador sin IA, sin sesión de Claude) ──
-// Ver docs/superpowers/specs/2026-08-11-notas-jarvis-design.md
+// ── Notas (anotador sin IA, sin sesión de Claude) — múltiples libretas ──
+// Ver docs/superpowers/specs/2026-08-13-notas-libretas-design.md
 const notesUpload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => {
@@ -468,19 +468,59 @@ const notesUpload = multer({
   limits: { fileSize: 50 * 1024 * 1024 },
 });
 
-app.get('/api/notes', (req, res) => {
-  res.json({ notes: notes.readAll() });
+app.get('/api/notebooks', (req, res) => {
+  res.json({ notebooks: notes.listNotebooks() });
 });
 
-app.post('/api/notes', (req, res) => {
+app.post('/api/notebooks', (req, res) => {
+  res.status(201).json(notes.createNotebook());
+});
+
+app.patch('/api/notebooks/:id', (req, res) => {
+  const name = (req.body.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'nombre vacío' });
+  const nb = notes.renameNotebook(req.params.id, name);
+  if (!nb) return res.status(404).json({ error: 'libreta no encontrada' });
+  res.json(nb);
+});
+
+app.get('/api/notebooks/:id/notes', (req, res) => {
+  const nb = notes.getNotebook(req.params.id);
+  if (!nb) return res.status(404).json({ error: 'libreta no encontrada' });
+  res.json({ notes: notes.readAll(notes.notebookNotesFile(req.params.id)) });
+});
+
+app.post('/api/notebooks/:id/notes', (req, res) => {
+  const nb = notes.getNotebook(req.params.id);
+  if (!nb) return res.status(404).json({ error: 'libreta no encontrada' });
   const text = (req.body.text || '').trim();
   if (!text) return res.status(400).json({ error: 'texto vacío' });
+  const file = notes.notebookNotesFile(req.params.id);
   const entry = { id: crypto.randomUUID(), ts: Date.now(), type: 'text', text };
-  notes.append(entry);
-  res.status(201).json(entry);
+  notes.append(entry, file);
+
+  // Auto-nombre: si esta es la primera nota de texto y la libreta todavía
+  // tiene el nombre default ("Nueva libreta"/"Nueva libreta N"), la renombra
+  // usando el principio de esta nota. Si ya se renombró a mano, el nombre
+  // deja de matchear el patrón y esto no la vuelve a tocar.
+  let notebook = nb;
+  if (notes.DEFAULT_NAME_RE.test(nb.name)) {
+    const textNotes = notes.readAll(file).filter(e => e.type === 'text');
+    if (textNotes.length === 1) {
+      const firstLine = text.split('\n')[0].trim();
+      const autoName = firstLine.length > 40 ? firstLine.slice(0, 40) + '…' : firstLine;
+      notebook = notes.renameNotebook(req.params.id, autoName) || nb;
+    }
+  }
+  res.status(201).json({ entry, notebook });
 });
 
-app.post('/api/notes/upload', notesUpload.single('file'), (req, res) => {
+app.post('/api/notebooks/:id/notes/upload', notesUpload.single('file'), (req, res) => {
+  const nb = notes.getNotebook(req.params.id);
+  if (!nb) {
+    if (req.file) fs.unlink(req.file.path, () => {});
+    return res.status(404).json({ error: 'libreta no encontrada' });
+  }
   if (!req.file) return res.status(400).json({ error: 'no se recibió archivo' });
   const entry = {
     id: crypto.randomUUID(),
@@ -491,8 +531,8 @@ app.post('/api/notes/upload', notesUpload.single('file'), (req, res) => {
     mime: req.file.mimetype || '',
     size: req.file.size,
   };
-  notes.append(entry);
-  res.status(201).json(entry);
+  notes.append(entry, notes.notebookNotesFile(req.params.id));
+  res.status(201).json({ entry, notebook: nb });
 });
 
 const DEFAULT_TREE_LIMIT = 100;
