@@ -5,7 +5,7 @@ const os = require('os');
 const HOME_DIR = process.env.HOME || process.env.USERPROFILE || os.homedir();
 const NOTES_DIR = path.join(HOME_DIR, '.ccm-notes');
 const NOTES_FILE = path.join(NOTES_DIR, 'notes.jsonl');
-const FILES_DIR = path.join(HOME_DIR, 'Desktop', 'Notas Jarvis');
+const FILES_DIR = path.join(HOME_DIR, 'Desktop', 'Notas FerStark');
 
 // Agrega una entrada al final del jsonl. No genera id/ts — el caller (server.js)
 // ya los arma, así este módulo queda testeable con objetos arbitrarios.

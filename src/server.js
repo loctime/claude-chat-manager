@@ -858,7 +858,7 @@ app.post('/api/conversations', (req, res) => {
   // Sin projectDir explícito: la conversación queda anclada a home (no hay
   // "carpeta elegida" que mostrar/agrupar, y tampoco hace falta un mensaje
   // de navegación — ya arranca ahí).
-  const projectDir = req.body.projectDir || accountHomeDir(acc);
+  const projectDir = req.body.projectDir || process.env.CCM_DEFAULT_PROJECT_DIR || accountHomeDir(acc);
   const metaFile = accountMetaFile(acc);
   const convId = crypto.randomUUID();
   const data = meta.load(metaFile);

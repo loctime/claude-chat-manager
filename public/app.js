@@ -335,7 +335,7 @@ function netError(err) {
   if (!isNetworkError(err)) return err;
   const e = new Error(navigator.onLine === false
     ? 'Sin conexión — no salió'
-    : 'No se pudo contactar a Jarvis (conexión caída o server sin responder)');
+    : 'No se pudo contactar a FerStark (conexión caída o server sin responder)');
   e.isNetwork = true;
   return e;
 }
@@ -656,7 +656,7 @@ let globalBusy = false;
 function updateGlobalBusyIndicator() {
   const anyBusy = tree.some(proj => proj.conversations.some(c => c.status && c.status !== 'idle'));
   $('global-busy-dot').classList.toggle('active', anyBusy);
-  document.title = anyBusy ? '● J.A.R.V.I.S' : 'J.A.R.V.I.S';
+  document.title = anyBusy ? '● FerStark' : 'FerStark';
   if (anyBusy === globalBusy) return;
   globalBusy = anyBusy;
   if (!('setAppBadge' in navigator)) return;
@@ -1639,7 +1639,7 @@ function addTool(name, input, output, opts = {}) {
 // después — a diferencia de addCompactDivider(), que es el remanente del
 // sistema viejo por resumen-y-sesión-nueva). Se muestra tanto si lo disparó el
 // botón "Compactar" (trigger:'manual') como si el CLI lo hizo solo por límite
-// de contexto (trigger:'auto') — antes esto último era invisible en Jarvis.
+// de contexto (trigger:'auto') — antes esto último era invisible en FerStark.
 function addCompactBoundary(m) {
   const div = document.createElement('div');
   div.className = 'compact-divider';
