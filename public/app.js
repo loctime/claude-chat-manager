@@ -139,7 +139,14 @@ async function safeLoadNotes() {
 // ── Notas: lista de libretas ──
 function notebookElement(nb) {
   const div = document.createElement('div');
-  div.className = 'conv';
+  // .notebook-row (además de .conv, para heredar el estilo visual de fila):
+  // esta fila nunca llama a attachRowGestures() como sí hacen las de chat
+  // (no tiene swipe-to-archive ni long-press), así que el guard de
+  // initPaneSwipe() la deja pasar explícitamente para que el swipe de
+  // pantalla (Chats/Libretas/Archivado) siga funcionando arrancando sobre
+  // ella — si no, con la lista llena de libretas no queda fondo tocable
+  // para ese gesto. Ver Finding 2 del review final.
+  div.className = 'conv notebook-row';
   div.innerHTML = `
     <div class="conv-avatar">${avatarChar(nb.name)}</div>
     <div class="conv-body">
@@ -755,19 +762,24 @@ $('notebook-title').ondblclick = () => {
     el.contentEditable = 'false';
     const name = el.textContent.trim();
     if (!name || name === currentNotebook.name) { el.textContent = currentNotebook.name; return; }
+    const notebookId = currentNotebook.id;
     try {
-      const nb = await api(`/notebooks/${currentNotebook.id}`, {
+      const nb = await api(`/notebooks/${notebookId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }),
       });
+      // Mismo guard que loadNotes()/el submit de notas: si mientras esperábamos
+      // se cambió o cerró la libreta, no pisar el título ni currentNotebook
+      // con la respuesta tardía de esta.
+      if (!currentNotebook || currentNotebook.id !== notebookId) return;
       currentNotebook.name = nb.name;
       el.textContent = nb.name;
       const idx = notebooks.findIndex(n => n.id === nb.id);
       if (idx !== -1) notebooks[idx] = { ...notebooks[idx], ...nb };
       renderNotebookList();
     } catch (err) {
-      el.textContent = currentNotebook.name;
+      if (currentNotebook && currentNotebook.id === notebookId) el.textContent = currentNotebook.name;
       toast('No se pudo renombrar: ' + err.message);
     }
   };
@@ -2523,7 +2535,10 @@ function initPaneSwipe() {
   const viewport = $('tree-viewport');
 
   viewport.addEventListener('touchstart', e => {
-    if (e.target.closest('.conv')) return; // una fila maneja su propio gesto (ver attachRowGestures)
+    // Las filas de libreta (.notebook-row) no tienen attachRowGestures propio
+    // (ver notebookElement) — se excluyen del bail-out para que el swipe de
+    // pantalla siga andando sobre ellas (Finding 2 del review final).
+    if (e.target.closest('.conv:not(.notebook-row)')) return; // una fila de chat maneja su propio gesto (ver attachRowGestures)
     const t = e.touches[0];
     paneSwipeStart(t.clientX, t.clientY);
   }, { passive: true });
@@ -2866,7 +2881,14 @@ function notebookIsVisible() {
 
 function pollNotesPane() {
   if (activePane !== 2) return;
-  if (notebookIsVisible()) safeLoadNotes(); else safeLoadNotebookList();
+  // En mobile #notebook-view y la lista son mutuamente excluyentes (overlay),
+  // así que alcanza con pollear la que esté a la vista. En desktop las dos
+  // conviven en pantalla a la vez — si solo se pollea la que "está visible"
+  // según notebookIsVisible(), la lista deja de refrescarse para siempre en
+  // cuanto se abre la primera libreta (no hay forma de "cerrarla" en desktop,
+  // el botón atrás es mobile-only). Ver Finding 1 del review final.
+  if (notebookIsVisible()) safeLoadNotes();
+  if (!isMobile() || !notebookIsVisible()) safeLoadNotebookList();
 }
 
 setInterval(pollNotesPane, 5000);
