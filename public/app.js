@@ -2760,3 +2760,76 @@ $('notes-composer').addEventListener('submit', async e => {
     toast('No se pudo guardar la nota: ' + err.message);
   }
 });
+
+// ── Notas: adjuntar archivos ──
+// Mismo problema ya resuelto para el composer de chat y para la v1 de Notas:
+// un File que sale del picker de galería del celu es un handle a content://
+// (Android) o a la fototeca (iOS), no bytes en memoria — subirlo crudo
+// funciona con una foto recién sacada de la cámara pero falla con una
+// elegida de la galería si el uplink tarda y el sistema invalida el handle a
+// mitad de camino. prepareForUpload ya resuelve esto (materializa a Blob +
+// comprime fotos grandes) — reusarlo acá en vez de mandar `file` directo.
+async function uploadNoteFile(file) {
+  if (!currentNotebook) return;
+  const displayName = file.name || `pegado-${Date.now()}.${(file.type.split('/')[1] || 'bin')}`;
+  const loadingChip = document.createElement('div');
+  loadingChip.className = 'attach-chip attach-chip-loading';
+  loadingChip.innerHTML = `<span class="attach-spinner"></span><span class="attach-chip-name"></span>`;
+  loadingChip.querySelector('.attach-chip-name').textContent = displayName;
+  $('notes-attachments').appendChild(loadingChip);
+
+  const t0 = Date.now();
+  let sentBytes = 0;
+  try {
+    const { blob, name: uploadName } = await prepareForUpload(file, displayName);
+    sentBytes = blob.size;
+    const fd = new FormData();
+    fd.append('file', blob, uploadName);
+    const res = await netFetch(`/api/notebooks/${currentNotebook.id}/notes/upload`, { method: 'POST', body: fd });
+    if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+    const { entry } = await res.json();
+    notesData.push(entry);
+    renderNotes();
+  } catch (err) {
+    const detalle = sentBytes
+      ? ` [${(sentBytes / 1024 / 1024).toFixed(1)}MB, ${((Date.now() - t0) / 1000).toFixed(1)}s]`
+      : ` [falló al preparar, ${((Date.now() - t0) / 1000).toFixed(1)}s]`;
+    toast('No se pudo subir el archivo: ' + err.message + detalle);
+  } finally {
+    loadingChip.remove();
+  }
+}
+
+$('notes-attach-btn').onclick = () => { $('notes-file-input').click(); };
+$('notes-file-input').onchange = async () => {
+  const files = Array.from($('notes-file-input').files);
+  $('notes-file-input').value = '';
+  for (const f of files) await uploadNoteFile(f);
+};
+
+// ── Notas: sincronización entre dispositivos por polling ──
+// 5s (no los 15s del árbol de chats) porque un uso central es "mandar un
+// archivo del celu y pasar a la PC a buscarlo enseguida". Sin SSE nuevo: ver
+// razones documentadas en la spec (mismo problema de conexiones idle que ya
+// se resolvió a los ponchazos para /stream).
+//
+// notebookIsVisible() distingue si lo que se está mirando ahora mismo es la
+// libreta abierta o la lista: en mobile #notebook-view solo cuenta si el
+// overlay #panel-chat está .open (si no, aunque currentNotebook siga seteado
+// de la última libreta vista, lo que hay en pantalla es la lista); en
+// desktop el panel de detalle no es un overlay — su visibilidad depende
+// solo de qué contenido tiene cargado ahora.
+function notebookIsVisible() {
+  if (isMobile()) return $('panel-chat').classList.contains('open') && !$('notebook-view').hidden;
+  return !$('notebook-view').hidden;
+}
+
+function pollNotesPane() {
+  if (activePane !== 2) return;
+  if (notebookIsVisible()) safeLoadNotes(); else safeLoadNotebookList();
+}
+
+setInterval(pollNotesPane, 5000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) pollNotesPane();
+});
