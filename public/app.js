@@ -9,7 +9,9 @@ let archivedTreeLimit = 100;
 let archivedTreeHasMore = false;
 let archivedTreeTotal = 0;
 let activePane = 0; // 0=chats 1=archived 2=notas
-let notesPaneLoaded = false;
+let notebookListLoaded = false;
+let notebooks = [];
+let currentNotebook = null; // {id, name} de la libreta abierta, o null si estamos en la lista
 let notesData = [];
 
 function noteTimeLabel(ts) {
@@ -69,7 +71,14 @@ function renderNoteBubble(entry) {
 function renderNotes(scrollToBottom = true) {
   const wrap = $('notes-messages');
   wrap.innerHTML = '';
-  for (const entry of notesData) wrap.appendChild(renderNoteBubble(entry));
+  if (notesData.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'notes-empty';
+    empty.textContent = 'No hay notas todavía — escribí algo o adjuntá un archivo.';
+    wrap.appendChild(empty);
+  } else {
+    for (const entry of notesData) wrap.appendChild(renderNoteBubble(entry));
+  }
   if (scrollToBottom) wrap.scrollTop = wrap.scrollHeight;
 }
 
@@ -88,7 +97,8 @@ function mergeNotes(incoming, current) {
 }
 
 async function loadNotes() {
-  const { notes } = await api('/notes');
+  if (!currentNotebook) return;
+  const { notes } = await api(`/notebooks/${currentNotebook.id}/notes`);
   const merged = mergeNotes(notes, notesData);
 
   // Nada cambió (mismo largo y mismo último id): no tocar el DOM ni el
@@ -113,12 +123,73 @@ async function safeLoadNotes() {
   notesPolling = true;
   try { await loadNotes(); }
   // Falla silenciosa: es polling de fondo, el próximo tick a los 5s se
-  // autocura. Tostar acá produciría un toast casi continuo con conexión
-  // inestable. El error SÍ se muestra en la carga inicial (goToPane →
-  // loadNotes directo, con su propio try/catch).
+  // autocura. El error SÍ se muestra en la carga inicial (openNotebook, con
+  // su propio try/catch).
   catch { /* noop */ }
   finally { notesPolling = false; }
 }
+
+// ── Notas: lista de libretas ──
+function notebookElement(nb) {
+  const div = document.createElement('div');
+  div.className = 'conv';
+  div.innerHTML = `
+    <div class="conv-avatar">${avatarChar(nb.name)}</div>
+    <div class="conv-body">
+      <div class="name"><span class="conv-name-text"></span></div>
+      <div class="sub"><span class="conv-date"></span></div>
+    </div>
+  `;
+  div.querySelector('.conv-name-text').textContent = nb.name;
+  div.querySelector('.conv-date').textContent = nb.lastActivity
+    ? new Date(nb.lastActivity).toLocaleString('es', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+    : 'Sin notas todavía';
+  div.onclick = () => openNotebook(nb.id, nb.name);
+  return div;
+}
+
+function renderNotebookList() {
+  const nav = $('notebook-list');
+  nav.innerHTML = '';
+  for (const nb of notebooks) nav.appendChild(notebookElement(nb));
+}
+
+async function loadNotebookList() {
+  const { notebooks: list } = await api('/notebooks');
+  notebooks = list;
+  renderNotebookList();
+}
+
+async function safeLoadNotebookList() {
+  try { await loadNotebookList(); }
+  catch { /* noop: polling de fondo, se autocura en el próximo tick */ }
+}
+
+// ── Notas: abrir/cerrar una libreta reusando el panel/overlay del chat ──
+// Mismo mecanismo que ya usan los chats (#panel-chat, clase .open,
+// history.pushState para el botón atrás de Android) — ver el diseño en
+// docs/superpowers/specs/2026-08-13-notas-libretas-design.md. show=true
+// oculta la vista de chat y muestra la de libreta; show=false es lo inverso
+// (lo usa selectConv al abrir un chat real, por si había una libreta abierta).
+function showNotebookView(show) {
+  $('chat-header').hidden = show;
+  $('messages-wrap').hidden = show;
+  $('composer-attachments').hidden = show;
+  $('composer').hidden = show;
+  $('notebook-view').hidden = !show;
+}
+
+async function openNotebook(id, name) {
+  currentNotebook = { id, name };
+  $('notebook-title').textContent = name;
+  notesData = [];
+  renderNotes();
+  showNotebookView(true);
+  openChat();
+  try { await loadNotes(); }
+  catch (err) { toast('No se pudieron cargar las notas: ' + err.message); }
+}
+
 let archivedPaneLoaded = false;
 let activeAccount = null;
 const drafts = new Map();
@@ -615,12 +686,12 @@ async function goToPane(index) {
       return;
     }
   }
-  if (index === 2 && !notesPaneLoaded) {
+  if (index === 2 && !notebookListLoaded) {
     try {
-      await loadNotes();
-      notesPaneLoaded = true;
+      await loadNotebookList();
+      notebookListLoaded = true;
     } catch (err) {
-      toast('No se pudo cargar notas: ' + err.message);
+      toast('No se pudieron cargar las libretas: ' + err.message);
       if (myGeneration === paneNavGeneration) paneNavTarget = activePane;
       return;
     }
@@ -644,6 +715,45 @@ document.querySelectorAll('.pane-tab').forEach(btn => {
   btn.onclick = () => goToPane(Number(btn.dataset.pane));
 });
 $('notes-back').onclick = () => goToPane(0);
+
+$('notebook-back-btn').onclick = closeChat;
+
+$('notebook-new-btn').onclick = async () => {
+  try {
+    const nb = await api('/notebooks', { method: 'POST' });
+    notebooks.push(nb);
+    renderNotebookList();
+    openNotebook(nb.id, nb.name);
+  } catch (err) { toast('No se pudo crear la libreta: ' + err.message); }
+};
+
+// ── Renombrar libreta (doble click en el título, mismo patrón que #conv-title) ──
+$('notebook-title').ondblclick = () => {
+  if (!currentNotebook) return;
+  const el = $('notebook-title');
+  el.contentEditable = 'true';
+  el.focus();
+  el.onblur = async () => {
+    el.contentEditable = 'false';
+    const name = el.textContent.trim();
+    if (!name || name === currentNotebook.name) { el.textContent = currentNotebook.name; return; }
+    try {
+      const nb = await api(`/notebooks/${currentNotebook.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      currentNotebook.name = nb.name;
+      el.textContent = nb.name;
+      const idx = notebooks.findIndex(n => n.id === nb.id);
+      if (idx !== -1) notebooks[idx] = { ...notebooks[idx], ...nb };
+    } catch (err) {
+      el.textContent = currentNotebook.name;
+      toast('No se pudo renombrar: ' + err.message);
+    }
+  };
+  el.onkeydown = ev => { if (ev.key === 'Enter') { ev.preventDefault(); el.blur(); } };
+};
 
 // ── Indicador global de "procesando" (icono ping + título + badge de la app instalada) ──
 let globalBusy = false;
@@ -1687,6 +1797,7 @@ async function selectConv(convId, name, model, lastModel, projectDir) {
   folderEl.hidden = !dirName;
   setBusy(false);
   clearAttachments();
+  showNotebookView(false);
   openChat();
   // Al abrir otra conversación siempre arrancamos abajo, sin heredar la
   // posición de scroll de la anterior.
@@ -2616,83 +2727,29 @@ $('notes-input').addEventListener('keydown', e => {
 
 $('notes-composer').addEventListener('submit', async e => {
   e.preventDefault();
+  if (!currentNotebook) return;
   const input = $('notes-input');
   const text = input.value.trim();
   if (!text) return;
   input.value = '';
   autoResize(input);
   try {
-    const entry = await api('/notes', {
+    const { entry, notebook } = await api(`/notebooks/${currentNotebook.id}/notes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),
     });
     notesData.push(entry);
     renderNotes();
+    if (notebook && notebook.name !== currentNotebook.name) {
+      currentNotebook.name = notebook.name;
+      $('notebook-title').textContent = notebook.name;
+      const idx = notebooks.findIndex(n => n.id === notebook.id);
+      if (idx !== -1) notebooks[idx] = { ...notebooks[idx], ...notebook };
+    }
   } catch (err) {
     input.value = text;
     autoResize(input);
     toast('No se pudo guardar la nota: ' + err.message);
   }
-});
-
-// ── Notas: adjuntar archivos ──
-// Mismo problema que ya resolvimos para el composer de chat (ver el comentario
-// de prepareForUpload, arriba): un File que sale del picker de galería del
-// celu es un handle a content:// (Android) o a la fototeca (iOS), no bytes en
-// memoria. Subir ese handle crudo tal cual, sin materializarlo, funciona con
-// una foto recién sacada de la cámara (el handle está fresco) pero falla con
-// una elegida de la galería si el uplink móvil tarda y el sistema invalida el
-// handle a mitad de camino — fetch tira un TypeError crudo que el usuario ve
-// como "conexión caída o server sin responder". prepareForUpload ya resuelve
-// esto (materializa a Blob + comprime fotos grandes) — reusarlo acá en vez de
-// mandar `file` directo.
-async function uploadNoteFile(file) {
-  const displayName = file.name || `pegado-${Date.now()}.${(file.type.split('/')[1] || 'bin')}`;
-  const loadingChip = document.createElement('div');
-  loadingChip.className = 'attach-chip attach-chip-loading';
-  loadingChip.innerHTML = `<span class="attach-spinner"></span><span class="attach-chip-name"></span>`;
-  loadingChip.querySelector('.attach-chip-name').textContent = displayName;
-  $('notes-attachments').appendChild(loadingChip);
-
-  const t0 = Date.now();
-  let sentBytes = 0;
-  try {
-    const { blob, name: uploadName } = await prepareForUpload(file, displayName);
-    sentBytes = blob.size;
-    const fd = new FormData();
-    fd.append('file', blob, uploadName);
-    const res = await netFetch('/api/notes/upload', { method: 'POST', body: fd });
-    if (!res.ok) throw new Error((await res.json()).error || res.statusText);
-    const entry = await res.json();
-    notesData.push(entry);
-    renderNotes();
-  } catch (err) {
-    // Mismo rastro de tamaño/duración que uploadAttachment: si falla al
-    // instante es el archivo o la conexión; si falla tras varios segundos, se
-    // cortó a mitad de la subida.
-    const detalle = sentBytes
-      ? ` [${(sentBytes / 1024 / 1024).toFixed(1)}MB, ${((Date.now() - t0) / 1000).toFixed(1)}s]`
-      : ` [falló al preparar, ${((Date.now() - t0) / 1000).toFixed(1)}s]`;
-    toast('No se pudo subir el archivo: ' + err.message + detalle);
-  } finally {
-    loadingChip.remove();
-  }
-}
-
-$('notes-attach-btn').onclick = () => { $('notes-file-input').click(); };
-$('notes-file-input').onchange = async () => {
-  const files = Array.from($('notes-file-input').files);
-  $('notes-file-input').value = '';
-  for (const f of files) await uploadNoteFile(f);
-};
-
-// ── Notas: sincronización entre dispositivos por polling ──
-// 5s (no los 15s del árbol de chats) porque un uso central es "mandar un
-// archivo del celu y pasar a la PC a buscarlo enseguida". Sin SSE nuevo: ver
-// razones documentadas en la spec (mismo problema de conexiones idle que ya
-// se resolvió a los ponchazos para /stream).
-setInterval(() => { if (activePane === 2) safeLoadNotes(); }, 5000);
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && activePane === 2) safeLoadNotes();
 });
