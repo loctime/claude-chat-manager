@@ -747,6 +747,7 @@ $('notebook-title').ondblclick = () => {
       el.textContent = nb.name;
       const idx = notebooks.findIndex(n => n.id === nb.id);
       if (idx !== -1) notebooks[idx] = { ...notebooks[idx], ...nb };
+      renderNotebookList();
     } catch (err) {
       el.textContent = currentNotebook.name;
       toast('No se pudo renombrar: ' + err.message);
@@ -2741,12 +2742,18 @@ $('notes-composer').addEventListener('submit', async e => {
     });
     notesData.push(entry);
     renderNotes();
+    // El objeto notebook que devuelve el server (creado/renombrado) no trae
+    // lastActivity — lo seteamos acá con el ts de la nota recién posteada
+    // para que la lista no quede mostrando "Sin notas todavía" o una fecha
+    // vieja hasta el próximo reload.
+    const idx = notebooks.findIndex(n => n.id === currentNotebook.id);
+    if (idx !== -1) notebooks[idx].lastActivity = entry.ts;
     if (notebook && notebook.name !== currentNotebook.name) {
       currentNotebook.name = notebook.name;
       $('notebook-title').textContent = notebook.name;
-      const idx = notebooks.findIndex(n => n.id === notebook.id);
       if (idx !== -1) notebooks[idx] = { ...notebooks[idx], ...notebook };
     }
+    renderNotebookList();
   } catch (err) {
     input.value = text;
     autoResize(input);
