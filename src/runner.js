@@ -67,6 +67,15 @@ class Runner extends EventEmitter {
       promptFragments.push(
         `AVISO INFRAESTRUCTURA: te está ejecutando claude-chat-manager (Node/Express) en ${host}:${this.selfPort}. Ese proceso es tu propio transporte hacia el usuario — si lo matás perdés el stream a la mitad y el usuario ve tu respuesta cortada. NO ejecutes comandos que apunten a ese puerto ni a ese proceso: nada de kill/pkill/fuser/lsof -ti:${this.selfPort} -k, ss ... | xargs kill, systemctl stop, etc. Si el usuario te pide reiniciar el chat-manager, explicale que lo tiene que hacer él desde otra terminal (o via PM2/systemd) porque vos no podés matar tu propio host.`
       );
+      // Regla mecánica, no de estilo — las de estilo puro ("sé breve") se
+      // pierden sepultadas en el system prompt; una regla de sintaxis
+      // concreta como esta sí se respeta (verificado con el mismo mecanismo,
+      // ver CLAUDE.local.md). Va acá y no en el CLAUDE.md personal de cada
+      // usuario porque tiene que valerle a CUALQUIER agente que corra
+      // adentro de Jarvis (esta PC, la PC Linux, la cuenta de quien sea).
+      promptFragments.push(
+        `CONTRATO DE RUTAS EN ESTE CHAT: cuando compartas un archivo o carpeta por su ruta, para que aparezca como tarjeta clickeable (descargar / abrir en la PC / bajar zip de una carpeta) escribí la ruta ABSOLUTA en texto plano dentro del mensaje — NUNCA entre backticks ni dentro de un bloque de código \`\`\`, ahí no se detecta. Ejemplos correctos: C:\\Users\\User\\Desktop\\informe.pdf (Windows) o /home/user/carpeta (Linux) — nunca una ruta relativa. Las carpetas con espacios en el nombre no se detectan solas (limitación conocida del detector) — si el nombre tiene espacios, decilo en prosa en vez de mandar la ruta pelada.`
+      );
     }
     if (promptFragments.length > 0) {
       args.push('--append-system-prompt', promptFragments.join('\n\n'));

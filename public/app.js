@@ -1208,6 +1208,24 @@ function makeZipDownloadBtn(folderPath) {
   return btn;
 }
 
+// Botón genérico "copiar" — mismo ⧉/✓ que ya usan los bloques de código
+// y los comandos de tools, reusado acá para copiar la ruta completa.
+function makeCopyBtn(text, title) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'reveal-btn';
+  btn.title = title || 'Copiar';
+  btn.textContent = '⧉';
+  btn.onclick = e => {
+    e.preventDefault();
+    e.stopPropagation();
+    copyToClipboard(text);
+    btn.textContent = '✓';
+    setTimeout(() => { btn.textContent = '⧉'; }, 1200);
+  };
+  return btn;
+}
+
 // Crea una card de archivo inline (para PDFs y otros no-imagen)
 function makeFileCard(filePath) {
   const name = filePath.split('/').pop();
@@ -1262,7 +1280,7 @@ function makeFolderCard(folderPath) {
   const name = folderPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || folderPath;
 
   const card = document.createElement('div');
-  card.className = 'file-card';
+  card.className = 'file-card file-card-folder';
 
   const icon = document.createElement('span');
   icon.className = 'file-card-icon';
@@ -1276,8 +1294,26 @@ function makeFolderCard(folderPath) {
   nameEl.textContent = name;
   nameEl.title = folderPath;
   info.appendChild(nameEl);
-  info.appendChild(makeRevealBtn(folderPath));
-  info.appendChild(makeZipDownloadBtn(folderPath));
+
+  // Ruta completa, visible (truncada con ellipsis + title si no entra) +
+  // botón de copiarla — antes solo vivía en el title del nombre, invisible
+  // hasta hacer hover (que en el celu no existe).
+  const pathRow = document.createElement('div');
+  pathRow.className = 'file-card-path-row';
+  const pathEl = document.createElement('span');
+  pathEl.className = 'file-card-path';
+  pathEl.textContent = folderPath;
+  pathEl.title = folderPath;
+  pathRow.appendChild(pathEl);
+  pathRow.appendChild(makeCopyBtn(folderPath, 'Copiar ruta'));
+  info.appendChild(pathRow);
+
+  const actions = document.createElement('div');
+  actions.className = 'file-card-actions';
+  actions.appendChild(makeRevealBtn(folderPath));
+  actions.appendChild(makeZipDownloadBtn(folderPath));
+  info.appendChild(actions);
+
   card.appendChild(info);
   return card;
 }

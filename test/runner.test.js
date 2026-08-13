@@ -84,6 +84,22 @@ test('con selfPort configurado, el único --append-system-prompt es el aviso de 
   assert.doesNotMatch(spawned[0].args[i + 1], /Modo de respuesta/);
 });
 
+test('con selfPort configurado, el --append-system-prompt incluye el contrato de rutas', () => {
+  const spawned = [];
+  const r = new Runner({
+    maxConcurrent: 2,
+    selfPort: 3777,
+    spawnFn: (cmd, args, opts) => {
+      const child = fakeChild();
+      spawned.push({ cmd, args, opts, child });
+      return child;
+    },
+  });
+  r.send({ convId: 'c1', sessionId: 's1', cwd: '/t', text: 'a' });
+  const i = spawned[0].args.indexOf('--append-system-prompt');
+  assert.match(spawned[0].args[i + 1], /CONTRATO DE RUTAS/);
+});
+
 test('semáforo de 2: el tercero queda en cola y arranca al liberarse un slot', () => {
   const spawned = [];
   const r = makeRunner(spawned);
