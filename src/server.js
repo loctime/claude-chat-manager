@@ -864,13 +864,15 @@ app.post('/api/conversations', (req, res) => {
   const data = meta.load(metaFile);
   data.conversations[convId] = { currentSessionId: null, projectDir, model: model || undefined };
   meta.save(data, metaFile);
-  // cwd = home del usuario (no projectDir): así la sesión arranca leyendo el CLAUDE.md
-  // global y la memoria completa, igual que una sesión interactiva normal. projectDir
-  // queda solo como metadata para agrupar/mostrar en el sidebar y el header.
-  // Si no vino texto (se dejó en home, sin destino explícito) no hace falta
-  // mandar un primer mensaje — la conversación queda vacía, lista para escribir.
+  // cwd = projectDir (CCM_DEFAULT_PROJECT_DIR si está seteado, si no home del
+  // usuario): así la sesión arranca leyendo el CLAUDE.md y la memoria de esa
+  // carpeta, igual que una sesión interactiva normal. Antes esto ignoraba
+  // CCM_DEFAULT_PROJECT_DIR y siempre usaba accountHomeDir(acc) sin importar
+  // lo que projectDir hubiera resuelto arriba.
+  // Si no vino texto (se dejó sin destino explícito) no hace falta mandar un
+  // primer mensaje — la conversación queda vacía, lista para escribir.
   if ((text || '').trim()) {
-    runner.send({ convId, sessionId: null, cwd: accountHomeDir(acc), text: text.trim(), model: model || undefined, account: acc });
+    runner.send({ convId, sessionId: null, cwd: projectDir, text: text.trim(), model: model || undefined, account: acc });
   }
   res.status(201).json({ convId, projectDir });
 });
