@@ -813,6 +813,17 @@ body.hide-tools details.tool { display: none !important; }
 }
 .file-card-dl:hover { text-decoration: underline; }
 
+/* Botón "Mostrar en carpeta" — solo visible accediendo desde localhost */
+.reveal-btn {
+  border: none; background: none; cursor: pointer;
+  color: rgba(233,237,239,.45); font-size: 13px; line-height: 1;
+  padding: 2px 6px; margin-left: 4px; border-radius: 4px;
+  vertical-align: middle;
+  touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+}
+.reveal-btn:hover { background: rgba(255,255,255,.12); color: var(--text); }
+.inline-img-wrap .reveal-btn { display: block; margin: 4px 0 0; }
+
 /* ── Lightbox ── */
 #lightbox {
   display: none;

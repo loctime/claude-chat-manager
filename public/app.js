@@ -297,7 +297,13 @@ window.addEventListener('popstate', (e) => {
   if (newDlg.open) { newDlg.close(); history.pushState({ view: 'list-guard' }, ''); return; }
   const ctxMenu = document.querySelector('.ctx-menu');
   if (ctxMenu) { ctxMenu.remove(); history.pushState({ view: 'list-guard' }, ''); return; }
-  // Estamos en la lista raíz: doble click atrás para salir
+  // Si estamos en Archivado o Notas: volver a Chats en vez de ofrecer salir
+  if (activePane !== 0) {
+    goToPane(0);
+    history.pushState({ view: 'list-guard' }, '');
+    return;
+  }
+  // Estamos en la lista raíz de chats: doble click atrás para salir
   const now = Date.now();
   const DOUBLE_CLICK_MS = 600;
   if (now - _lastBackPress < DOUBLE_CLICK_MS) {
@@ -1130,6 +1136,40 @@ function fileIcon(ext) {
   return '📎';
 }
 
+// "Mostrar en carpeta" solo tiene sentido si el navegador está corriendo en
+// la misma PC donde vive Jarvis — accedido por la URL local, no por el
+// túnel público (jarvis.controlapps.ar), donde el botón abriría una ventana
+// del Explorador en una PC que no estás mirando.
+const IS_LOCAL_HOST = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
+
+async function revealInFolder(filePath) {
+  try {
+    const r = await fetch('/api/reveal?path=' + encodeURIComponent(filePath));
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      toast(body.error || 'No se pudo abrir la carpeta', 'error', 2500);
+      return;
+    }
+    toast('Abriendo carpeta…', 'info', 1200);
+  } catch {
+    toast('No se pudo contactar a Jarvis', 'error', 2500);
+  }
+}
+
+function makeRevealBtn(filePath) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'reveal-btn';
+  btn.title = 'Mostrar en carpeta';
+  btn.textContent = '📂';
+  btn.onclick = e => {
+    e.preventDefault();
+    e.stopPropagation();
+    revealInFolder(filePath);
+  };
+  return btn;
+}
+
 // Crea una card de archivo inline (para PDFs y otros no-imagen)
 function makeFileCard(filePath) {
   const name = filePath.split('/').pop();
@@ -1172,6 +1212,7 @@ function makeFileCard(filePath) {
   dl.textContent = 'Descargar';
   info.appendChild(nameEl);
   info.appendChild(dl);
+  if (IS_LOCAL_HOST) info.appendChild(makeRevealBtn(filePath));
   card.appendChild(info);
   return card;
 }
@@ -1201,6 +1242,7 @@ function renderTextWithPaths(container, text) {
         img.onclick = () => openLightbox(dlHref, dlHref, img.alt);
         img.onerror = () => { wrap.innerHTML = ''; wrap.appendChild(document.createTextNode(att.path)); };
         wrap.appendChild(img);
+        if (IS_LOCAL_HOST) wrap.appendChild(makeRevealBtn(att.path));
         container.appendChild(wrap);
       } else {
         container.appendChild(makeFileCard(att.path));
@@ -1212,7 +1254,22 @@ function renderTextWithPaths(container, text) {
   }
 
   // Paths sueltos — Unix (/home/...) y Windows (C:\... o C:/...)
-  const PATH_RE = /(`?)((?:[A-Za-z]:[\\\/]|\/(?:home|tmp|root|var|opt|usr))[^\s`'"(){}<>\[\]]+)\1/g;
+  // Los nombres de archivo pueden tener espacios (screenshots de Windows,
+  // "Captura de pantalla ....png", reportes "Balance Agosto 2026.csv") —
+  // se permite hasta 6 palabras extra siempre que termine en una extensión
+  // de archivo genérica (letras/dígitos, 1-8 chars: cualquier tipo, no solo
+  // imagen/pdf/audio/video), y se excluye ":" de esas palabras extra para
+  // no fusionar dos paths distintos en el mismo mensaje
+  // (ej. "C:\a\foto A.png y C:\b\foto B.png"). Un path relativo tipo
+  // "server.js:445" no matchea — falta el prefijo absoluto.
+  const PATH_WORD = "[^\\s`'\"(){}<>\\[\\]:]";
+  const PATH_RE = new RegExp(
+    "(`?)((?:[A-Za-z]:[\\\\/]|/(?:home|tmp|root|var|opt|usr))" +
+      "(?:" + PATH_WORD + "+(?:[ \\t]" + PATH_WORD + "+){0,6}\\.[A-Za-z0-9]{1,8}" +
+      "|" + "[^\\s`'\"(){}<>\\[\\]]+" +
+      "))\\1",
+    "g"
+  );
   let last = 0;
   let match;
   while ((match = PATH_RE.exec(text)) !== null) {
@@ -1223,7 +1280,6 @@ function renderTextWithPaths(container, text) {
     const name = filePath.split('/').pop();
     const ext = filePath.split('.').pop().toLowerCase();
     const isImage = IMAGE_EXTS.has(ext);
-    const isMedia = isImage || ext === 'pdf' || AUDIO_EXTS.has(ext) || VIDEO_EXTS.has(ext);
 
     if (isImage) {
       // Mostrar thumbnail clicable + link de descarga
@@ -1256,20 +1312,13 @@ function renderTextWithPaths(container, text) {
       wrap.appendChild(img);
       wrap.appendChild(document.createElement('br'));
       wrap.appendChild(dl);
+      if (IS_LOCAL_HOST) wrap.appendChild(makeRevealBtn(filePath));
       container.appendChild(wrap);
-    } else if (ext === 'pdf' || AUDIO_EXTS.has(ext) || VIDEO_EXTS.has(ext)) {
-      container.appendChild(makeFileCard(filePath));
-    } else if (isMedia) {
-      const a = document.createElement('a');
-      a.href = '/api/files?path=' + encodeURIComponent(filePath);
-      a.download = name;
-      a.textContent = filePath;
-      a.className = 'path-link';
-      container.appendChild(a);
     } else {
-      const code = document.createElement('code');
-      code.textContent = filePath;
-      container.appendChild(code);
+      // Cualquier otra extensión (pdf/audio/video con preview especial,
+      // y cualquier tipo de archivo — html, docx, csv, zip, etc. — con
+      // ícono genérico) — makeFileCard ya resuelve ambos casos.
+      container.appendChild(makeFileCard(filePath));
     }
     last = match.index + match[0].length;
   }
@@ -2196,6 +2245,9 @@ $('new-form').onsubmit = async e => {
       addMsg('user', text);
       setBusy(true);
     }
+    // Crear conversación es una acción explícita (no un tap en la lista),
+    // así que acá sí autofocuseamos el campo aunque estemos en mobile.
+    $('input').focus();
   } catch (err) {
     toast('No se pudo crear la conversación: ' + err.message);
   } finally {

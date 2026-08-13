@@ -445,10 +445,49 @@ app.get('/api/thumbnail', (req, res) => {
 app.get('/api/files', (req, res) => {
   const filePath = (req.query.path || '').trim();
   if (!filePath || !path.isAbsolute(filePath)) return res.status(400).json({ error: 'path inválido' });
-  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'archivo no encontrado' });
+  let stat;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    return res.status(404).json({ error: 'archivo no encontrado' });
+  }
+  if (!stat.isFile()) return res.status(400).json({ error: 'no es un archivo (¿es una carpeta?)' });
   const filename = path.basename(filePath);
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  fs.createReadStream(filePath).pipe(res);
+  const stream = fs.createReadStream(filePath);
+  // Sin este listener, cualquier error de lectura (path resultó ser una
+  // carpeta, permisos, disco) tira una excepción no capturada y crashea
+  // todo el proceso de Jarvis — .pipe() no reenvía errores del source.
+  stream.on('error', err => {
+    console.error('[api/files] error leyendo', filePath, err.message);
+    if (!res.headersSent) res.status(500).json({ error: 'error leyendo el archivo' });
+    else res.end();
+  });
+  stream.pipe(res);
+});
+
+// ── "Mostrar en carpeta" — abre el Explorador en la PC donde corre Jarvis ──
+// Solo Windows. El botón que lo dispara se oculta en el cliente salvo que
+// se esté navegando desde 127.0.0.1/localhost, pero eso es un gate de UI,
+// no de seguridad — cualquiera con la cookie ACCESS_PIN puede pegarle a
+// este endpoint igual (mismo modelo de confianza que el resto de la app,
+// que ya puede correr comandos arbitrarios vía Claude).
+app.get('/api/reveal', (req, res) => {
+  if (!IS_WIN) return res.status(400).json({ error: 'solo disponible en Windows' });
+  const filePath = (req.query.path || '').trim();
+  if (!filePath || !path.isAbsolute(filePath)) return res.status(400).json({ error: 'path inválido' });
+  let stat;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    return res.status(404).json({ error: 'archivo no encontrado' });
+  }
+  if (!stat.isFile()) return res.status(400).json({ error: 'no es un archivo (¿es una carpeta?)' });
+  // explorer.exe /select,<path> devuelve exit code 1 aunque abra bien —
+  // gotcha conocido de Windows, no lo tratamos como error real.
+  execFile('explorer.exe', ['/select,' + filePath], () => {
+    res.json({ ok: true });
+  });
 });
 
 // ── Notas (anotador sin IA, sin sesión de Claude) ──
