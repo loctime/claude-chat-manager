@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const { execFile, execFileSync, spawn } = require('child_process');
 const multer = require('multer');
+const archiver = require('archiver');
 const scanner = require('./scanner');
 const notes = require('./notes');
 const meta = require('./meta');
@@ -490,6 +491,77 @@ app.get('/api/reveal', (req, res) => {
   execFile('explorer.exe', args, () => {
     res.json({ ok: true });
   });
+});
+
+// ── "Descargar carpeta como .zip" ──
+// Complementa a /api/reveal para cuando estás lejos de la PC (celu por el
+// túnel) y "abrir en la PC" no te sirve — permite bajarte la carpeta
+// entera. Arma el zip al vuelo con `archiver` y lo pipea directo a la
+// response, sin escribir nada a disco. A diferencia de /api/reveal, no
+// tiene gate IS_WIN — armar un zip funciona en cualquier plataforma.
+const MAX_ZIP_BYTES = 200 * 1024 * 1024; // 200MB, límite elegido por Diego
+
+// Recorre la carpeta sumando tamaños de archivo y corta apenas se pasa
+// del límite (no sigue bajando en carpetas gigantes) — devuelve true si
+// se pasa. Symlinks se saltean (evita loops); carpetas sin permisos
+// también se saltean en vez de tirar.
+function folderExceedsLimit(dirPath, limitBytes) {
+  let total = 0;
+  const stack = [dirPath];
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+      } else if (entry.isFile()) {
+        try {
+          total += fs.statSync(full).size;
+        } catch {
+          continue;
+        }
+        if (total > limitBytes) return true;
+      }
+    }
+  }
+  return false;
+}
+
+app.get('/api/folder-zip', (req, res) => {
+  const folderPath = (req.query.path || '').trim();
+  if (!folderPath || !path.isAbsolute(folderPath)) return res.status(400).json({ error: 'path inválido' });
+  let stat;
+  try {
+    stat = fs.statSync(folderPath);
+  } catch {
+    return res.status(404).json({ error: 'no encontrado' });
+  }
+  if (!stat.isDirectory()) return res.status(400).json({ error: 'no es una carpeta' });
+
+  if (folderExceedsLimit(folderPath, MAX_ZIP_BYTES)) {
+    return res.status(413).json({ error: 'carpeta muy grande (>200MB) para descargar por acá — abrila desde la PC' });
+  }
+
+  const name = path.basename(folderPath) || 'carpeta';
+  res.setHeader('Content-Disposition', `attachment; filename="${name}.zip"`);
+  res.setHeader('Content-Type', 'application/zip');
+
+  const archive = archiver('zip', { zlib: { level: 6 } });
+  archive.on('error', err => {
+    console.error('[api/folder-zip] error armando zip', folderPath, err.message);
+    if (!res.headersSent) res.status(500).json({ error: 'error armando el zip' });
+    else res.end();
+  });
+  archive.pipe(res);
+  archive.directory(folderPath, false);
+  archive.finalize();
 });
 
 // ── Notas (anotador sin IA, sin sesión de Claude) ──

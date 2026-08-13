@@ -1168,6 +1168,46 @@ function makeRevealBtn(filePath) {
   return btn;
 }
 
+// Descarga una carpeta como .zip. Va por fetch (no un <a href> plano) para
+// poder mostrar el toast de error de tamaño en vez de que el navegador
+// intente "descargar" el JSON de error — el server rechaza con 413 antes
+// de armar nada si la carpeta pasa los 200MB (ver server.js).
+async function downloadFolderZip(folderPath) {
+  const name = folderPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'carpeta';
+  try {
+    const r = await fetch('/api/folder-zip?path=' + encodeURIComponent(folderPath));
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      toast(body.error || 'No se pudo descargar la carpeta', 'error', 3000);
+      return;
+    }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name + '.zip';
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch {
+    toast('No se pudo contactar a Jarvis', 'error', 2500);
+  }
+}
+
+function makeZipDownloadBtn(folderPath) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'reveal-btn';
+  btn.title = 'Descargar carpeta (.zip, hasta 200MB)';
+  btn.textContent = '⬇️';
+  btn.onclick = e => {
+    e.preventDefault();
+    e.stopPropagation();
+    toast('Armando zip…', 'info', 1200);
+    downloadFolderZip(folderPath);
+  };
+  return btn;
+}
+
 // Crea una card de archivo inline (para PDFs y otros no-imagen)
 function makeFileCard(filePath) {
   const name = filePath.split('/').pop();
@@ -1215,8 +1255,9 @@ function makeFileCard(filePath) {
   return card;
 }
 
-// Card para una carpeta detectada en el texto (sin extensión) — no hay
-// nada para descargar, solo el botón que la abre en el Explorador.
+// Card para una carpeta detectada en el texto (sin extensión) — dos
+// acciones: abrirla en la PC, o bajarla como .zip (para cuando no estás
+// frente a la PC y "abrir" no te sirve de nada).
 function makeFolderCard(folderPath) {
   const name = folderPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || folderPath;
 
@@ -1236,6 +1277,7 @@ function makeFolderCard(folderPath) {
   nameEl.title = folderPath;
   info.appendChild(nameEl);
   info.appendChild(makeRevealBtn(folderPath));
+  info.appendChild(makeZipDownloadBtn(folderPath));
   card.appendChild(info);
   return card;
 }

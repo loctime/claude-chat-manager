@@ -813,7 +813,7 @@ body.hide-tools details.tool { display: none !important; }
 }
 .file-card-dl:hover { text-decoration: underline; }
 
-/* Botón "Mostrar en carpeta" — solo visible accediendo desde localhost */
+/* Botones "Mostrar en carpeta" / "Descargar .zip" (folder cards) */
 .reveal-btn {
   border: none; background: none; cursor: pointer;
   color: rgba(233,237,239,.45); font-size: 13px; line-height: 1;
