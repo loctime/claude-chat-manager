@@ -13,6 +13,16 @@ const { Runner } = require('./runner');
 const { CLAUDE_CMD } = require('./claude-cmd');
 
 const IS_WIN = process.platform === 'win32';
+// WSL: Linux corriendo dentro de Windows (kernel expone "microsoft" en
+// /proc/version). Con interop habilitado (default) se puede invocar
+// explorer.exe directo desde acá — lo usamos para que "abrir en la PC"
+// funcione también cuando Jarvis corre dentro de WSL, no solo en Windows
+// nativo (ver /api/reveal más abajo).
+const IS_WSL = !IS_WIN && (() => {
+  try {
+    return /microsoft/i.test(fs.readFileSync('/proc/version', 'utf8'));
+  } catch { return false; }
+})();
 // En Windows ImageMagick 7 se llama 'magick'; en Linux/Mac es 'convert'
 const MAGICK_CMD = IS_WIN ? 'magick' : 'convert';
 // args para magick en Windows: magick [convert] input ... output
@@ -468,13 +478,14 @@ app.get('/api/files', (req, res) => {
 });
 
 // ── "Mostrar en carpeta" — abre el Explorador en la PC donde corre Jarvis ──
-// Solo Windows. El botón que lo dispara se oculta en el cliente salvo que
-// se esté navegando desde 127.0.0.1/localhost, pero eso es un gate de UI,
-// no de seguridad — cualquiera con la cookie ACCESS_PIN puede pegarle a
-// este endpoint igual (mismo modelo de confianza que el resto de la app,
-// que ya puede correr comandos arbitrarios vía Claude).
+// Windows nativo o WSL (con interop, que llama a explorer.exe igual). El
+// botón que lo dispara se oculta en el cliente salvo que se esté navegando
+// desde 127.0.0.1/localhost, pero eso es un gate de UI, no de seguridad —
+// cualquiera con la cookie ACCESS_PIN puede pegarle a este endpoint igual
+// (mismo modelo de confianza que el resto de la app, que ya puede correr
+// comandos arbitrarios vía Claude).
 app.get('/api/reveal', (req, res) => {
-  if (!IS_WIN) return res.status(400).json({ error: 'solo disponible en Windows' });
+  if (!IS_WIN && !IS_WSL) return res.status(400).json({ error: 'solo disponible en Windows/WSL' });
   const filePath = (req.query.path || '').trim();
   if (!filePath || !path.isAbsolute(filePath)) return res.status(400).json({ error: 'path inválido' });
   let stat;
@@ -483,9 +494,19 @@ app.get('/api/reveal', (req, res) => {
   } catch {
     return res.status(404).json({ error: 'no encontrado' });
   }
+  // Bajo WSL, filePath viene en formato POSIX (/mnt/c/...) — explorer.exe
+  // no lo entiende, hay que convertirlo a Windows (C:\...) con wslpath.
+  let explorerPath = filePath;
+  if (IS_WSL) {
+    try {
+      explorerPath = execFileSync('wslpath', ['-w', filePath], { encoding: 'utf8' }).trim();
+    } catch {
+      return res.status(500).json({ error: 'no se pudo convertir el path (wslpath)' });
+    }
+  }
   // Si es carpeta la abrimos directo; si es archivo, abrimos su carpeta
   // contenedora con el archivo ya seleccionado.
-  const args = stat.isDirectory() ? [filePath] : ['/select,' + filePath];
+  const args = stat.isDirectory() ? [explorerPath] : ['/select,' + explorerPath];
   // explorer.exe devuelve exit code 1 aunque abra bien —
   // gotcha conocido de Windows, no lo tratamos como error real.
   execFile('explorer.exe', args, () => {

@@ -1367,9 +1367,12 @@ function renderTextWithPaths(container, text) {
   // del regex, pero solo si el path no tiene espacios — una carpeta con
   // espacios en el nombre (ej. "Notas Jarvis") no se detecta acá, mismo
   // límite que ya existía antes para no confundir prosa con path.
+  // "mnt" incluido para WSL: ahí el filesystem de Windows se ve montado en
+  // /mnt/c/... (Jarvis puede correr dentro de WSL, no solo en Windows nativo
+  // ni en el /home de un Linux normal).
   const PATH_WORD = "[^\\s`'\"(){}<>\\[\\]:]";
   const PATH_RE = new RegExp(
-    "(`?)((?:[A-Za-z]:[\\\\/]|/(?:home|tmp|root|var|opt|usr))" +
+    "(`?)((?:[A-Za-z]:[\\\\/]|/(?:home|tmp|root|var|opt|usr|mnt))" +
       "(?:" + PATH_WORD + "+(?:[ \\t]" + PATH_WORD + "+){0,6}\\.[A-Za-z0-9]{1,8}" +
       "|" + "[^\\s`'\"(){}<>\\[\\]]+" +
       "))\\1",
