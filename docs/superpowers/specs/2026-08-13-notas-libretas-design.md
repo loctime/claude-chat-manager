@@ -29,7 +29,7 @@ Reemplazan a los actuales `GET/POST /api/notes` y `POST /api/notes/upload` (que 
 
 Todos cubiertos por el mismo middleware `ACCESS_PIN` que ya protege el resto de la API.
 
-**Auto-nombre:** cuando se agrega la primera nota de texto a una libreta cuyo nombre todavía matchea el patrón default (`"Nueva libreta"` o `"Nueva libreta N"`), el server la renombra usando el principio de esa nota (mismo criterio que ya se usa para el título automático de un chat a partir del primer mensaje). Corre server-side en el `POST` de la nota, así aplica sin importar qué cliente la mandó. Si el usuario ya la renombró a mano, el nombre deja de matchear el patrón default y este auto-rename no la vuelve a tocar.
+**Auto-nombre:** cuando se agrega la primera nota de texto a una libreta cuyo nombre todavía matchea el patrón default (`"Nueva libreta"` o `"Nueva libreta N"`), el server la renombra tomando la primera línea de esa nota, recortada a 40 caracteres (agregando `…` si se corta). Corre server-side en el `POST` de la nota, así aplica sin importar qué cliente la mandó. Si el usuario ya la renombró a mano, el nombre deja de matchear el patrón default y este auto-rename no la vuelve a tocar.
 
 ## Frontend — navegación
 
