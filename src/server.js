@@ -646,6 +646,7 @@ app.get('/api/tree', (req, res) => {
     return tokens / contextWindowFor(s.lastModel);
   }
   for (const [convId, c] of Object.entries(data.conversations)) {
+    if (c.hidden) continue;
     const s = byId.get(c.currentSessionId) || {};
     convs.push({
       convId,
@@ -909,6 +910,10 @@ app.patch('/api/conversations/:id', (req, res) => {
   if ('model' in req.body) conv.model = (req.body.model || '').trim() || undefined;
   if ('pinned' in req.body) conv.pinned = !!req.body.pinned;
   if ('archived' in req.body) conv.archived = !!req.body.archived;
+  // hidden: saca la conversación de las dos listas (activas y archivadas) sin
+  // tocar el .jsonl real — a diferencia de un borrado, es reversible a mano
+  // editando meta.json si hiciera falta.
+  if ('hidden' in req.body) conv.hidden = !!req.body.hidden;
   meta.save(data, metaFile);
   res.json({ ok: true });
 });

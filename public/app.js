@@ -824,6 +824,7 @@ function showConvMenu(x, y, conv) {
     <button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button>
     <button data-action="archive">${conv.archived ? '📂 Desarchivar' : '📁 Archivar'}</button>
     <button data-action="compact">🗜️ Compactar</button>
+    <button data-action="hide" class="ctx-danger">🙈 Ocultar</button>
   `;
   document.body.appendChild(menu);
   const rect = menu.getBoundingClientRect();
@@ -850,6 +851,25 @@ function showConvMenu(x, y, conv) {
         toast('Compactando… puede tardar, corre en background', 'info', 4000);
         refreshVisibleTrees();
       } catch (err) { toast('No se pudo compactar: ' + err.message); }
+      return;
+    }
+    if (action === 'hide') {
+      try {
+        await api(`/conversations/${conv.convId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(withAccountBody({ hidden: true })),
+        });
+        if (conv.convId === currentConv) {
+          // No hay una vista "vacía" dedicada — recargar deja la app en el
+          // estado inicial (sin conversación abierta), simple y sin bugs de
+          // estado a mano.
+          location.reload();
+          return;
+        }
+        refreshVisibleTrees();
+        toast('Conversación ocultada', 'info', 2500);
+      } catch (err) { toast('No se pudo ocultar: ' + err.message); }
       return;
     }
     const patch = action === 'pin'
