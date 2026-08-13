@@ -98,7 +98,14 @@ function mergeNotes(incoming, current) {
 
 async function loadNotes() {
   if (!currentNotebook) return;
-  const { notes } = await api(`/notebooks/${currentNotebook.id}/notes`);
+  const notebookId = currentNotebook.id;
+  const { notes } = await api(`/notebooks/${notebookId}/notes`);
+  // Mientras esperábamos la respuesta el usuario puede haber abierto otra
+  // libreta (o vuelto a la lista): un poll lento de la libreta anterior que
+  // resuelve tarde mergearía SUS notas adentro de la que está abierta ahora,
+  // y como mergeNotes conserva lo que ya había en memoria, esas notas ajenas
+  // quedan pegadas hasta cerrar y reabrir. Descartar la respuesta tardía.
+  if (!currentNotebook || currentNotebook.id !== notebookId) return;
   const merged = mergeNotes(notes, notesData);
 
   // Nada cambió (mismo largo y mismo último id): no tocar el DOM ni el
@@ -151,6 +158,17 @@ function notebookElement(nb) {
 function renderNotebookList() {
   const nav = $('notebook-list');
   nav.innerHTML = '';
+  // Sin libretas la lista quedaría como un panel completamente en blanco, sin
+  // ninguna pista de qué pasó ni de cómo seguir — y ese es justo el estado de
+  // una instalación nueva (arranca sin ninguna libreta) o el de alguien que
+  // borró notebooks.json a mano. Mismo tratamiento que renderNotes().
+  if (notebooks.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'notes-empty';
+    empty.textContent = 'No hay libretas todavía — creá una con el botón + de arriba.';
+    nav.appendChild(empty);
+    return;
+  }
   for (const nb of notebooks) nav.appendChild(notebookElement(nb));
 }
 
@@ -2022,16 +2040,28 @@ $('input').addEventListener('paste', (e) => {
   const show = () => { zone.classList.add('drag-over'); };
   const hide = () => { zone.classList.remove('drag-over'); depth = 0; };
 
+  // #panel-chat aloja tanto el chat como la libreta abierta de Notas, así que
+  // un archivo soltado acá puede ser para cualquiera de los dos. Sin
+  // distinguirlos, con una libreta abierta el archivo se adjuntaba igual al
+  // composer del chat — que en ese momento está hidden —, o sea que
+  // desaparecía sin dejar rastro visible.
+  const notebookOpen = () => !$('notebook-view').hidden;
+  const canDrop = () => (notebookOpen() ? !!currentNotebook : !!currentConv);
+  const acceptDrop = (files) => {
+    if (notebookOpen()) return (async () => { for (const f of files) await uploadNoteFile(f); })();
+    return uploadFiles(files);
+  };
+
   // Los eventos "dragenter"/"dragleave" se disparan por cada hijo que atraviesa el cursor,
   // por eso contamos profundidad en vez de togglear crudo.
   zone.addEventListener('dragenter', (e) => {
-    if (!currentConv || !e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+    if (!canDrop() || !e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
     e.preventDefault();
     depth++;
     show();
   });
   zone.addEventListener('dragover', (e) => {
-    if (!currentConv || !e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+    if (!canDrop() || !e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
   });
@@ -2041,12 +2071,12 @@ $('input').addEventListener('paste', (e) => {
     if (depth === 0) hide();
   });
   zone.addEventListener('drop', (e) => {
-    if (!currentConv) return;
+    if (!canDrop()) return;
     const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
     if (files.length === 0) return;
     e.preventDefault();
     hide();
-    uploadFiles(files);
+    acceptDrop(files);
   });
   // Evitar que el browser abra el archivo si el drop cae fuera de la zona
   window.addEventListener('dragover', (e) => { if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) e.preventDefault(); });
@@ -2732,14 +2762,20 @@ $('notes-composer').addEventListener('submit', async e => {
   const input = $('notes-input');
   const text = input.value.trim();
   if (!text) return;
+  const notebookId = currentNotebook.id;
   input.value = '';
   autoResize(input);
   try {
-    const { entry, notebook } = await api(`/notebooks/${currentNotebook.id}/notes`, {
+    const { entry, notebook } = await api(`/notebooks/${notebookId}/notes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),
     });
+    // La nota ya quedó guardada server-side; si mientras tanto se cambió de
+    // libreta, no pintarla acá (iría en la libreta equivocada). El próximo
+    // poll la muestra cuando se vuelva a abrir la suya. Mismo criterio que
+    // el guard de loadNotes().
+    if (!currentNotebook || currentNotebook.id !== notebookId) return;
     notesData.push(entry);
     renderNotes();
     // El objeto notebook que devuelve el server (creado/renombrado) no trae
@@ -2771,6 +2807,7 @@ $('notes-composer').addEventListener('submit', async e => {
 // comprime fotos grandes) — reusarlo acá en vez de mandar `file` directo.
 async function uploadNoteFile(file) {
   if (!currentNotebook) return;
+  const notebookId = currentNotebook.id;
   const displayName = file.name || `pegado-${Date.now()}.${(file.type.split('/')[1] || 'bin')}`;
   const loadingChip = document.createElement('div');
   loadingChip.className = 'attach-chip attach-chip-loading';
@@ -2785,9 +2822,12 @@ async function uploadNoteFile(file) {
     sentBytes = blob.size;
     const fd = new FormData();
     fd.append('file', blob, uploadName);
-    const res = await netFetch(`/api/notebooks/${currentNotebook.id}/notes/upload`, { method: 'POST', body: fd });
+    const res = await netFetch(`/api/notebooks/${notebookId}/notes/upload`, { method: 'POST', body: fd });
     if (!res.ok) throw new Error((await res.json()).error || res.statusText);
     const { entry } = await res.json();
+    // Una subida puede tardar varios segundos con uplink móvil, tiempo de
+    // sobra para volver e ir a otra libreta — mismo guard que loadNotes().
+    if (!currentNotebook || currentNotebook.id !== notebookId) return;
     notesData.push(entry);
     renderNotes();
   } catch (err) {
