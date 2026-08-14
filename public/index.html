@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>FerStark</title>
+  <title>{{APP_NAME}}</title>
   <meta name="theme-color" content="#202c33">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="FerStark">
+  <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
   <link rel="stylesheet" href="style.css?v=33">
@@ -17,7 +17,7 @@
     <!-- Panel lista -->
     <div id="panel-list">
       <header id="list-header">
-        <h1><span id="global-busy-dot" class="ping-dot" title="Procesando…"><span class="ring"></span><span class="core"></span></span>FerStark</h1>
+        <h1><span id="global-busy-dot" class="ping-dot" title="Procesando…"><span class="ring"></span><span class="core"></span></span>{{APP_NAME}}</h1>
         <select id="account-select" title="Cuenta activa" aria-label="Cuenta activa"></select>
         <a id="account-switch" title="Ir a la otra cuenta" hidden></a>
         <button id="search-btn" title="Buscar (Ctrl+K)" aria-label="Buscar">
@@ -136,26 +136,6 @@
   <dialog id="new-dialog">
     <form method="dialog" id="new-form">
       <h2>Nueva conversación</h2>
-      <label>Proyecto
-        <select id="project-select"></select>
-      </label>
-      <label>Otra carpeta
-        <input id="project-custom" type="text" placeholder="/home/loctime/Proyectos/…">
-      </label>
-      <label>Proyecto en VPS
-        <select id="vps-project">
-          <option value="">— ninguno —</option>
-          <option value="ventamat">ventamat</option>
-          <option value="ventamat-panel">ventamat-panel</option>
-          <option value="controlapps-clientes">controlapps-clientes</option>
-          <option value="coopermat-api">coopermat-api</option>
-          <option value="controlbun">controlbun</option>
-          <option value="cazador">cazador</option>
-        </select>
-      </label>
-      <label>Otro proyecto VPS
-        <input id="vps-project-custom" type="text" placeholder="nombre-del-proyecto">
-      </label>
       <label>Modelo
         <select id="new-model">
           <option value="">Default</option>
@@ -224,7 +204,7 @@
 
   <!-- Banner instalar PWA -->
   <div id="install-bar" hidden>
-    <span id="install-text">Instalá FerStark como app</span>
+    <span id="install-text">Instalá {{APP_NAME}} como app</span>
     <button id="install-btn">Instalar</button>
     <button id="install-dismiss" aria-label="Cerrar">✕</button>
   </div>

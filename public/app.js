@@ -122,6 +122,10 @@ async function safeLoadNotes() {
 let archivedPaneLoaded = false;
 let activeAccount = null;
 const drafts = new Map();
+// Nombre de la app configurado del lado del server (CCM_APP_NAME) — index.html
+// y manifest.json ya vienen con el nombre correcto server-rendered; esto es
+// solo para los pedacitos que arma el JS después (título dinámico, toasts).
+let APP_NAME = 'J.A.R.V.I.S';
 
 const $ = id => document.getElementById(id);
 const messagesEl = $('messages');
@@ -130,8 +134,9 @@ const messagesEl = $('messages');
 async function loadAccounts() {
   try {
     const r = await fetch('/api/accounts');
-    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel } = await r.json();
+    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName } = await r.json();
     activeAccount = active;
+    if (appName) { APP_NAME = appName; updateGlobalBusyIndicator(); }
     // Botón "ir a la otra instancia": elige URL local si estamos en 127.0.0.1/localhost,
     // pública en cualquier otro caso (celu vía Cloudflare tunnel).
     const sw = $('account-switch');
@@ -335,7 +340,7 @@ function netError(err) {
   if (!isNetworkError(err)) return err;
   const e = new Error(navigator.onLine === false
     ? 'Sin conexión — no salió'
-    : 'No se pudo contactar a FerStark (conexión caída o server sin responder)');
+    : `No se pudo contactar a ${APP_NAME} (conexión caída o server sin responder)`);
   e.isNetwork = true;
   return e;
 }
@@ -656,7 +661,7 @@ let globalBusy = false;
 function updateGlobalBusyIndicator() {
   const anyBusy = tree.some(proj => proj.conversations.some(c => c.status && c.status !== 'idle'));
   $('global-busy-dot').classList.toggle('active', anyBusy);
-  document.title = anyBusy ? '● FerStark' : 'FerStark';
+  document.title = anyBusy ? `● ${APP_NAME}` : APP_NAME;
   if (anyBusy === globalBusy) return;
   globalBusy = anyBusy;
   if (!('setAppBadge' in navigator)) return;
@@ -1662,7 +1667,7 @@ function addTool(name, input, output, opts = {}) {
 // después — a diferencia de addCompactDivider(), que es el remanente del
 // sistema viejo por resumen-y-sesión-nueva). Se muestra tanto si lo disparó el
 // botón "Compactar" (trigger:'manual') como si el CLI lo hizo solo por límite
-// de contexto (trigger:'auto') — antes esto último era invisible en FerStark.
+// de contexto (trigger:'auto') — antes esto último era invisible acá.
 function addCompactBoundary(m) {
   const div = document.createElement('div');
   div.className = 'compact-divider';
@@ -2336,50 +2341,28 @@ $('conv-title').ondblclick = () => {
 };
 
 // ── Nueva conversación ──
+// Ya no se elige carpeta acá (ni local ni VPS) — cada cuenta siempre arranca
+// en su carpeta configurada del lado del server (accountHomeDir o
+// CCM_DEFAULT_PROJECT_DIR si está seteado). Lo único que se elige es el modelo.
 $('new-conv').onclick = () => {
-  const sel = $('project-select');
-  sel.innerHTML = '';
-  const home = document.createElement('option');
-  home.value = '';
-  home.textContent = '— seguir en casa (sin mensaje inicial) —';
-  sel.appendChild(home);
-  for (const proj of tree) {
-    const opt = document.createElement('option');
-    opt.value = proj.projectDir;
-    opt.textContent = proj.projectDir;
-    sel.appendChild(opt);
-  }
   $('new-dialog').showModal();
 };
 
 $('new-form').onsubmit = async e => {
   if (e.submitter && e.submitter.value === 'cancel') return;
   e.preventDefault();
-  const vpsProject = $('vps-project-custom').value.trim() || $('vps-project').value;
-  const localDir = $('project-custom').value.trim() || $('project-select').value;
-  // Sin VPS ni carpeta local elegida: se queda en casa, sin mensaje inicial
-  // (ya arranca ahí, no hace falta pedirle que "vaya" a ningún lado).
-  const projectDir = vpsProject ? `VPS: ${vpsProject}` : (localDir || undefined);
-  const text = vpsProject ? `Vamos a trabajar en ${vpsProject} en el VPS.` : (localDir ? `Vamos a trabajar en ${localDir}.` : '');
   const model = $('new-model').value;
   const submitBtn = e.submitter;
   if (submitBtn) submitBtn.disabled = true;
   try {
-    const { convId, projectDir: resolvedDir } = await api('/conversations', {
+    const { convId, projectDir } = await api('/conversations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(withAccountBody({ projectDir, text, model: model || undefined })),
+      body: JSON.stringify(withAccountBody({ model: model || undefined })),
     });
     $('new-dialog').close();
-    $('project-custom').value = '';
-    $('vps-project').value = '';
-    $('vps-project-custom').value = '';
     $('new-model').value = '';
-    await selectConv(convId, text ? text.slice(0, 60) : 'Nueva conversación', model, null, resolvedDir);
-    if (text) {
-      addMsg('user', text);
-      setBusy(true);
-    }
+    await selectConv(convId, 'Nueva conversación', model, null, projectDir);
     // Crear conversación es una acción explícita (no un tap en la lista),
     // así que acá sí autofocuseamos el campo aunque estemos en mobile.
     $('input').focus();

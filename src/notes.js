@@ -5,7 +5,12 @@ const os = require('os');
 const HOME_DIR = process.env.HOME || process.env.USERPROFILE || os.homedir();
 const NOTES_DIR = path.join(HOME_DIR, '.ccm-notes');
 const NOTES_FILE = path.join(NOTES_DIR, 'notes.jsonl');
-const FILES_DIR = path.join(HOME_DIR, 'Desktop', 'Notas FerStark');
+// No se ata a CCM_APP_NAME a propósito: el nombre de marca (J.A.R.V.I.S,
+// FerStark, lo que sea) y el nombre "amigable" de esta carpeta ya eran
+// strings distintos antes de esto (J.A.R.V.I.S/Jarvis) — atarlos movería
+// la carpeta cada vez que alguien cambie su nombre de marca, perdiendo el
+// rastro de las notas ya guardadas ahí.
+const FILES_DIR = path.join(HOME_DIR, 'Desktop', 'Notas Jarvis');
 
 // Agrega una entrada al final del jsonl. No genera id/ts — el caller (server.js)
 // ya los arma, así este módulo queda testeable con objetos arbitrarios.
