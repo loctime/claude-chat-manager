@@ -157,32 +157,36 @@
     <form method="dialog" id="settings-form">
       <h2>Configuración</h2>
 
-      <label class="settings-toggle">
-        <input type="checkbox" id="cfg-show-tools">
-        <span>Mostrar procesos del agente (Read, Bash, Edit…)</span>
-      </label>
+      <div class="settings-grid">
+        <label>Nombre
+          <input type="text" id="cfg-app-name" placeholder="J.A.R.V.I.S" maxlength="40" autocomplete="off">
+        </label>
+        <label class="settings-toggle">
+          <input type="checkbox" id="cfg-show-tools">
+          <span>Mostrar procesos del agente (Read, Bash, Edit…)</span>
+        </label>
 
-      <label>Voz del agente
-        <select id="cfg-voice-assistant"><option value="">Default del sistema</option></select>
-      </label>
+        <label>Voz del agente
+          <select id="cfg-voice-assistant"><option value="">Default del sistema</option></select>
+        </label>
+        <label>Voz propia
+          <select id="cfg-voice-user"><option value="">Default del sistema</option></select>
+        </label>
 
-      <label>Voz propia
-        <select id="cfg-voice-user"><option value="">Default del sistema</option></select>
-      </label>
+        <label>Tipografía de los mensajes
+          <select id="cfg-font-family"></select>
+        </label>
+        <label>Tamaño de letra
+          <select id="cfg-font-size">
+            <option value="sm">Chico</option>
+            <option value="">Normal</option>
+            <option value="lg">Grande</option>
+            <option value="xl">Muy grande</option>
+          </select>
+        </label>
+      </div>
 
-      <label>Tipografía de los mensajes
-        <select id="cfg-font-family"></select>
-      </label>
-
-      <label>Tamaño de letra
-        <select id="cfg-font-size">
-          <option value="sm">Chico</option>
-          <option value="">Normal</option>
-          <option value="lg">Grande</option>
-          <option value="xl">Muy grande</option>
-        </select>
-      </label>
-
+      <div class="settings-section-label">Colores</div>
       <div class="settings-colors">
         <label>Acento
           <input type="color" id="cfg-color-accent">

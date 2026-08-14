@@ -2742,6 +2742,7 @@ function readComputedColor(varName) {
 }
 
 function openSettings() {
+  $('cfg-app-name').value = APP_NAME;
   $('cfg-show-tools').checked = settings.showTools;
   $('cfg-voice-assistant').value = settings.voiceAssistant;
   $('cfg-voice-user').value = settings.voiceUser;
@@ -2754,6 +2755,27 @@ function openSettings() {
 }
 
 $('settings-btn').onclick = openSettings;
+
+// Nombre: no es localStorage como el resto de esta pantalla — vive en el
+// server (~/.ccm-config.json), así que el título/manifest de la PWA sale
+// igual para cualquier dispositivo que entre a esta misma instancia. Guarda
+// al perder foco (blur/Enter), mismo patrón que el rename de conversación.
+$('cfg-app-name').onchange = async e => {
+  const name = e.target.value.trim();
+  try {
+    const { appName } = await api('/config', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appName: name }),
+    });
+    APP_NAME = appName;
+    e.target.value = appName;
+    updateGlobalBusyIndicator();
+    toast('Nombre guardado — recargá para verlo en el título de la pestaña y reinstalá la PWA para el ícono/nombre de app instalada', 'info', 5000);
+  } catch (err) {
+    toast('No se pudo guardar el nombre: ' + err.message);
+  }
+};
 
 $('cfg-show-tools').onchange = e => {
   settings.showTools = e.target.checked;

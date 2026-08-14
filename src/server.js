@@ -9,6 +9,7 @@ const archiver = require('archiver');
 const scanner = require('./scanner');
 const notes = require('./notes');
 const meta = require('./meta');
+const config = require('./config');
 const { Runner } = require('./runner');
 const { CLAUDE_CMD } = require('./claude-cmd');
 
@@ -34,10 +35,14 @@ function magickArgs(args) {
 const HOST = process.env.HOST || '127.0.0.1';
 const PORT = Number(process.env.PORT || 3777);
 const ACCESS_PIN = process.env.ACCESS_PIN || '';
-// Nombre mostrado en título/manifest/PWA/toasts. Cada instancia (Diego,
-// Fernando, quien sea) lo setea con su propio env var — el código fuente es
-// el mismo para todos, no hay que hardcodear un nombre por rama/commit.
-const APP_NAME = process.env.CCM_APP_NAME || 'J.A.R.V.I.S';
+// Nombre mostrado en título/manifest/PWA/toasts. Prioridad: lo guardado desde
+// la pantalla de Configuración (~/.ccm-config.json) > env var CCM_APP_NAME >
+// default. Se lee del archivo en cada request (no una constante al boot) para
+// que guardar desde la UI aplique sin reiniciar el server.
+function getAppName() {
+  const name = (config.load().appName || '').trim();
+  return name || process.env.CCM_APP_NAME || 'J.A.R.V.I.S';
+}
 
 const HOME_DIR = process.env.HOME || process.env.USERPROFILE || os.homedir();
 
@@ -125,7 +130,7 @@ app.get('/api/accounts', (req, res) => {
     otherLocalUrl: OTHER_LOCAL_URL,
     otherPublicUrl: OTHER_PUBLIC_URL,
     otherLabel: OTHER_LABEL,
-    appName: APP_NAME,
+    appName: getAppName(),
   });
 });
 
@@ -134,6 +139,18 @@ app.post('/api/accounts/switch', (req, res) => {
   if (!ACCOUNTS.includes(account)) return res.status(400).json({ error: 'cuenta no disponible' });
   activeAccount = account;
   res.json({ ok: true, active: activeAccount });
+});
+
+// ── Config de instancia (hoy: solo el nombre) — pantalla de Configuración ──
+app.patch('/api/config', (req, res) => {
+  const cfg = config.load();
+  if ('appName' in req.body) {
+    const name = (req.body.appName || '').trim();
+    if (name) cfg.appName = name;
+    else delete cfg.appName; // vacío = volver al env var / default
+  }
+  config.save(cfg);
+  res.json({ ok: true, appName: getAppName() });
 });
 
 // index.html y manifest.json tienen un placeholder {{APP_NAME}} — se sirven
@@ -149,7 +166,7 @@ function serveTemplated(filePath, contentType) {
       return res.status(404).end();
     }
     res.set('Cache-Control', 'no-store');
-    res.type(contentType).send(body.replaceAll('{{APP_NAME}}', APP_NAME));
+    res.type(contentType).send(body.replaceAll('{{APP_NAME}}', getAppName()));
   };
 }
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
