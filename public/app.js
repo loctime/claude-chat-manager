@@ -8,9 +8,18 @@ let archivedTotal = 0;
 let archivedTreeLimit = 100;
 let archivedTreeHasMore = false;
 let archivedTreeTotal = 0;
-let activePane = 0; // 0=chats 1=archived 2=notas
+let activePane = 0; // 0=chats 1=archived 2=notas 3=mail
 let notesPaneLoaded = false;
 let notesData = [];
+let mailPaneLoaded = false;
+let mailData = { updatedAt: null, scanning: false, items: [] };
+let mailPollTimer = null;
+let expandedMailId = null; // id del mail cuya tarjeta está expandida (o null si ninguna)
+let mailThreadPollTimer = null; // poll del hilo draft/send del mail expandido (uno solo a la vez)
+// Puramente local, para saber qué texto de "cargando" mostrar (Generando…
+// vs Enviando…) — no hace falta que el backend lo exponga, alcanza con
+// recordar qué endpoint disparamos nosotros mismos.
+let mailThreadJobKind = new Map(); // id → 'draft'|'send'
 
 function noteTimeLabel(ts) {
   return new Date(ts).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
@@ -119,6 +128,357 @@ async function safeLoadNotes() {
   catch { /* noop */ }
   finally { notesPolling = false; }
 }
+
+// ── Mail (panel Kanban) ──
+const MAIL_ACCOUNT_LABEL = { ferzepsas: 'ferzepsas', maximia: 'maximia' };
+const MAIL_STATES = ['pendiente', 'respondido', 'archivado'];
+const MAIL_NEXT_STATE = { pendiente: 'respondido', respondido: 'archivado', archivado: 'pendiente' };
+
+function mailRelativeTime(iso) {
+  const d = new Date(iso);
+  if (!iso || isNaN(d.getTime())) return '';
+  const diffMin = Math.round((Date.now() - d.getTime()) / 60000);
+  if (diffMin < 1) return 'ahora';
+  if (diffMin < 60) return `hace ${diffMin} min`;
+  const diffH = Math.round(diffMin / 60);
+  if (diffH < 24) return `hace ${diffH} h`;
+  const diffD = Math.round(diffH / 24);
+  if (diffD < 7) return `hace ${diffD} d`;
+  return d.toLocaleDateString('es', { day: '2-digit', month: '2-digit', year: '2-digit' });
+}
+
+function renderMailCard(item) {
+  const card = document.createElement('div');
+  card.className = 'mail-card';
+
+  // Todo lo de acá adentro es clickeable y expande/colapsa la tarjeta in situ
+  // (el bloque de acciones queda afuera para no disparar el toggle sin querer
+  // al tocar el select o el botón de responder).
+  const main = document.createElement('div');
+  main.className = 'mail-card-main';
+  main.onclick = () => toggleMailExpand(item);
+
+  const top = document.createElement('div');
+  top.className = 'mail-card-top';
+  const accBadge = document.createElement('span');
+  accBadge.className = 'mail-badge account-' + item.account;
+  accBadge.textContent = MAIL_ACCOUNT_LABEL[item.account] || item.account;
+  top.appendChild(accBadge);
+  if (item.project) {
+    const projBadge = document.createElement('span');
+    projBadge.className = 'mail-badge-project';
+    projBadge.textContent = item.project;
+    top.appendChild(projBadge);
+  }
+  if (item.urgent) {
+    const urgent = document.createElement('span');
+    urgent.className = 'mail-urgent';
+    urgent.title = 'Urgente';
+    urgent.textContent = '🔴';
+    top.appendChild(urgent);
+  }
+  main.appendChild(top);
+
+  const subject = document.createElement('div');
+  subject.className = 'mail-subject';
+  subject.textContent = item.subject || '(sin asunto)';
+  main.appendChild(subject);
+
+  const from = document.createElement('div');
+  from.className = 'mail-from';
+  from.textContent = item.from || '';
+  main.appendChild(from);
+
+  if (item.summary) {
+    const summary = document.createElement('div');
+    summary.className = 'mail-summary';
+    summary.textContent = item.summary;
+    main.appendChild(summary);
+  }
+
+  const date = document.createElement('div');
+  date.className = 'mail-date';
+  date.textContent = mailRelativeTime(item.receivedAt);
+  main.appendChild(date);
+
+  card.appendChild(main);
+
+  const actions = document.createElement('div');
+  actions.className = 'mail-card-actions';
+
+  const moveSel = document.createElement('select');
+  moveSel.setAttribute('aria-label', 'Mover a');
+  for (const st of MAIL_STATES) {
+    const opt = document.createElement('option');
+    opt.value = st;
+    opt.textContent = st.charAt(0).toUpperCase() + st.slice(1);
+    if (st === item.state) opt.selected = true;
+    moveSel.appendChild(opt);
+  }
+  moveSel.onchange = () => updateMailState(item.id, moveSel.value);
+  actions.appendChild(moveSel);
+
+  const expanded = item.id === expandedMailId;
+  const replyBtn = document.createElement('button');
+  replyBtn.type = 'button';
+  replyBtn.className = 'mail-reply-btn';
+  replyBtn.classList.toggle('active', expanded);
+  replyBtn.textContent = expanded ? 'Cerrar' : 'Responder';
+  replyBtn.onclick = (e) => { e.stopPropagation(); toggleMailExpand(item); };
+  actions.appendChild(replyBtn);
+
+  card.appendChild(actions);
+
+  if (expanded) card.appendChild(buildMailExpandBlock(item));
+  return card;
+}
+
+// ── Tarjeta expandida: mail completo + borrador + confirmar y enviar ──
+
+function mailLoadingLabel(item) {
+  return mailThreadJobKind.get(item.id) === 'send' ? 'Enviando…' : 'Generando…';
+}
+
+function buildMailExpandBlock(item) {
+  const wrap = document.createElement('div');
+  wrap.className = 'mail-expand';
+  wrap.id = 'mail-expand-' + item.id;
+
+  const bodyLabel = document.createElement('div');
+  bodyLabel.className = 'mail-expand-label';
+  bodyLabel.textContent = 'Mail completo';
+  wrap.appendChild(bodyLabel);
+
+  const bodyBox = document.createElement('div');
+  bodyBox.className = 'mail-body-box';
+  bodyBox.textContent = item.body
+    || (item.summary ? `${item.summary}\n\n(este mail se escaneó antes de guardar el texto completo — "Actualizar bandeja" va a traer el cuerpo entero la próxima vez)` : '(sin contenido)');
+  wrap.appendChild(bodyBox);
+
+  if (item.draft) {
+    const draftLabel = document.createElement('div');
+    draftLabel.className = 'mail-expand-label mail-draft-label';
+    draftLabel.textContent = 'Borrador';
+    wrap.appendChild(draftLabel);
+
+    const draftBox = document.createElement('div');
+    draftBox.className = 'mail-draft-box';
+    draftBox.textContent = item.draft;
+    wrap.appendChild(draftBox);
+
+    const confirmBtn = document.createElement('button');
+    confirmBtn.type = 'button';
+    confirmBtn.className = 'mail-confirm-btn';
+    confirmBtn.textContent = '✅ Confirmar y enviar';
+    confirmBtn.disabled = !!item.draftPending;
+    confirmBtn.onclick = () => confirmMailSend(item);
+    wrap.appendChild(confirmBtn);
+  }
+
+  if (item.draftPending) {
+    const pending = document.createElement('div');
+    pending.className = 'mail-pending';
+    pending.textContent = mailLoadingLabel(item);
+    wrap.appendChild(pending);
+  }
+
+  const instrRow = document.createElement('div');
+  instrRow.className = 'mail-instruction-row';
+  const textarea = document.createElement('textarea');
+  textarea.className = 'mail-instruction-input';
+  textarea.rows = 2;
+  textarea.placeholder = '¿Qué querés que le responda? (vacío = borrador genérico)';
+  textarea.disabled = !!item.draftPending;
+  instrRow.appendChild(textarea);
+  const askBtn = document.createElement('button');
+  askBtn.type = 'button';
+  askBtn.className = 'mail-draft-btn';
+  askBtn.textContent = item.draft ? 'Pedir otro borrador' : 'Pedir borrador';
+  askBtn.disabled = !!item.draftPending;
+  askBtn.onclick = () => askMailDraft(item, textarea.value.trim());
+  instrRow.appendChild(askBtn);
+  wrap.appendChild(instrRow);
+
+  if (item.sendResult) {
+    const resultNote = document.createElement('div');
+    resultNote.className = 'mail-send-note';
+    resultNote.textContent = item.sendResult;
+    wrap.appendChild(resultNote);
+  }
+
+  return wrap;
+}
+
+// Reemplaza solo el bloque expandido en el DOM (sin tocar el resto del
+// board) — usado durante el poll de draft/send para no perder scroll ni lo
+// que el usuario esté escribiendo en otras tarjetas.
+function refreshExpandedMailCard(item) {
+  const old = $('mail-expand-' + item.id);
+  if (!old) return;
+  old.replaceWith(buildMailExpandBlock(item));
+}
+
+function stopMailThreadPoll() {
+  if (mailThreadPollTimer) { clearInterval(mailThreadPollTimer); mailThreadPollTimer = null; }
+}
+
+// Expande/colapsa una tarjeta. Solo puede haber un poll de hilo de mail
+// activo a la vez (independiente del poll de escaneo, que sigue su curso
+// aparte), así que cortamos cualquiera en vuelo al cambiar de tarjeta.
+function toggleMailExpand(item) {
+  stopMailThreadPoll();
+  expandedMailId = (expandedMailId === item.id) ? null : item.id;
+  renderMail();
+}
+
+// Poll a GET /api/mail/:id cada ~2.5s hasta que draftPending vuelva a false.
+// Actualiza el item en mailData.items in place y refresca solo la tarjeta
+// expandida — salvo que el estado haya cambiado (p.ej. a "respondido" tras
+// un envío exitoso), en cuyo caso recién ahí redibujamos todo el board para
+// que la tarjeta salte de columna.
+function pollMailThread(id) {
+  stopMailThreadPoll();
+  mailThreadPollTimer = setInterval(async () => {
+    let fresh;
+    try { fresh = await api('/mail/' + encodeURIComponent(id)); }
+    catch { return; } // falla de red puntual: reintenta en el próximo tick
+    const idx = mailData.items.findIndex(i => i.id === id);
+    const prevState = idx >= 0 ? mailData.items[idx].state : fresh.state;
+    if (idx >= 0) mailData.items[idx] = fresh; else mailData.items.push(fresh);
+
+    if (fresh.draftPending) {
+      if (expandedMailId === id) refreshExpandedMailCard(fresh);
+      return;
+    }
+    stopMailThreadPoll();
+    mailThreadJobKind.delete(id);
+    if (fresh.state !== prevState) renderMail();
+    else if (expandedMailId === id) refreshExpandedMailCard(fresh);
+  }, 2500);
+}
+
+// Pide un borrador (primero o siguiente ajuste) para el mail. `item` viene
+// como referencia directa a mailData.items, así que tocar sus campos acá
+// también actualiza la fuente de verdad en memoria.
+async function askMailDraft(item, instruction) {
+  mailThreadJobKind.set(item.id, 'draft');
+  try {
+    await api('/mail/' + encodeURIComponent(item.id) + '/draft', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instruction }),
+    });
+  } catch (err) {
+    toast('No se pudo pedir el borrador: ' + err.message);
+    mailThreadJobKind.delete(item.id);
+    return;
+  }
+  item.draftPending = true;
+  if (expandedMailId === item.id) refreshExpandedMailCard(item);
+  pollMailThread(item.id);
+}
+
+// Manda el draft ya guardado tal cual, como reply al mail original — SOLO se
+// llama desde este botón explícito, nunca por texto libre. El confirm()
+// nativo es un freno extra además del propio click en el botón.
+async function confirmMailSend(item) {
+  if (!confirm('¿Confirmás el envío de este mail?')) return;
+  mailThreadJobKind.set(item.id, 'send');
+  try {
+    await api('/mail/' + encodeURIComponent(item.id) + '/send', { method: 'POST' });
+  } catch (err) {
+    toast('No se pudo mandar el mail: ' + err.message);
+    mailThreadJobKind.delete(item.id);
+    return;
+  }
+  item.draftPending = true;
+  if (expandedMailId === item.id) refreshExpandedMailCard(item);
+  pollMailThread(item.id);
+}
+
+function renderMail() {
+  const byState = { pendiente: [], respondido: [], archivado: [] };
+  for (const item of mailData.items) {
+    (byState[item.state] || byState.pendiente).push(item);
+  }
+  const sortFn = (a, b) => {
+    if (!!b.urgent !== !!a.urgent) return (b.urgent ? 1 : 0) - (a.urgent ? 1 : 0);
+    return new Date(b.receivedAt || 0) - new Date(a.receivedAt || 0);
+  };
+  for (const state of MAIL_STATES) {
+    const list = byState[state].sort(sortFn);
+    const wrap = $('mail-cards-' + state);
+    wrap.innerHTML = '';
+    if (!list.length) {
+      const empty = document.createElement('div');
+      empty.className = 'mail-empty';
+      empty.textContent = 'Sin mails';
+      wrap.appendChild(empty);
+    } else {
+      for (const item of list) wrap.appendChild(renderMailCard(item));
+    }
+    $('mail-count-' + state).textContent = String(list.length);
+  }
+  const updated = $('mail-updated');
+  updated.classList.toggle('scanning', !!mailData.scanning);
+  updated.textContent = mailData.scanning
+    ? 'Escaneando…'
+    : (mailData.updatedAt ? 'Actualizado ' + mailRelativeTime(mailData.updatedAt) : 'Sin escanear todavía');
+  $('mail-scan-btn').disabled = !!mailData.scanning;
+}
+
+async function loadMail() {
+  mailData = await api('/mail');
+  renderMail();
+}
+
+// Actualiza el estado de un mail en el server y, si sale bien, actualiza la
+// copia en memoria y re-renderiza sin recargar todo el panel.
+async function updateMailState(id, state) {
+  try {
+    const updated = await api('/mail/' + encodeURIComponent(id), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state }),
+    });
+    const idx = mailData.items.findIndex(i => i.id === id);
+    if (idx >= 0) mailData.items[idx] = updated;
+    renderMail();
+  } catch (err) {
+    toast('No se pudo actualizar el mail: ' + err.message);
+  }
+}
+
+// Dispara el escaneo y hace polling hasta que scanning vuelva a false y
+// updatedAt haya cambiado. Cuida no dejar más de un poll corriendo si
+// clickean el botón varias veces (mailPollTimer global).
+async function startMailScan() {
+  if (mailPollTimer) return; // ya hay un escaneo/poll en curso
+  const prevUpdatedAt = mailData.updatedAt;
+  try {
+    await api('/mail/scan', { method: 'POST' });
+  } catch (err) {
+    toast('No se pudo iniciar el escaneo: ' + err.message);
+    return;
+  }
+  mailData.scanning = true;
+  renderMail();
+  mailPollTimer = setInterval(async () => {
+    try {
+      const fresh = await api('/mail');
+      if (!fresh.scanning && fresh.updatedAt !== prevUpdatedAt) {
+        clearInterval(mailPollTimer);
+        mailPollTimer = null;
+        mailData = fresh;
+        renderMail();
+        return;
+      }
+      mailData = fresh;
+      renderMail();
+    } catch { /* noop, próximo tick reintenta */ }
+  }, 3500);
+}
+
 let archivedPaneLoaded = false;
 let activeAccount = null;
 const drafts = new Map();
@@ -631,6 +991,16 @@ async function goToPane(index) {
       return;
     }
   }
+  if (index === 3 && !mailPaneLoaded) {
+    try {
+      await loadMail();
+      mailPaneLoaded = true;
+    } catch (err) {
+      toast('No se pudo cargar el mail: ' + err.message);
+      if (myGeneration === paneNavGeneration) paneNavTarget = activePane;
+      return;
+    }
+  }
   if (myGeneration !== paneNavGeneration) return; // otra navegación más nueva ya tomó el control
   activePane = index;
   $('tree-viewport-inner').dataset.pane = String(index);
@@ -650,6 +1020,8 @@ document.querySelectorAll('.pane-tab').forEach(btn => {
   btn.onclick = () => goToPane(Number(btn.dataset.pane));
 });
 $('notes-back').onclick = () => goToPane(0);
+$('mail-back').onclick = () => goToPane(0);
+$('mail-scan-btn').onclick = () => startMailScan();
 
 // ── Indicador global de "procesando" (icono ping + título + badge de la app instalada) ──
 let globalBusy = false;
@@ -2520,7 +2892,7 @@ function paneSwipeStart(clientX, clientY) {
   return true;
 }
 
-const PANE_COUNT = 3;
+const PANE_COUNT = 4;
 
 function paneSwipeMove(clientX, clientY) {
   if (!paneDragging) return false;

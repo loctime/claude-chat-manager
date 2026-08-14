@@ -8,6 +8,7 @@ const multer = require('multer');
 const archiver = require('archiver');
 const scanner = require('./scanner');
 const notes = require('./notes');
+const mail = require('./mail');
 const meta = require('./meta');
 const { Runner } = require('./runner');
 const { CLAUDE_CMD } = require('./claude-cmd');
@@ -201,6 +202,15 @@ function broadcast(convId, payload) {
 }
 
 runner.on('event', ({ convId, event, account }) => {
+  // Hilo de conversación de un mail (borrador/envío): no es una conversación
+  // normal, no tiene meta ni SSE propio — solo nos interesa guardar el
+  // sessionId apenas aparece, para poder --resume en el próximo pedido de
+  // borrador y para leer el jsonl cuando el job termine.
+  if (convId.startsWith(MAIL_THREAD_PREFIX)) {
+    const mailId = convId.slice(MAIL_THREAD_PREFIX.length);
+    if (event.session_id) mail.setDraft(mailId, { threadSessionId: event.session_id });
+    return;
+  }
   const sid = event.session_id;
   if (sid) {
     const metaFile = accountMetaFile(account || activeAccount);
@@ -214,6 +224,24 @@ runner.on('event', ({ convId, event, account }) => {
 });
 
 runner.on('status', s => {
+  // Job de escaneo de mail: no tiene conversación real ni SSE que lo escuche,
+  // solo nos interesa apagar el flag "scanning" cuando termina (incluso si
+  // terminó mal — si no, queda trabado en true para siempre). No hace
+  // broadcast ni intenta generar título porque no es una conversación normal.
+  if (s.convId === MAIL_SCAN_CONV_ID) {
+    if (s.status === 'idle') mail.setScanning(false);
+    return;
+  }
+  // Hilo de conversación de un mail (pedido de borrador o envío): al terminar
+  // el job leemos el último mensaje assistant de esa sesión (el CLI no
+  // escribe el resultado a mano en el JSON, lo sacamos del jsonl directo,
+  // igual que hace el resto de la app) y lo guardamos como draft o sendResult
+  // según qué tipo de job era. Tampoco es una conversación normal: nada de
+  // broadcast SSE ni título automático.
+  if (s.convId.startsWith(MAIL_THREAD_PREFIX)) {
+    if (s.status === 'idle') handleMailThreadIdle(s).catch(err => console.error('[mail] error procesando fin de hilo:', err.message));
+    return;
+  }
   broadcast(s.convId, { kind: 'status', ...s });
   if (s.status === 'idle' && s.code === 0) {
     maybeGenerateTitle(s.convId, s.account || activeAccount).catch(() => {});
@@ -640,6 +668,158 @@ app.post('/api/notes/upload', notesUpload.single('file'), (req, res) => {
   notes.append(entry);
   res.status(201).json(entry);
 });
+
+// ── Mail (panel Kanban Pendiente/Respondido/Archivado) ──
+// El escaneo real de las bandejas lo hace un job de Claude Code CLI (mismo
+// mecanismo que un mensaje de chat normal, vía runner), porque solo esa
+// sesión tiene las tools MCP de Gmail/Microsoft 365 — Express no. Se encola
+// con un convId fijo dedicado para que no aparezca en la lista de
+// conversaciones normales del usuario.
+const MAIL_SCAN_CONV_ID = '__mail-scan__';
+const MAIL_VALID_STATES = new Set(['pendiente', 'respondido', 'archivado']);
+// Hilo de conversación por mail (pedido de borrador / envío): un convId
+// dedicado por mail, MAIL_THREAD_PREFIX + item.id, para que --resume vaya
+// acumulando contexto entre "pedí un borrador" → "hacelo más corto" → "mandalo".
+// mailJobKind recuerda si el job en curso de cada hilo es 'draft' o 'send' —
+// puramente en memoria del proceso: si el server se reinicia a mitad de un
+// job se pierde (aceptable para v1, el usuario simplemente vuelve a pedir).
+const MAIL_THREAD_PREFIX = 'mail-thread-';
+const mailJobKind = new Map(); // convId → 'draft'|'send'
+const MAIL_SCAN_PROMPT = `Escaneá la bandeja de entrada de dos cuentas de correo usando las herramientas MCP disponibles:
+1. Gmail de ferzepsas@gmail.com (herramientas mcp__claude_ai_Gmail__*) — buscá no leídos y los últimos 3 días.
+2. Outlook de hys@maximia.com.ar (herramientas mcp__claude_ai_Microsoft_365__*) — buscá no leídos y los últimos 3 días.
+
+Para cada mail relevante (ignorá spam/promociones/notificaciones automáticas obvias) generá:
+- from: remitente (nombre o email)
+- subject: asunto
+- summary: resumen de UNA línea en español de qué pide o informa
+- body: el cuerpo completo del mail en texto plano y legible (sin HTML ni firmas/disclaimers largos), truncado a los primeros 4000 caracteres si es muy largo
+- project: a qué proyecto de FERZEP/Maximia/ControlApps pertenece si es identificable (o "" si no aplica), usando como referencia las carpetas descriptas en /mnt/c/Users/Fernando/Desktop/claude/CLAUDE.md
+- urgent: true si pide una acción con plazo concreto o parece importante, false si no
+- receivedAt: fecha ISO del mail
+- messageId y threadId: los que corresponda según la cuenta (para Gmail: id de mensaje/thread; para Outlook: id del mensaje)
+- account: "ferzepsas" o "maximia" según corresponda
+- state: siempre "pendiente" (default)
+- id: un string único, por ejemplo \`\${account}-\${messageId}\`
+
+NO envíes ni respondas ningún mail, esto es solo lectura y clasificación.
+
+Escribí el resultado completo con la tool Write, sobrescribiendo el archivo ~/.ccm-notes/mail.json (creá el directorio si no existe) con este JSON exacto:
+{"updatedAt": "<fecha-hora ISO actual>", "scanning": false, "items": [ ... ] }
+
+No respondas con texto largo de más, tu tarea termina cuando el archivo quedó escrito correctamente.`;
+
+app.get('/api/mail', (req, res) => {
+  res.json(mail.read());
+});
+
+app.post('/api/mail/scan', (req, res) => {
+  if (runner.isBusy(MAIL_SCAN_CONV_ID)) return res.status(409).json({ error: 'ya hay un escaneo en curso' });
+  mail.setScanning(true);
+  const cwd = process.env.CCM_DEFAULT_PROJECT_DIR || accountHomeDir(activeAccount);
+  runner.send({ convId: MAIL_SCAN_CONV_ID, text: MAIL_SCAN_PROMPT, account: activeAccount, cwd });
+  res.json({ ok: true, started: true });
+});
+
+app.patch('/api/mail/:id', (req, res) => {
+  const state = req.body.state;
+  if (!MAIL_VALID_STATES.has(state)) return res.status(400).json({ error: 'estado inválido' });
+  const item = mail.setState(req.params.id, state);
+  if (!item) return res.status(404).json({ error: 'mail no encontrado' });
+  res.json(item);
+});
+
+// Un solo item — lo usa el frontend para pollear la tarjeta expandida sin
+// re-renderizar las otras 25 mientras espera un draft/send.
+app.get('/api/mail/:id', (req, res) => {
+  const item = mail.read().items.find(i => i.id === req.params.id);
+  if (!item) return res.status(404).json({ error: 'mail no encontrado' });
+  res.json(item);
+});
+
+// Pide un borrador (o un ajuste sobre el borrador existente) para un mail.
+// Primer pedido: arma el prompt con todo el contexto (cuenta, remitente,
+// asunto, cuerpo completo). Pedidos siguientes: --resume de la misma sesión,
+// solo manda la instrucción nueva. Nunca manda nada — solo redacta texto.
+app.post('/api/mail/:id/draft', (req, res) => {
+  const item = mail.read().items.find(i => i.id === req.params.id);
+  if (!item) return res.status(404).json({ error: 'mail no encontrado' });
+  const convId = MAIL_THREAD_PREFIX + item.id;
+  if (runner.isBusy(convId)) return res.status(409).json({ error: 'ya hay un pedido en curso para este mail' });
+
+  const instruction = (req.body && req.body.instruction) || '';
+  const RULE = 'NO envíes nada todavía, solo redactá el texto de la respuesta en español, directo, sin explicaciones tuyas alrededor — tu mensaje final tiene que ser SOLO el texto del mail de respuesta, listo para mandar tal cual, nada de "Acá tenés el borrador:" ni comentarios editoriales.';
+  let prompt;
+  if (!item.threadSessionId) {
+    const label = item.account === 'maximia' ? 'maximia (hys@maximia.com.ar, Outlook)' : 'ferzepsas (ferzepsas@gmail.com, Gmail)';
+    const body = item.body || item.summary || '(sin contenido)';
+    prompt = `Vas a redactar una respuesta a este mail.\n\nCuenta: ${label}\nDe: ${item.from}\nAsunto: "${item.subject}"\nFecha: ${item.receivedAt || ''}\n\nCuerpo del mail:\n${body}\n\n${instruction || 'Armá un primer borrador razonable de respuesta.'}\n\n${RULE}`;
+  } else {
+    prompt = `${instruction || 'Armá un primer borrador razonable de respuesta.'}\n\n${RULE}`;
+  }
+
+  mail.setDraft(item.id, { draftPending: true });
+  mailJobKind.set(convId, 'draft');
+  const cwd = process.env.CCM_DEFAULT_PROJECT_DIR || accountHomeDir(activeAccount);
+  runner.send({ convId, text: prompt, sessionId: item.threadSessionId || undefined, account: activeAccount, cwd });
+  res.json({ ok: true, started: true });
+});
+
+// Manda el draft ya guardado tal cual (sin reescribirlo) como reply al mail
+// original. Solo se llama desde el botón explícito "Confirmar y enviar" —
+// nunca por texto libre del usuario.
+app.post('/api/mail/:id/send', (req, res) => {
+  const item = mail.read().items.find(i => i.id === req.params.id);
+  if (!item) return res.status(404).json({ error: 'mail no encontrado' });
+  if (!item.draft) return res.status(400).json({ error: 'no hay borrador para mandar' });
+  if (!item.threadSessionId) return res.status(400).json({ error: 'todavía no se generó una conversación con Claude sobre este mail' });
+  const convId = MAIL_THREAD_PREFIX + item.id;
+  if (runner.isBusy(convId)) return res.status(409).json({ error: 'ya hay un pedido en curso para este mail' });
+
+  const prompt = `Mandá exactamente este texto como respuesta al mail original (cuenta ${item.account}, threadId/messageId: ${item.threadId}/${item.messageId}), usando la tool de responder/enviar que corresponda (Gmail si es ferzepsas, Outlook si es maximia). No cambies ni una palabra del texto. Después de mandarlo confirmá en una sola línea qué pasó.\n\n---\n${item.draft}\n---`;
+
+  mail.setDraft(item.id, { draftPending: true });
+  mailJobKind.set(convId, 'send');
+  const cwd = process.env.CCM_DEFAULT_PROJECT_DIR || accountHomeDir(activeAccount);
+  runner.send({ convId, text: prompt, sessionId: item.threadSessionId, account: activeAccount, cwd });
+  res.json({ ok: true, started: true });
+});
+
+// Al terminar un job de hilo de mail (draft o send) leemos el último mensaje
+// assistant directo del jsonl de la sesión — el job no escribe el resultado a
+// mano en mail.json, así que lo sacamos nosotros del historial ya persistido
+// por el CLI (mismo mecanismo que usa el resto de la app para leer sesiones).
+async function handleMailThreadIdle(s) {
+  const mailId = s.convId.slice(MAIL_THREAD_PREFIX.length);
+  const kind = mailJobKind.get(s.convId);
+  mailJobKind.delete(s.convId);
+
+  const item = mail.read().items.find(i => i.id === mailId);
+  if (!item || !item.threadSessionId) {
+    mail.setDraft(mailId, { draftPending: false, sendResult: 'No se encontró la sesión del hilo — revisá manualmente.' });
+    return;
+  }
+
+  const file = scanner.findSessionFile(item.threadSessionId, accountProjectsDir(s.account || activeAccount));
+  let text = '(no se pudo leer la respuesta — revisá manualmente)';
+  if (file) {
+    const assistantMsgs = scanner.getMessagesIncremental(file).filter(m => m.role === 'assistant');
+    const last = assistantMsgs[assistantMsgs.length - 1];
+    if (last && last.text) text = last.text;
+  }
+
+  if (kind === 'send') {
+    mail.setDraft(mailId, { draftPending: false, sendResult: text, sentAt: new Date().toISOString() });
+    // Solo pasa a "respondido" si el proceso terminó bien — si terminó con
+    // error lo dejamos en "pendiente" para que el usuario lo note y reintente,
+    // nunca lo damos por mandado sin confirmación real.
+    if (s.code === 0) mail.setState(mailId, 'respondido');
+  } else {
+    // kind === 'draft' (o se perdió el Map por un reinicio a mitad de job:
+    // ante la duda tratamos como draft, nunca marcamos enviado sin certeza).
+    mail.setDraft(mailId, { draft: text, draftPending: false });
+  }
+}
 
 const DEFAULT_TREE_LIMIT = 100;
 const MAX_TREE_LIMIT = 500;
