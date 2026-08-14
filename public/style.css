@@ -270,7 +270,7 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
   z-index: 30;
 }
 
-#chat-header {
+#chat-header, #notebook-header {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -278,7 +278,7 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
   background: var(--header);
   border-bottom: 1px solid var(--border);
 }
-#back-btn {
+#back-btn, #notebook-back-btn {
   display: none; /* solo mobile */
   background: none; border: none; color: var(--text2); cursor: pointer;
   width: 36px; height: 36px; border-radius: 50%;
@@ -299,13 +299,13 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
   #sidebar-toggle-btn { display: flex; }
 }
 
-#conv-info { flex: 1; min-width: 0; }
-#conv-title {
+#conv-info, #notebook-info { flex: 1; min-width: 0; }
+#conv-title, #notebook-title {
   display: block; font-size: 15px; font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   cursor: pointer;
 }
-#conv-title[contenteditable] { outline: 1px dashed var(--accent); border-radius: 3px; }
+#conv-title[contenteditable], #notebook-title[contenteditable] { outline: 1px dashed var(--accent); border-radius: 3px; }
 #conv-status { font-size: 12px; color: var(--accent); display: block; min-height: 16px; }
 
 #model-select {
@@ -973,7 +973,7 @@ body.hide-tools details.tool { display: none !important; }
     transition: transform .25s ease;
   }
   #panel-chat.open { transform: translateX(0); }
-  #back-btn { display: flex; }
+  #back-btn, #notebook-back-btn { display: flex; }
 
   .msg { max-width: 85%; }
   dialog { min-width: 0; width: calc(100vw - 32px); }
@@ -1250,3 +1250,16 @@ body.hide-tools details.tool { display: none !important; }
 }
 .note-copy-btn:hover { color: var(--text); }
 .note-time { position: absolute; right: 10px; bottom: 4px; font-size: 10px; color: var(--text2); opacity: .8; }
+
+/* ── Notas: lista y detalle de libretas ── */
+#notebook-view { flex: 1; min-height: 0; }
+#notebook-list { flex: 1; overflow-y: auto; }
+#notebook-list::-webkit-scrollbar { width: 4px; }
+#notebook-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.notebook-new-btn {
+  background: none; border: none; color: var(--text2); cursor: pointer;
+  width: 30px; height: 30px; border-radius: 50%; font-size: 18px; line-height: 1;
+  flex: none; display: flex; align-items: center; justify-content: center;
+}
+.notebook-new-btn:hover { background: var(--border); color: var(--text); }
+.notes-empty { padding: 24px 12px; text-align: center; color: var(--text2); font-size: 13px; }
