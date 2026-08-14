@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>J.A.R.V.I.S</title>
+  <title>{{APP_NAME}}</title>
   <meta name="theme-color" content="#202c33">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="J.A.R.V.I.S">
+  <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
   <link rel="stylesheet" href="style.css?v=34">
@@ -17,7 +17,7 @@
     <!-- Panel lista -->
     <div id="panel-list">
       <header id="list-header">
-        <h1><span id="global-busy-dot" class="ping-dot" title="Procesando…"><span class="ring"></span><span class="core"></span></span>J.A.R.V.I.S</h1>
+        <h1><span id="global-busy-dot" class="ping-dot" title="Procesando…"><span class="ring"></span><span class="core"></span></span>{{APP_NAME}}</h1>
         <select id="account-select" title="Cuenta activa" aria-label="Cuenta activa"></select>
         <a id="account-switch" title="Ir a la otra cuenta" hidden></a>
         <button id="search-btn" title="Buscar (Ctrl+K)" aria-label="Buscar">
@@ -150,26 +150,6 @@
   <dialog id="new-dialog">
     <form method="dialog" id="new-form">
       <h2>Nueva conversación</h2>
-      <label>Proyecto
-        <select id="project-select"></select>
-      </label>
-      <label>Otra carpeta
-        <input id="project-custom" type="text" placeholder="/home/loctime/Proyectos/…">
-      </label>
-      <label>Proyecto en VPS
-        <select id="vps-project">
-          <option value="">— ninguno —</option>
-          <option value="ventamat">ventamat</option>
-          <option value="ventamat-panel">ventamat-panel</option>
-          <option value="controlapps-clientes">controlapps-clientes</option>
-          <option value="coopermat-api">coopermat-api</option>
-          <option value="controlbun">controlbun</option>
-          <option value="cazador">cazador</option>
-        </select>
-      </label>
-      <label>Otro proyecto VPS
-        <input id="vps-project-custom" type="text" placeholder="nombre-del-proyecto">
-      </label>
       <label>Modelo
         <select id="new-model">
           <option value="">Default</option>
@@ -191,32 +171,36 @@
     <form method="dialog" id="settings-form">
       <h2>Configuración</h2>
 
-      <label class="settings-toggle">
-        <input type="checkbox" id="cfg-show-tools">
-        <span>Mostrar procesos del agente (Read, Bash, Edit…)</span>
-      </label>
+      <div class="settings-grid">
+        <label>Nombre
+          <input type="text" id="cfg-app-name" placeholder="J.A.R.V.I.S" maxlength="40" autocomplete="off">
+        </label>
+        <label class="settings-toggle">
+          <input type="checkbox" id="cfg-show-tools">
+          <span>Mostrar procesos del agente (Read, Bash, Edit…)</span>
+        </label>
 
-      <label>Voz del agente
-        <select id="cfg-voice-assistant"><option value="">Default del sistema</option></select>
-      </label>
+        <label>Voz del agente
+          <select id="cfg-voice-assistant"><option value="">Default del sistema</option></select>
+        </label>
+        <label>Voz propia
+          <select id="cfg-voice-user"><option value="">Default del sistema</option></select>
+        </label>
 
-      <label>Voz propia
-        <select id="cfg-voice-user"><option value="">Default del sistema</option></select>
-      </label>
+        <label>Tipografía de los mensajes
+          <select id="cfg-font-family"></select>
+        </label>
+        <label>Tamaño de letra
+          <select id="cfg-font-size">
+            <option value="sm">Chico</option>
+            <option value="">Normal</option>
+            <option value="lg">Grande</option>
+            <option value="xl">Muy grande</option>
+          </select>
+        </label>
+      </div>
 
-      <label>Tipografía de los mensajes
-        <select id="cfg-font-family"></select>
-      </label>
-
-      <label>Tamaño de letra
-        <select id="cfg-font-size">
-          <option value="sm">Chico</option>
-          <option value="">Normal</option>
-          <option value="lg">Grande</option>
-          <option value="xl">Muy grande</option>
-        </select>
-      </label>
-
+      <div class="settings-section-label">Colores</div>
       <div class="settings-colors">
         <label>Acento
           <input type="color" id="cfg-color-accent">
@@ -238,7 +222,7 @@
 
   <!-- Banner instalar PWA -->
   <div id="install-bar" hidden>
-    <span id="install-text">Instalá J.A.R.V.I.S como app</span>
+    <span id="install-text">Instalá {{APP_NAME}} como app</span>
     <button id="install-btn">Instalar</button>
     <button id="install-dismiss" aria-label="Cerrar">✕</button>
   </div>

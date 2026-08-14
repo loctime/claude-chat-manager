@@ -1,6 +1,6 @@
 {
-  "name": "J.A.R.V.I.S",
-  "short_name": "J.A.R.V.I.S",
+  "name": "{{APP_NAME}}",
+  "short_name": "{{APP_NAME}}",
   "description": "Claude Code chat manager",
   "start_url": "/",
   "display": "standalone",

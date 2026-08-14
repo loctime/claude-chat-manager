@@ -7,6 +7,11 @@ const HOME_DIR = process.env.HOME || process.env.USERPROFILE || os.homedir();
 const NOTES_DIR = path.join(HOME_DIR, '.ccm-notes');
 const NOTEBOOKS_FILE = path.join(NOTES_DIR, 'notebooks.json');
 const NOTEBOOKS_DIR = path.join(NOTES_DIR, 'notebooks');
+// No se ata a CCM_APP_NAME a propósito: el nombre de marca (J.A.R.V.I.S,
+// FerStark, lo que sea) y el nombre "amigable" de esta carpeta ya eran
+// strings distintos antes de esto (J.A.R.V.I.S/Jarvis) — atarlos movería
+// la carpeta cada vez que alguien cambie su nombre de marca, perdiendo el
+// rastro de las notas ya guardadas ahí.
 const FILES_DIR = path.join(HOME_DIR, 'Desktop', 'Notas Jarvis');
 
 // Nombre por default de una libreta recién creada, y su patrón de detección

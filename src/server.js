@@ -5,13 +5,25 @@ const fs = require('fs');
 const os = require('os');
 const { execFile, execFileSync, spawn } = require('child_process');
 const multer = require('multer');
+const archiver = require('archiver');
 const scanner = require('./scanner');
 const notes = require('./notes');
 const meta = require('./meta');
+const config = require('./config');
 const { Runner } = require('./runner');
 const { CLAUDE_CMD } = require('./claude-cmd');
 
 const IS_WIN = process.platform === 'win32';
+// WSL: Linux corriendo dentro de Windows (kernel expone "microsoft" en
+// /proc/version). Con interop habilitado (default) se puede invocar
+// explorer.exe directo desde acá — lo usamos para que "abrir en la PC"
+// funcione también cuando Jarvis corre dentro de WSL, no solo en Windows
+// nativo (ver /api/reveal más abajo).
+const IS_WSL = !IS_WIN && (() => {
+  try {
+    return /microsoft/i.test(fs.readFileSync('/proc/version', 'utf8'));
+  } catch { return false; }
+})();
 // En Windows ImageMagick 7 se llama 'magick'; en Linux/Mac es 'convert'
 const MAGICK_CMD = IS_WIN ? 'magick' : 'convert';
 // args para magick en Windows: magick [convert] input ... output
@@ -23,6 +35,14 @@ function magickArgs(args) {
 const HOST = process.env.HOST || '127.0.0.1';
 const PORT = Number(process.env.PORT || 3777);
 const ACCESS_PIN = process.env.ACCESS_PIN || '';
+// Nombre mostrado en título/manifest/PWA/toasts. Prioridad: lo guardado desde
+// la pantalla de Configuración (~/.ccm-config.json) > env var CCM_APP_NAME >
+// default. Se lee del archivo en cada request (no una constante al boot) para
+// que guardar desde la UI aplique sin reiniciar el server.
+function getAppName() {
+  const name = (config.load().appName || '').trim();
+  return name || process.env.CCM_APP_NAME || 'J.A.R.V.I.S';
+}
 
 const HOME_DIR = process.env.HOME || process.env.USERPROFILE || os.homedir();
 
@@ -110,6 +130,7 @@ app.get('/api/accounts', (req, res) => {
     otherLocalUrl: OTHER_LOCAL_URL,
     otherPublicUrl: OTHER_PUBLIC_URL,
     otherLabel: OTHER_LABEL,
+    appName: getAppName(),
   });
 });
 
@@ -120,8 +141,41 @@ app.post('/api/accounts/switch', (req, res) => {
   res.json({ ok: true, active: activeAccount });
 });
 
+// ── Config de instancia (hoy: solo el nombre) — pantalla de Configuración ──
+app.patch('/api/config', (req, res) => {
+  const cfg = config.load();
+  if ('appName' in req.body) {
+    const name = (req.body.appName || '').trim();
+    if (name) cfg.appName = name;
+    else delete cfg.appName; // vacío = volver al env var / default
+  }
+  config.save(cfg);
+  res.json({ ok: true, appName: getAppName() });
+});
+
+// index.html y manifest.json tienen un placeholder {{APP_NAME}} — se sirven
+// acá con el reemplazo hecho, ANTES del express.static de abajo (si no, este
+// último los serviría primero tal cual, con el placeholder crudo sin
+// reemplazar). Reemplazo global por si el mismo archivo lo usa más de una vez.
+function serveTemplated(filePath, contentType) {
+  return (req, res) => {
+    let body;
+    try {
+      body = fs.readFileSync(filePath, 'utf8');
+    } catch {
+      return res.status(404).end();
+    }
+    res.set('Cache-Control', 'no-store');
+    res.type(contentType).send(body.replaceAll('{{APP_NAME}}', getAppName()));
+  };
+}
+const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+app.get('/', serveTemplated(path.join(PUBLIC_DIR, 'index.html'), 'html'));
+app.get('/index.html', serveTemplated(path.join(PUBLIC_DIR, 'index.html'), 'html'));
+app.get('/manifest.json', serveTemplated(path.join(PUBLIC_DIR, 'manifest.json'), 'application/json'));
+
 // index.html y archivos JS/CSS nunca cacheados por el browser
-app.use(express.static(path.join(__dirname, '..', 'public'), {
+app.use(express.static(PUBLIC_DIR, {
   setHeaders(res, filePath) {
     if (filePath.endsWith('.html') || filePath.endsWith('.js') || filePath.endsWith('.css') || filePath.endsWith('manifest.json')) {
       res.setHeader('Cache-Control', 'no-store');
@@ -445,10 +499,145 @@ app.get('/api/thumbnail', (req, res) => {
 app.get('/api/files', (req, res) => {
   const filePath = (req.query.path || '').trim();
   if (!filePath || !path.isAbsolute(filePath)) return res.status(400).json({ error: 'path inválido' });
-  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'archivo no encontrado' });
+  let stat;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    return res.status(404).json({ error: 'archivo no encontrado' });
+  }
+  if (!stat.isFile()) return res.status(400).json({ error: 'no es un archivo (¿es una carpeta?)' });
   const filename = path.basename(filePath);
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  fs.createReadStream(filePath).pipe(res);
+  const stream = fs.createReadStream(filePath);
+  // Sin este listener, cualquier error de lectura (path resultó ser una
+  // carpeta, permisos, disco) tira una excepción no capturada y crashea
+  // todo el proceso de Jarvis — .pipe() no reenvía errores del source.
+  stream.on('error', err => {
+    console.error('[api/files] error leyendo', filePath, err.message);
+    if (!res.headersSent) res.status(500).json({ error: 'error leyendo el archivo' });
+    else res.end();
+  });
+  stream.pipe(res);
+});
+
+// ── "Mostrar en carpeta" — abre el Explorador en la PC donde corre Jarvis ──
+// Windows nativo o WSL (con interop, que llama a explorer.exe igual). El
+// botón que lo dispara se oculta en el cliente salvo que se esté navegando
+// desde 127.0.0.1/localhost, pero eso es un gate de UI, no de seguridad —
+// cualquiera con la cookie ACCESS_PIN puede pegarle a este endpoint igual
+// (mismo modelo de confianza que el resto de la app, que ya puede correr
+// comandos arbitrarios vía Claude).
+app.get('/api/reveal', (req, res) => {
+  if (!IS_WIN && !IS_WSL) return res.status(400).json({ error: 'solo disponible en Windows/WSL' });
+  const filePath = (req.query.path || '').trim();
+  if (!filePath || !path.isAbsolute(filePath)) return res.status(400).json({ error: 'path inválido' });
+  let stat;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    return res.status(404).json({ error: 'no encontrado' });
+  }
+  // Bajo WSL, filePath viene en formato POSIX (/mnt/c/...) — explorer.exe
+  // no lo entiende, hay que convertirlo a Windows (C:\...) con wslpath.
+  let explorerPath = filePath;
+  if (IS_WSL) {
+    try {
+      explorerPath = execFileSync('wslpath', ['-w', filePath], { encoding: 'utf8' }).trim();
+    } catch {
+      return res.status(500).json({ error: 'no se pudo convertir el path (wslpath)' });
+    }
+  }
+  // 'explorer.exe' a secas depende de que el PATH del proceso incluya el
+  // Windows PATH via interop de WSL — verificado en vivo que NO es
+  // confiable (a veces no está, según cómo se haya lanzado el proceso). En
+  // WSL usamos la ruta absoluta directo; en Windows nativo 'explorer.exe'
+  // ya se resuelve solo desde System32.
+  const explorerBin = IS_WSL ? '/mnt/c/Windows/explorer.exe' : 'explorer.exe';
+  // Si es carpeta la abrimos directo; si es archivo, abrimos su carpeta
+  // contenedora con el archivo ya seleccionado.
+  const args = stat.isDirectory() ? [explorerPath] : ['/select,' + explorerPath];
+  execFile(explorerBin, args, (err) => {
+    // explorer.exe devuelve exit code 1 aunque abra bien (gotcha conocido
+    // de Windows) — err.code es un número en ese caso, no lo tratamos como
+    // error real. Un fallo real de lanzamiento (binario no encontrado,
+    // permisos) trae err.code como string ('ENOENT', 'EACCES', etc.).
+    if (err && typeof err.code !== 'number') {
+      console.error('[api/reveal] no se pudo lanzar', explorerBin, ':', err.message);
+      return res.status(500).json({ error: 'no se pudo abrir el explorador: ' + err.message });
+    }
+    res.json({ ok: true });
+  });
+});
+
+// ── "Descargar carpeta como .zip" ──
+// Complementa a /api/reveal para cuando estás lejos de la PC (celu por el
+// túnel) y "abrir en la PC" no te sirve — permite bajarte la carpeta
+// entera. Arma el zip al vuelo con `archiver` y lo pipea directo a la
+// response, sin escribir nada a disco. A diferencia de /api/reveal, no
+// tiene gate IS_WIN — armar un zip funciona en cualquier plataforma.
+const MAX_ZIP_BYTES = 200 * 1024 * 1024; // 200MB, límite elegido por Diego
+
+// Recorre la carpeta sumando tamaños de archivo y corta apenas se pasa
+// del límite (no sigue bajando en carpetas gigantes) — devuelve true si
+// se pasa. Symlinks se saltean (evita loops); carpetas sin permisos
+// también se saltean en vez de tirar.
+function folderExceedsLimit(dirPath, limitBytes) {
+  let total = 0;
+  const stack = [dirPath];
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+      } else if (entry.isFile()) {
+        try {
+          total += fs.statSync(full).size;
+        } catch {
+          continue;
+        }
+        if (total > limitBytes) return true;
+      }
+    }
+  }
+  return false;
+}
+
+app.get('/api/folder-zip', (req, res) => {
+  const folderPath = (req.query.path || '').trim();
+  if (!folderPath || !path.isAbsolute(folderPath)) return res.status(400).json({ error: 'path inválido' });
+  let stat;
+  try {
+    stat = fs.statSync(folderPath);
+  } catch {
+    return res.status(404).json({ error: 'no encontrado' });
+  }
+  if (!stat.isDirectory()) return res.status(400).json({ error: 'no es una carpeta' });
+
+  if (folderExceedsLimit(folderPath, MAX_ZIP_BYTES)) {
+    return res.status(413).json({ error: 'carpeta muy grande (>200MB) para descargar por acá — abrila desde la PC' });
+  }
+
+  const name = path.basename(folderPath) || 'carpeta';
+  res.setHeader('Content-Disposition', `attachment; filename="${name}.zip"`);
+  res.setHeader('Content-Type', 'application/zip');
+
+  const archive = archiver('zip', { zlib: { level: 6 } });
+  archive.on('error', err => {
+    console.error('[api/folder-zip] error armando zip', folderPath, err.message);
+    if (!res.headersSent) res.status(500).json({ error: 'error armando el zip' });
+    else res.end();
+  });
+  archive.pipe(res);
+  archive.directory(folderPath, false);
+  archive.finalize();
 });
 
 // ── Notas (anotador sin IA, sin sesión de Claude) — múltiples libretas ──
@@ -552,6 +741,7 @@ app.get('/api/tree', (req, res) => {
     return tokens / contextWindowFor(s.lastModel);
   }
   for (const [convId, c] of Object.entries(data.conversations)) {
+    if (c.hidden) continue;
     const s = byId.get(c.currentSessionId) || {};
     convs.push({
       convId,
@@ -780,25 +970,23 @@ app.post('/api/conversations/:id/rewind', (req, res) => {
 });
 
 app.post('/api/conversations', (req, res) => {
-  const { text, model } = req.body;
+  const { model } = req.body;
   const acc = req.body.account || activeAccount;
-  // Sin projectDir explícito: la conversación queda anclada a home (no hay
-  // "carpeta elegida" que mostrar/agrupar, y tampoco hace falta un mensaje
-  // de navegación — ya arranca ahí).
-  const projectDir = req.body.projectDir || accountHomeDir(acc);
+  // No se elige carpeta por conversación — siempre arranca en la carpeta
+  // configurada para esta cuenta (CCM_DEFAULT_PROJECT_DIR si está seteado,
+  // si no accountHomeDir), así lee el CLAUDE.md y la memoria de esa carpeta
+  // igual que una sesión interactiva normal. Antes se podía elegir carpeta
+  // local o "proyecto VPS" por conversación (string "VPS: <nombre>", que no
+  // es una ruta real); se sacó esa opción del todo — evita, entre otras
+  // cosas, terminar pasando ese string como cwd real de un spawn.
+  const projectDir = process.env.CCM_DEFAULT_PROJECT_DIR || accountHomeDir(acc);
   const metaFile = accountMetaFile(acc);
   const convId = crypto.randomUUID();
   const data = meta.load(metaFile);
   data.conversations[convId] = { currentSessionId: null, projectDir, model: model || undefined };
   meta.save(data, metaFile);
-  // cwd = home del usuario (no projectDir): así la sesión arranca leyendo el CLAUDE.md
-  // global y la memoria completa, igual que una sesión interactiva normal. projectDir
-  // queda solo como metadata para agrupar/mostrar en el sidebar y el header.
-  // Si no vino texto (se dejó en home, sin destino explícito) no hace falta
-  // mandar un primer mensaje — la conversación queda vacía, lista para escribir.
-  if ((text || '').trim()) {
-    runner.send({ convId, sessionId: null, cwd: accountHomeDir(acc), text: text.trim(), model: model || undefined, account: acc });
-  }
+  // Conversación arranca vacía, sin mensaje inicial — el usuario escribe el
+  // primero desde el composer como cualquier otro mensaje.
   res.status(201).json({ convId, projectDir });
 });
 
@@ -813,6 +1001,10 @@ app.patch('/api/conversations/:id', (req, res) => {
   if ('model' in req.body) conv.model = (req.body.model || '').trim() || undefined;
   if ('pinned' in req.body) conv.pinned = !!req.body.pinned;
   if ('archived' in req.body) conv.archived = !!req.body.archived;
+  // hidden: saca la conversación de las dos listas (activas y archivadas) sin
+  // tocar el .jsonl real — a diferencia de un borrado, es reversible a mano
+  // editando meta.json si hiciera falta.
+  if ('hidden' in req.body) conv.hidden = !!req.body.hidden;
   meta.save(data, metaFile);
   res.json({ ok: true });
 });

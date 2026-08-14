@@ -218,6 +218,10 @@ async function openNotebook(id, name) {
 let archivedPaneLoaded = false;
 let activeAccount = null;
 const drafts = new Map();
+// Nombre de la app configurado del lado del server (CCM_APP_NAME) — index.html
+// y manifest.json ya vienen con el nombre correcto server-rendered; esto es
+// solo para los pedacitos que arma el JS después (título dinámico, toasts).
+let APP_NAME = 'J.A.R.V.I.S';
 
 const $ = id => document.getElementById(id);
 const messagesEl = $('messages');
@@ -226,8 +230,9 @@ const messagesEl = $('messages');
 async function loadAccounts() {
   try {
     const r = await fetch('/api/accounts');
-    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel } = await r.json();
+    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName } = await r.json();
     activeAccount = active;
+    if (appName) { APP_NAME = appName; updateGlobalBusyIndicator(); }
     // Botón "ir a la otra instancia": elige URL local si estamos en 127.0.0.1/localhost,
     // pública en cualquier otro caso (celu vía Cloudflare tunnel).
     const sw = $('account-switch');
@@ -393,7 +398,13 @@ window.addEventListener('popstate', (e) => {
   if (newDlg.open) { newDlg.close(); history.pushState({ view: 'list-guard' }, ''); return; }
   const ctxMenu = document.querySelector('.ctx-menu');
   if (ctxMenu) { ctxMenu.remove(); history.pushState({ view: 'list-guard' }, ''); return; }
-  // Estamos en la lista raíz: doble click atrás para salir
+  // Si estamos en Archivado o Notas: volver a Chats en vez de ofrecer salir
+  if (activePane !== 0) {
+    goToPane(0);
+    history.pushState({ view: 'list-guard' }, '');
+    return;
+  }
+  // Estamos en la lista raíz de chats: doble click atrás para salir
   const now = Date.now();
   const DOUBLE_CLICK_MS = 600;
   if (now - _lastBackPress < DOUBLE_CLICK_MS) {
@@ -425,7 +436,7 @@ function netError(err) {
   if (!isNetworkError(err)) return err;
   const e = new Error(navigator.onLine === false
     ? 'Sin conexión — no salió'
-    : 'No se pudo contactar a Jarvis (conexión caída o server sin responder)');
+    : `No se pudo contactar a ${APP_NAME} (conexión caída o server sin responder)`);
   e.isNetwork = true;
   return e;
 }
@@ -791,7 +802,7 @@ let globalBusy = false;
 function updateGlobalBusyIndicator() {
   const anyBusy = tree.some(proj => proj.conversations.some(c => c.status && c.status !== 'idle'));
   $('global-busy-dot').classList.toggle('active', anyBusy);
-  document.title = anyBusy ? '● J.A.R.V.I.S' : 'J.A.R.V.I.S';
+  document.title = anyBusy ? `● ${APP_NAME}` : APP_NAME;
   if (anyBusy === globalBusy) return;
   globalBusy = anyBusy;
   if (!('setAppBadge' in navigator)) return;
@@ -959,6 +970,7 @@ function showConvMenu(x, y, conv) {
     <button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button>
     <button data-action="archive">${conv.archived ? '📂 Desarchivar' : '📁 Archivar'}</button>
     <button data-action="compact">🗜️ Compactar</button>
+    <button data-action="hide" class="ctx-danger">🙈 Ocultar</button>
   `;
   document.body.appendChild(menu);
   const rect = menu.getBoundingClientRect();
@@ -985,6 +997,25 @@ function showConvMenu(x, y, conv) {
         toast('Compactando… puede tardar, corre en background', 'info', 4000);
         refreshVisibleTrees();
       } catch (err) { toast('No se pudo compactar: ' + err.message); }
+      return;
+    }
+    if (action === 'hide') {
+      try {
+        await api(`/conversations/${conv.convId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(withAccountBody({ hidden: true })),
+        });
+        if (conv.convId === currentConv) {
+          // No hay una vista "vacía" dedicada — recargar deja la app en el
+          // estado inicial (sin conversación abierta), simple y sin bugs de
+          // estado a mano.
+          location.reload();
+          return;
+        }
+        refreshVisibleTrees();
+        toast('Conversación ocultada', 'info', 2500);
+      } catch (err) { toast('No se pudo ocultar: ' + err.message); }
       return;
     }
     const patch = action === 'pin'
@@ -1271,6 +1302,96 @@ function fileIcon(ext) {
   return '📎';
 }
 
+// "Mostrar en carpeta"/"Abrir carpeta" siempre abre el Explorador en la PC
+// donde corre Jarvis, sea cual sea el dominio desde el que se navegue
+// (local o túnel público) — decisión de Diego: lo usa siempre por dominio,
+// y quiere que Fernando (que entra por otro dominio) también lo tenga.
+async function revealInFolder(filePath) {
+  try {
+    const r = await fetch('/api/reveal?path=' + encodeURIComponent(filePath));
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      toast(body.error || 'No se pudo abrir la carpeta', 'error', 2500);
+      return;
+    }
+    toast('Abriendo carpeta…', 'info', 1200);
+  } catch {
+    toast('No se pudo contactar a Jarvis', 'error', 2500);
+  }
+}
+
+function makeRevealBtn(filePath) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'reveal-btn';
+  btn.title = 'Mostrar en carpeta';
+  btn.textContent = '📂';
+  btn.onclick = e => {
+    e.preventDefault();
+    e.stopPropagation();
+    revealInFolder(filePath);
+  };
+  return btn;
+}
+
+// Descarga una carpeta como .zip. Va por fetch (no un <a href> plano) para
+// poder mostrar el toast de error de tamaño en vez de que el navegador
+// intente "descargar" el JSON de error — el server rechaza con 413 antes
+// de armar nada si la carpeta pasa los 200MB (ver server.js).
+async function downloadFolderZip(folderPath) {
+  const name = folderPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || 'carpeta';
+  try {
+    const r = await fetch('/api/folder-zip?path=' + encodeURIComponent(folderPath));
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      toast(body.error || 'No se pudo descargar la carpeta', 'error', 3000);
+      return;
+    }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name + '.zip';
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch {
+    toast('No se pudo contactar a Jarvis', 'error', 2500);
+  }
+}
+
+function makeZipDownloadBtn(folderPath) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'reveal-btn';
+  btn.title = 'Descargar carpeta (.zip, hasta 200MB)';
+  btn.textContent = '⬇️';
+  btn.onclick = e => {
+    e.preventDefault();
+    e.stopPropagation();
+    toast('Armando zip…', 'info', 1200);
+    downloadFolderZip(folderPath);
+  };
+  return btn;
+}
+
+// Botón genérico "copiar" — mismo ⧉/✓ que ya usan los bloques de código
+// y los comandos de tools, reusado acá para copiar la ruta completa.
+function makeCopyBtn(text, title) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'reveal-btn';
+  btn.title = title || 'Copiar';
+  btn.textContent = '⧉';
+  btn.onclick = e => {
+    e.preventDefault();
+    e.stopPropagation();
+    copyToClipboard(text);
+    btn.textContent = '✓';
+    setTimeout(() => { btn.textContent = '⧉'; }, 1200);
+  };
+  return btn;
+}
+
 // Crea una card de archivo inline (para PDFs y otros no-imagen)
 function makeFileCard(filePath) {
   const name = filePath.split('/').pop();
@@ -1313,6 +1434,52 @@ function makeFileCard(filePath) {
   dl.textContent = 'Descargar';
   info.appendChild(nameEl);
   info.appendChild(dl);
+  info.appendChild(makeRevealBtn(filePath));
+  card.appendChild(info);
+  return card;
+}
+
+// Card para una carpeta detectada en el texto (sin extensión) — dos
+// acciones: abrirla en la PC, o bajarla como .zip (para cuando no estás
+// frente a la PC y "abrir" no te sirve de nada).
+function makeFolderCard(folderPath) {
+  const name = folderPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || folderPath;
+
+  const card = document.createElement('div');
+  card.className = 'file-card file-card-folder';
+
+  const icon = document.createElement('span');
+  icon.className = 'file-card-icon';
+  icon.textContent = '📁';
+  card.appendChild(icon);
+
+  const info = document.createElement('div');
+  info.className = 'file-card-info';
+  const nameEl = document.createElement('span');
+  nameEl.className = 'file-card-name';
+  nameEl.textContent = name;
+  nameEl.title = folderPath;
+  info.appendChild(nameEl);
+
+  // Ruta completa, visible (truncada con ellipsis + title si no entra) +
+  // botón de copiarla — antes solo vivía en el title del nombre, invisible
+  // hasta hacer hover (que en el celu no existe).
+  const pathRow = document.createElement('div');
+  pathRow.className = 'file-card-path-row';
+  const pathEl = document.createElement('span');
+  pathEl.className = 'file-card-path';
+  pathEl.textContent = folderPath;
+  pathEl.title = folderPath;
+  pathRow.appendChild(pathEl);
+  pathRow.appendChild(makeCopyBtn(folderPath, 'Copiar ruta'));
+  info.appendChild(pathRow);
+
+  const actions = document.createElement('div');
+  actions.className = 'file-card-actions';
+  actions.appendChild(makeRevealBtn(folderPath));
+  actions.appendChild(makeZipDownloadBtn(folderPath));
+  info.appendChild(actions);
+
   card.appendChild(info);
   return card;
 }
@@ -1342,6 +1509,7 @@ function renderTextWithPaths(container, text) {
         img.onclick = () => openLightbox(dlHref, dlHref, img.alt);
         img.onerror = () => { wrap.innerHTML = ''; wrap.appendChild(document.createTextNode(att.path)); };
         wrap.appendChild(img);
+        wrap.appendChild(makeRevealBtn(att.path));
         container.appendChild(wrap);
       } else {
         container.appendChild(makeFileCard(att.path));
@@ -1353,7 +1521,29 @@ function renderTextWithPaths(container, text) {
   }
 
   // Paths sueltos — Unix (/home/...) y Windows (C:\... o C:/...)
-  const PATH_RE = /(`?)((?:[A-Za-z]:[\\\/]|\/(?:home|tmp|root|var|opt|usr))[^\s`'"(){}<>\[\]]+)\1/g;
+  // Los nombres de archivo pueden tener espacios (screenshots de Windows,
+  // "Captura de pantalla ....png", reportes "Balance Agosto 2026.csv") —
+  // se permite hasta 6 palabras extra siempre que termine en una extensión
+  // de archivo genérica (letras/dígitos, 1-8 chars: cualquier tipo, no solo
+  // imagen/pdf/audio/video), y se excluye ":" de esas palabras extra para
+  // no fusionar dos paths distintos en el mismo mensaje
+  // (ej. "C:\a\foto A.png y C:\b\foto B.png"). Un path relativo tipo
+  // "server.js:445" no matchea — falta el prefijo absoluto.
+  // Carpetas (sin extensión) también matchean vía la segunda alternativa
+  // del regex, pero solo si el path no tiene espacios — una carpeta con
+  // espacios en el nombre (ej. "Notas Jarvis") no se detecta acá, mismo
+  // límite que ya existía antes para no confundir prosa con path.
+  // "mnt" incluido para WSL: ahí el filesystem de Windows se ve montado en
+  // /mnt/c/... (Jarvis puede correr dentro de WSL, no solo en Windows nativo
+  // ni en el /home de un Linux normal).
+  const PATH_WORD = "[^\\s`'\"(){}<>\\[\\]:]";
+  const PATH_RE = new RegExp(
+    "(`?)((?:[A-Za-z]:[\\\\/]|/(?:home|tmp|root|var|opt|usr|mnt))" +
+      "(?:" + PATH_WORD + "+(?:[ \\t]" + PATH_WORD + "+){0,6}\\.[A-Za-z0-9]{1,8}" +
+      "|" + "[^\\s`'\"(){}<>\\[\\]]+" +
+      "))\\1",
+    "g"
+  );
   let last = 0;
   let match;
   while ((match = PATH_RE.exec(text)) !== null) {
@@ -1362,9 +1552,12 @@ function renderTextWithPaths(container, text) {
     }
     const filePath = match[2];
     const name = filePath.split('/').pop();
-    const ext = filePath.split('.').pop().toLowerCase();
-    const isImage = IMAGE_EXTS.has(ext);
-    const isMedia = isImage || ext === 'pdf' || AUDIO_EXTS.has(ext) || VIDEO_EXTS.has(ext);
+    // Heurística file vs. carpeta: si el último segmento no termina en
+    // ".ext" lo tratamos como carpeta (mismo criterio que ya usa el resto
+    // del regex para exigir extensión en paths con espacios).
+    const hasExt = /\.[A-Za-z0-9]{1,8}$/.test(filePath);
+    const ext = hasExt ? filePath.split('.').pop().toLowerCase() : '';
+    const isImage = hasExt && IMAGE_EXTS.has(ext);
 
     if (isImage) {
       // Mostrar thumbnail clicable + link de descarga
@@ -1397,20 +1590,16 @@ function renderTextWithPaths(container, text) {
       wrap.appendChild(img);
       wrap.appendChild(document.createElement('br'));
       wrap.appendChild(dl);
+      wrap.appendChild(makeRevealBtn(filePath));
       container.appendChild(wrap);
-    } else if (ext === 'pdf' || AUDIO_EXTS.has(ext) || VIDEO_EXTS.has(ext)) {
+    } else if (hasExt) {
+      // Cualquier otra extensión (pdf/audio/video con preview especial,
+      // y cualquier tipo de archivo — html, docx, csv, zip, etc. — con
+      // ícono genérico) — makeFileCard ya resuelve ambos casos.
       container.appendChild(makeFileCard(filePath));
-    } else if (isMedia) {
-      const a = document.createElement('a');
-      a.href = '/api/files?path=' + encodeURIComponent(filePath);
-      a.download = name;
-      a.textContent = filePath;
-      a.className = 'path-link';
-      container.appendChild(a);
     } else {
-      const code = document.createElement('code');
-      code.textContent = filePath;
-      container.appendChild(code);
+      // Sin extensión → lo tratamos como carpeta, no hay nada para descargar.
+      container.appendChild(makeFolderCard(filePath));
     }
     last = match.index + match[0].length;
   }
@@ -1438,7 +1627,7 @@ function enrichPlainTextNodes(root) {
   while ((n = walker.nextNode())) nodes.push(n);
   for (const node of nodes) {
     const t = node.textContent;
-    if (!t || !/\[Archivo adjunto:|[A-Za-z]:[\\/]|\/(?:home|tmp|root|var|opt|usr)\S/.test(t)) continue;
+    if (!t || !/\[Archivo adjunto:|[A-Za-z]:[\\/]|\/(?:home|tmp|root|var|opt|usr|mnt)\S/.test(t)) continue;
     const frag = document.createDocumentFragment();
     renderTextWithPaths(frag, t);
     node.replaceWith(frag);
@@ -1619,7 +1808,7 @@ function addTool(name, input, output, opts = {}) {
 // después — a diferencia de addCompactDivider(), que es el remanente del
 // sistema viejo por resumen-y-sesión-nueva). Se muestra tanto si lo disparó el
 // botón "Compactar" (trigger:'manual') como si el CLI lo hizo solo por límite
-// de contexto (trigger:'auto') — antes esto último era invisible en Jarvis.
+// de contexto (trigger:'auto') — antes esto último era invisible acá.
 function addCompactBoundary(m) {
   const div = document.createElement('div');
   div.className = 'compact-divider';
@@ -2306,50 +2495,31 @@ $('conv-title').ondblclick = () => {
 };
 
 // ── Nueva conversación ──
+// Ya no se elige carpeta acá (ni local ni VPS) — cada cuenta siempre arranca
+// en su carpeta configurada del lado del server (accountHomeDir o
+// CCM_DEFAULT_PROJECT_DIR si está seteado). Lo único que se elige es el modelo.
 $('new-conv').onclick = () => {
-  const sel = $('project-select');
-  sel.innerHTML = '';
-  const home = document.createElement('option');
-  home.value = '';
-  home.textContent = '— seguir en casa (sin mensaje inicial) —';
-  sel.appendChild(home);
-  for (const proj of tree) {
-    const opt = document.createElement('option');
-    opt.value = proj.projectDir;
-    opt.textContent = proj.projectDir;
-    sel.appendChild(opt);
-  }
   $('new-dialog').showModal();
 };
 
 $('new-form').onsubmit = async e => {
   if (e.submitter && e.submitter.value === 'cancel') return;
   e.preventDefault();
-  const vpsProject = $('vps-project-custom').value.trim() || $('vps-project').value;
-  const localDir = $('project-custom').value.trim() || $('project-select').value;
-  // Sin VPS ni carpeta local elegida: se queda en casa, sin mensaje inicial
-  // (ya arranca ahí, no hace falta pedirle que "vaya" a ningún lado).
-  const projectDir = vpsProject ? `VPS: ${vpsProject}` : (localDir || undefined);
-  const text = vpsProject ? `Vamos a trabajar en ${vpsProject} en el VPS.` : (localDir ? `Vamos a trabajar en ${localDir}.` : '');
   const model = $('new-model').value;
   const submitBtn = e.submitter;
   if (submitBtn) submitBtn.disabled = true;
   try {
-    const { convId, projectDir: resolvedDir } = await api('/conversations', {
+    const { convId, projectDir } = await api('/conversations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(withAccountBody({ projectDir, text, model: model || undefined })),
+      body: JSON.stringify(withAccountBody({ model: model || undefined })),
     });
     $('new-dialog').close();
-    $('project-custom').value = '';
-    $('vps-project').value = '';
-    $('vps-project-custom').value = '';
     $('new-model').value = '';
-    await selectConv(convId, text ? text.slice(0, 60) : 'Nueva conversación', model, null, resolvedDir);
-    if (text) {
-      addMsg('user', text);
-      setBusy(true);
-    }
+    await selectConv(convId, 'Nueva conversación', model, null, projectDir);
+    // Crear conversación es una acción explícita (no un tap en la lista),
+    // así que acá sí autofocuseamos el campo aunque estemos en mobile.
+    $('input').focus();
   } catch (err) {
     toast('No se pudo crear la conversación: ' + err.message);
   } finally {
@@ -2729,6 +2899,7 @@ function readComputedColor(varName) {
 }
 
 function openSettings() {
+  $('cfg-app-name').value = APP_NAME;
   $('cfg-show-tools').checked = settings.showTools;
   $('cfg-voice-assistant').value = settings.voiceAssistant;
   $('cfg-voice-user').value = settings.voiceUser;
@@ -2741,6 +2912,27 @@ function openSettings() {
 }
 
 $('settings-btn').onclick = openSettings;
+
+// Nombre: no es localStorage como el resto de esta pantalla — vive en el
+// server (~/.ccm-config.json), así que el título/manifest de la PWA sale
+// igual para cualquier dispositivo que entre a esta misma instancia. Guarda
+// al perder foco (blur/Enter), mismo patrón que el rename de conversación.
+$('cfg-app-name').onchange = async e => {
+  const name = e.target.value.trim();
+  try {
+    const { appName } = await api('/config', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appName: name }),
+    });
+    APP_NAME = appName;
+    e.target.value = appName;
+    updateGlobalBusyIndicator();
+    toast('Nombre guardado — recargá para verlo en el título de la pestaña y reinstalá la PWA para el ícono/nombre de app instalada', 'info', 5000);
+  } catch (err) {
+    toast('No se pudo guardar el nombre: ' + err.message);
+  }
+};
 
 $('cfg-show-tools').onchange = e => {
   settings.showTools = e.target.checked;
