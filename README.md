@@ -17,6 +17,7 @@ PWA local para chatear con Claude Code desde el celular o el browser. Sidebar de
 - **Archivadas** — pantalla aparte para conversaciones archivadas, con swipe en mobile o botón en desktop, y deshacer
 - **Menú de mensaje** — click derecho / long-press en una burbuja: copiar texto, seleccionar texto (para copiar solo una parte), citar (prefill en el composer) y, en tus propios mensajes, rebobinar la sesión hasta ahí (Claude olvida ese turno y todo lo posterior)
 - **Copiar código y comandos** — chip ⧉ en cada bloque de código de las respuestas y en las tool cards con comando (copia el comando entero aunque el resumen esté truncado)
+- **Mail** (⏸️ implementado, pausado) — panel Kanban con los mails de 2 cuentas (Gmail/Outlook), resumen, borrador y envío asistido por Claude. Detalle completo, decisiones de arquitectura y pendientes en [`docs/superpowers/specs/2026-08-15-mail-panel-design.md`](docs/superpowers/specs/2026-08-15-mail-panel-design.md)
 
 ## Requisitos
 

@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="FerStark">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=36">
+  <link rel="stylesheet" href="style.css?v=37">
 </head>
 <body>
   <div id="app">
@@ -70,7 +70,11 @@
               <button type="button" id="mail-back" class="archived-back">← Volver a chats</button>
               <h2>📧 Mail</h2>
               <span id="mail-updated" class="mail-updated"></span>
+              <span id="mail-scan-error" class="mail-scan-error" hidden>⚠️ El último escaneo falló</span>
               <button type="button" id="mail-scan-btn" class="mail-scan-btn">Actualizar bandeja</button>
+            </div>
+            <div id="mail-paused-banner" class="mail-paused-banner" hidden>
+              ⏸️ Mail en pausa — no escanea ni gasta nada hasta que se reactive.
             </div>
             <div id="mail-columns" class="mail-columns">
               <div class="mail-column" data-state="pendiente">
@@ -143,6 +147,7 @@
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
         </button>
       </form>
+      <div id="mail-detail-view" class="mail-detail-view" hidden></div>
     </div>
   </div>
 
@@ -260,6 +265,6 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=36"></script>
+  <script src="app.js?v=37"></script>
 </body>
 </html>

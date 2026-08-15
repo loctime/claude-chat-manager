@@ -211,6 +211,14 @@ runner.on('event', ({ convId, event, account }) => {
     if (event.session_id) mail.setDraft(mailId, { threadSessionId: event.session_id });
     return;
   }
+  // Job de escaneo de mail: igual que arriba, solo nos interesa guardar el
+  // sessionId apenas aparece — lo usamos si el escaneo falla, para ir a
+  // buscar al jsonl qué dijo el LLM (ej. "las tools de Gmail no están
+  // disponibles") y mostrar ese motivo real en vez de un genérico.
+  if (convId === MAIL_SCAN_CONV_ID) {
+    if (event.session_id) mailScanSessionId = event.session_id;
+    return;
+  }
   const sid = event.session_id;
   if (sid) {
     const metaFile = accountMetaFile(account || activeAccount);
@@ -224,12 +232,18 @@ runner.on('event', ({ convId, event, account }) => {
 });
 
 runner.on('status', s => {
-  // Job de escaneo de mail: no tiene conversación real ni SSE que lo escuche,
-  // solo nos interesa apagar el flag "scanning" cuando termina (incluso si
-  // terminó mal — si no, queda trabado en true para siempre). No hace
-  // broadcast ni intenta generar título porque no es una conversación normal.
+  // Job de escaneo de mail: no tiene conversación real ni SSE que lo escuche.
+  // Al terminar (incluso si terminó mal) mergeamos lo que el LLM haya
+  // escrito en el staging file con mail.json — nunca lo pisamos directo, ver
+  // mail.mergeScan(). mergeScan ya se encarga de apagar "scanning" pase lo
+  // que pase, así no queda trabado en true para siempre. No hace broadcast
+  // ni intenta generar título porque no es una conversación normal.
   if (s.convId === MAIL_SCAN_CONV_ID) {
-    if (s.status === 'idle') mail.setScanning(false);
+    if (s.status === 'idle') {
+      clearTimeout(mailScanTimeoutTimer);
+      mailScanTimeoutTimer = null;
+      handleMailScanIdle(s).catch(err => console.error('[mail] error procesando fin de escaneo:', err.message));
+    }
     return;
   }
   // Hilo de conversación de un mail (pedido de borrador o envío): al terminar
@@ -675,6 +689,16 @@ app.post('/api/notes/upload', notesUpload.single('file'), (req, res) => {
 // sesión tiene las tools MCP de Gmail/Microsoft 365 — Express no. Se encola
 // con un convId fijo dedicado para que no aparezca en la lista de
 // conversaciones normales del usuario.
+
+// Pausado 15/08/2026 a pedido de Fernando — no está seguro de si le va a
+// servir la función y no quiere que gaste nada mientras lo piensa. Este flag
+// corta las 4 acciones que disparan un job (cada una cuesta tokens) ANTES de
+// llegar a runner.send, así que la garantía de $0 es real, no solo "no lo
+// uses". Los mails ya escaneados siguen visibles (leer no cuesta nada).
+// Para reactivar: poner en false, no hace falta tocar nada más — el front ya
+// reacciona solo al campo `paused` que viaja en GET /api/mail.
+const MAIL_FEATURE_PAUSED = true;
+
 const MAIL_SCAN_CONV_ID = '__mail-scan__';
 const MAIL_VALID_STATES = new Set(['pendiente', 'respondido', 'archivado']);
 // Hilo de conversación por mail (pedido de borrador / envío): un convId
@@ -685,6 +709,18 @@ const MAIL_VALID_STATES = new Set(['pendiente', 'respondido', 'archivado']);
 // job se pierde (aceptable para v1, el usuario simplemente vuelve a pedir).
 const MAIL_THREAD_PREFIX = 'mail-thread-';
 const mailJobKind = new Map(); // convId → 'draft'|'send'
+// sessionId del último job de escaneo — puramente en memoria, como
+// mailJobKind. Solo se usa para ir a buscar el motivo real de un escaneo
+// fallido (ver handleMailScanIdle); si el server se reinicia a mitad de un
+// escaneo, en el peor caso el error queda con el mensaje genérico.
+let mailScanSessionId = null;
+// Guardarraíl: si el job de escaneo se cuelga (una tool MCP que nunca
+// responde, por ejemplo) no hay nada que lo corte solo — runner.js no tiene
+// timeout propio. Sin esto, "scanning" queda en true para siempre y el panel
+// se queda mostrando "Escaneando..." sin límite hasta reiniciar el server a mano.
+const MAIL_SCAN_TIMEOUT_MS = 5 * 60 * 1000; // 5 min: de sobra para 2 bandejas con Haiku
+let mailScanTimeoutTimer = null;
+let mailScanTimedOut = false; // para que handleMailScanIdle sepa distinguir timeout de error real
 const MAIL_SCAN_PROMPT = `Escaneá la bandeja de entrada de dos cuentas de correo usando las herramientas MCP disponibles:
 1. Gmail de ferzepsas@gmail.com (herramientas mcp__claude_ai_Gmail__*) — buscá no leídos y los últimos 3 días.
 2. Outlook de hys@maximia.com.ar (herramientas mcp__claude_ai_Microsoft_365__*) — buscá no leídos y los últimos 3 días.
@@ -699,25 +735,34 @@ Para cada mail relevante (ignorá spam/promociones/notificaciones automáticas o
 - receivedAt: fecha ISO del mail
 - messageId y threadId: los que corresponda según la cuenta (para Gmail: id de mensaje/thread; para Outlook: id del mensaje)
 - account: "ferzepsas" o "maximia" según corresponda
-- state: siempre "pendiente" (default)
 - id: un string único, por ejemplo \`\${account}-\${messageId}\`
 
-NO envíes ni respondas ningún mail, esto es solo lectura y clasificación.
+NO envíes ni respondas ningún mail, esto es solo lectura y clasificación. NO
+incluyas el campo "state" — el panel decide el estado, no vos.
 
-Escribí el resultado completo con la tool Write, sobrescribiendo el archivo ~/.ccm-notes/mail.json (creá el directorio si no existe) con este JSON exacto:
-{"updatedAt": "<fecha-hora ISO actual>", "scanning": false, "items": [ ... ] }
+Escribí el resultado con la tool Write, sobrescribiendo el archivo ~/.ccm-notes/mail.scan.json (creá el directorio si no existe, es un archivo de staging separado de mail.json — NO toques mail.json) con este JSON exacto:
+{"items": [ ... ] }
 
 No respondas con texto largo de más, tu tarea termina cuando el archivo quedó escrito correctamente.`;
 
 app.get('/api/mail', (req, res) => {
-  res.json(mail.read());
+  res.json({ ...mail.read(), paused: MAIL_FEATURE_PAUSED });
 });
 
 app.post('/api/mail/scan', (req, res) => {
+  if (MAIL_FEATURE_PAUSED) return res.status(403).json({ error: 'La función de Mail está en pausa.', paused: true });
   if (runner.isBusy(MAIL_SCAN_CONV_ID)) return res.status(409).json({ error: 'ya hay un escaneo en curso' });
   mail.setScanning(true);
   const cwd = process.env.CCM_DEFAULT_PROJECT_DIR || accountHomeDir(activeAccount);
-  runner.send({ convId: MAIL_SCAN_CONV_ID, text: MAIL_SCAN_PROMPT, account: activeAccount, cwd });
+  // Haiku: es clasificación/resumen en bulk (2 bandejas, no leídos + 3 días),
+  // no necesita razonamiento fuerte — más rápido y barato que el default.
+  runner.send({ convId: MAIL_SCAN_CONV_ID, text: MAIL_SCAN_PROMPT, account: activeAccount, cwd, model: 'haiku' });
+  clearTimeout(mailScanTimeoutTimer);
+  mailScanTimedOut = false;
+  mailScanTimeoutTimer = setTimeout(() => {
+    mailScanTimedOut = true;
+    runner.cancel(MAIL_SCAN_CONV_ID);
+  }, MAIL_SCAN_TIMEOUT_MS);
   res.json({ ok: true, started: true });
 });
 
@@ -742,6 +787,7 @@ app.get('/api/mail/:id', (req, res) => {
 // asunto, cuerpo completo). Pedidos siguientes: --resume de la misma sesión,
 // solo manda la instrucción nueva. Nunca manda nada — solo redacta texto.
 app.post('/api/mail/:id/draft', (req, res) => {
+  if (MAIL_FEATURE_PAUSED) return res.status(403).json({ error: 'La función de Mail está en pausa.', paused: true });
   const item = mail.read().items.find(i => i.id === req.params.id);
   if (!item) return res.status(404).json({ error: 'mail no encontrado' });
   const convId = MAIL_THREAD_PREFIX + item.id;
@@ -765,10 +811,36 @@ app.post('/api/mail/:id/draft', (req, res) => {
   res.json({ ok: true, started: true });
 });
 
+// Trae el texto ORIGINAL del mail, tal cual está en el servidor de correo —
+// a diferencia de item.body (lo escribe el job de escaneo, hoy con Haiku,
+// "limpio y legible" para la tarjeta — no garantiza ser palabra por palabra
+// igual al original). Pedido de Fernando: quiere poder confirmar qué se
+// escribió de verdad, no una versión reformulada. Comparte el mismo hilo
+// (MAIL_THREAD_PREFIX + id) que draft/send así reusa threadSessionId si ya
+// existe; sin `model` a propósito — el default (Sonnet) es más confiable que
+// Haiku para seguir al pie de la letra una instrucción de "no cambies nada".
+app.post('/api/mail/:id/raw', (req, res) => {
+  if (MAIL_FEATURE_PAUSED) return res.status(403).json({ error: 'La función de Mail está en pausa.', paused: true });
+  const item = mail.read().items.find(i => i.id === req.params.id);
+  if (!item) return res.status(404).json({ error: 'mail no encontrado' });
+  const convId = MAIL_THREAD_PREFIX + item.id;
+  if (runner.isBusy(convId)) return res.status(409).json({ error: 'ya hay un pedido en curso para este mail' });
+
+  const label = item.account === 'maximia' ? 'maximia (hys@maximia.com.ar, Outlook, tools mcp__claude_ai_Microsoft_365__*)' : 'ferzepsas (ferzepsas@gmail.com, Gmail, tools mcp__claude_ai_Gmail__*)';
+  const prompt = `Buscá el mail original con messageId "${item.messageId}"${item.threadId ? ` (threadId "${item.threadId}")` : ''} en la cuenta ${label} y traé su cuerpo TAL CUAL está escrito — texto plano, sin resumir, sin reformular, sin sacar ni agregar nada (podés sacar el HTML/firmas de cadena si hace mucho ruido, pero el texto humano tiene que quedar palabra por palabra igual al original). Tu respuesta final tiene que ser SOLO ese texto, sin comentarios tuyos alrededor ni "Acá está el mail:".`;
+
+  mail.setDraft(item.id, { rawBodyPending: true });
+  mailJobKind.set(convId, 'raw');
+  const cwd = process.env.CCM_DEFAULT_PROJECT_DIR || accountHomeDir(activeAccount);
+  runner.send({ convId, text: prompt, sessionId: item.threadSessionId || undefined, account: activeAccount, cwd });
+  res.json({ ok: true, started: true });
+});
+
 // Manda el draft ya guardado tal cual (sin reescribirlo) como reply al mail
 // original. Solo se llama desde el botón explícito "Confirmar y enviar" —
 // nunca por texto libre del usuario.
 app.post('/api/mail/:id/send', (req, res) => {
+  if (MAIL_FEATURE_PAUSED) return res.status(403).json({ error: 'La función de Mail está en pausa.', paused: true });
   const item = mail.read().items.find(i => i.id === req.params.id);
   if (!item) return res.status(404).json({ error: 'mail no encontrado' });
   if (!item.draft) return res.status(400).json({ error: 'no hay borrador para mandar' });
@@ -785,6 +857,30 @@ app.post('/api/mail/:id/send', (req, res) => {
   res.json({ ok: true, started: true });
 });
 
+// Al terminar el job de escaneo: mergeamos lo que haya en el staging file
+// (mail.mergeScan ya deja lastScanError seteado con un mensaje genérico si
+// no encontró nada para mergear). Si falló, intentamos reemplazar ese
+// genérico por el último mensaje real del LLM — normalmente algo como "las
+// tools de Gmail/Outlook no están disponibles en esta sesión", mucho más
+// útil para saber qué pasó que un genérico "revisá el MCP".
+async function handleMailScanIdle(s) {
+  const result = mail.mergeScan();
+  // Lo cortamos nosotros por el guardarraíl de MAIL_SCAN_TIMEOUT_MS (una
+  // tool MCP se quedó sin responder) — mensaje específico, no tiene sentido
+  // ir a buscar el último texto del LLM porque lo matamos a mitad de frase.
+  if (mailScanTimedOut) {
+    mailScanTimedOut = false;
+    mail.setScanError(`El escaneo tardó más de ${MAIL_SCAN_TIMEOUT_MS / 60000} minutos y se canceló solo (probablemente una tool de Gmail/Outlook se quedó sin responder). Probá de nuevo — si se repite, revisá que los conectores estén activos.`);
+    return;
+  }
+  if (!result.lastScanError || !mailScanSessionId) return;
+  const file = scanner.findSessionFile(mailScanSessionId, accountProjectsDir(s.account || activeAccount));
+  if (!file) return;
+  const assistantMsgs = scanner.getMessagesIncremental(file).filter(m => m.role === 'assistant');
+  const last = assistantMsgs[assistantMsgs.length - 1];
+  if (last && last.text) mail.setScanError(last.text.slice(0, 500));
+}
+
 // Al terminar un job de hilo de mail (draft o send) leemos el último mensaje
 // assistant directo del jsonl de la sesión — el job no escribe el resultado a
 // mano en mail.json, así que lo sacamos nosotros del historial ya persistido
@@ -793,10 +889,13 @@ async function handleMailThreadIdle(s) {
   const mailId = s.convId.slice(MAIL_THREAD_PREFIX.length);
   const kind = mailJobKind.get(s.convId);
   mailJobKind.delete(s.convId);
+  // 'raw' apaga rawBodyPending, no draftPending — todo lo demás ('send' o
+  // 'draft', y el default ante un Map perdido por reinicio) apaga draftPending.
+  const pendingField = kind === 'raw' ? 'rawBodyPending' : 'draftPending';
 
   const item = mail.read().items.find(i => i.id === mailId);
   if (!item || !item.threadSessionId) {
-    mail.setDraft(mailId, { draftPending: false, sendResult: 'No se encontró la sesión del hilo — revisá manualmente.' });
+    mail.setDraft(mailId, { [pendingField]: false, sendResult: 'No se encontró la sesión del hilo — revisá manualmente.' });
     return;
   }
 
@@ -814,6 +913,8 @@ async function handleMailThreadIdle(s) {
     // error lo dejamos en "pendiente" para que el usuario lo note y reintente,
     // nunca lo damos por mandado sin confirmación real.
     if (s.code === 0) mail.setState(mailId, 'respondido');
+  } else if (kind === 'raw') {
+    mail.setDraft(mailId, { rawBody: text, rawBodyPending: false });
   } else {
     // kind === 'draft' (o se perdió el Map por un reinicio a mitad de job:
     // ante la duda tratamos como draft, nunca marcamos enviado sin certeza).
