@@ -1,6 +1,6 @@
 {
-  "name": "FerStark",
-  "short_name": "FerStark",
+  "name": "{{APP_NAME}}",
+  "short_name": "{{APP_NAME}}",
   "description": "Claude Code chat manager",
   "start_url": "/",
   "display": "standalone",

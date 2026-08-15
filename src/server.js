@@ -10,6 +10,7 @@ const scanner = require('./scanner');
 const notes = require('./notes');
 const mail = require('./mail');
 const meta = require('./meta');
+const config = require('./config');
 const { Runner } = require('./runner');
 const { CLAUDE_CMD } = require('./claude-cmd');
 
@@ -35,6 +36,14 @@ function magickArgs(args) {
 const HOST = process.env.HOST || '127.0.0.1';
 const PORT = Number(process.env.PORT || 3777);
 const ACCESS_PIN = process.env.ACCESS_PIN || '';
+// Nombre mostrado en título/manifest/PWA/toasts. Prioridad: lo guardado desde
+// la pantalla de Configuración (~/.ccm-config.json) > env var CCM_APP_NAME >
+// default. Se lee del archivo en cada request (no una constante al boot) para
+// que guardar desde la UI aplique sin reiniciar el server.
+function getAppName() {
+  const name = (config.load().appName || '').trim();
+  return name || process.env.CCM_APP_NAME || 'J.A.R.V.I.S';
+}
 
 const HOME_DIR = process.env.HOME || process.env.USERPROFILE || os.homedir();
 
@@ -122,6 +131,7 @@ app.get('/api/accounts', (req, res) => {
     otherLocalUrl: OTHER_LOCAL_URL,
     otherPublicUrl: OTHER_PUBLIC_URL,
     otherLabel: OTHER_LABEL,
+    appName: getAppName(),
   });
 });
 
@@ -132,8 +142,41 @@ app.post('/api/accounts/switch', (req, res) => {
   res.json({ ok: true, active: activeAccount });
 });
 
+// ── Config de instancia (hoy: solo el nombre) — pantalla de Configuración ──
+app.patch('/api/config', (req, res) => {
+  const cfg = config.load();
+  if ('appName' in req.body) {
+    const name = (req.body.appName || '').trim();
+    if (name) cfg.appName = name;
+    else delete cfg.appName; // vacío = volver al env var / default
+  }
+  config.save(cfg);
+  res.json({ ok: true, appName: getAppName() });
+});
+
+// index.html y manifest.json tienen un placeholder {{APP_NAME}} — se sirven
+// acá con el reemplazo hecho, ANTES del express.static de abajo (si no, este
+// último los serviría primero tal cual, con el placeholder crudo sin
+// reemplazar). Reemplazo global por si el mismo archivo lo usa más de una vez.
+function serveTemplated(filePath, contentType) {
+  return (req, res) => {
+    let body;
+    try {
+      body = fs.readFileSync(filePath, 'utf8');
+    } catch {
+      return res.status(404).end();
+    }
+    res.set('Cache-Control', 'no-store');
+    res.type(contentType).send(body.replaceAll('{{APP_NAME}}', getAppName()));
+  };
+}
+const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+app.get('/', serveTemplated(path.join(PUBLIC_DIR, 'index.html'), 'html'));
+app.get('/index.html', serveTemplated(path.join(PUBLIC_DIR, 'index.html'), 'html'));
+app.get('/manifest.json', serveTemplated(path.join(PUBLIC_DIR, 'manifest.json'), 'application/json'));
+
 // index.html y archivos JS/CSS nunca cacheados por el browser
-app.use(express.static(path.join(__dirname, '..', 'public'), {
+app.use(express.static(PUBLIC_DIR, {
   setHeaders(res, filePath) {
     if (filePath.endsWith('.html') || filePath.endsWith('.js') || filePath.endsWith('.css') || filePath.endsWith('manifest.json')) {
       res.setHeader('Cache-Control', 'no-store');
@@ -639,8 +682,8 @@ app.get('/api/folder-zip', (req, res) => {
   archive.finalize();
 });
 
-// ── Notas (anotador sin IA, sin sesión de Claude) ──
-// Ver docs/superpowers/specs/2026-08-11-notas-jarvis-design.md
+// ── Notas (anotador sin IA, sin sesión de Claude) — múltiples libretas ──
+// Ver docs/superpowers/specs/2026-08-13-notas-libretas-design.md
 const notesUpload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => {
@@ -656,19 +699,59 @@ const notesUpload = multer({
   limits: { fileSize: 50 * 1024 * 1024 },
 });
 
-app.get('/api/notes', (req, res) => {
-  res.json({ notes: notes.readAll() });
+app.get('/api/notebooks', (req, res) => {
+  res.json({ notebooks: notes.listNotebooks() });
 });
 
-app.post('/api/notes', (req, res) => {
+app.post('/api/notebooks', (req, res) => {
+  res.status(201).json(notes.createNotebook());
+});
+
+app.patch('/api/notebooks/:id', (req, res) => {
+  const name = (req.body.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'nombre vacío' });
+  const nb = notes.renameNotebook(req.params.id, name);
+  if (!nb) return res.status(404).json({ error: 'libreta no encontrada' });
+  res.json(nb);
+});
+
+app.get('/api/notebooks/:id/notes', (req, res) => {
+  const nb = notes.getNotebook(req.params.id);
+  if (!nb) return res.status(404).json({ error: 'libreta no encontrada' });
+  res.json({ notes: notes.readAll(notes.notebookNotesFile(req.params.id)) });
+});
+
+app.post('/api/notebooks/:id/notes', (req, res) => {
+  const nb = notes.getNotebook(req.params.id);
+  if (!nb) return res.status(404).json({ error: 'libreta no encontrada' });
   const text = (req.body.text || '').trim();
   if (!text) return res.status(400).json({ error: 'texto vacío' });
+  const file = notes.notebookNotesFile(req.params.id);
   const entry = { id: crypto.randomUUID(), ts: Date.now(), type: 'text', text };
-  notes.append(entry);
-  res.status(201).json(entry);
+  notes.append(entry, file);
+
+  // Auto-nombre: si esta es la primera nota de texto y la libreta todavía
+  // tiene el nombre default ("Nueva libreta"/"Nueva libreta N"), la renombra
+  // usando el principio de esta nota. Si ya se renombró a mano, el nombre
+  // deja de matchear el patrón y esto no la vuelve a tocar.
+  let notebook = nb;
+  if (notes.DEFAULT_NAME_RE.test(nb.name)) {
+    const textNotes = notes.readAll(file).filter(e => e.type === 'text');
+    if (textNotes.length === 1) {
+      const firstLine = text.split('\n')[0].trim();
+      const autoName = firstLine.length > 40 ? firstLine.slice(0, 40) + '…' : firstLine;
+      notebook = notes.renameNotebook(req.params.id, autoName) || nb;
+    }
+  }
+  res.status(201).json({ entry, notebook });
 });
 
-app.post('/api/notes/upload', notesUpload.single('file'), (req, res) => {
+app.post('/api/notebooks/:id/notes/upload', notesUpload.single('file'), (req, res) => {
+  const nb = notes.getNotebook(req.params.id);
+  if (!nb) {
+    if (req.file) fs.unlink(req.file.path, () => {});
+    return res.status(404).json({ error: 'libreta no encontrada' });
+  }
   if (!req.file) return res.status(400).json({ error: 'no se recibió archivo' });
   const entry = {
     id: crypto.randomUUID(),
@@ -679,8 +762,8 @@ app.post('/api/notes/upload', notesUpload.single('file'), (req, res) => {
     mime: req.file.mimetype || '',
     size: req.file.size,
   };
-  notes.append(entry);
-  res.status(201).json(entry);
+  notes.append(entry, notes.notebookNotesFile(req.params.id));
+  res.status(201).json({ entry, notebook: nb });
 });
 
 // ── Mail (panel Kanban Pendiente/Respondido/Archivado) ──
@@ -1168,27 +1251,23 @@ app.post('/api/conversations/:id/rewind', (req, res) => {
 });
 
 app.post('/api/conversations', (req, res) => {
-  const { text, model } = req.body;
+  const { model } = req.body;
   const acc = req.body.account || activeAccount;
-  // Sin projectDir explícito: la conversación queda anclada a home (no hay
-  // "carpeta elegida" que mostrar/agrupar, y tampoco hace falta un mensaje
-  // de navegación — ya arranca ahí).
-  const projectDir = req.body.projectDir || process.env.CCM_DEFAULT_PROJECT_DIR || accountHomeDir(acc);
+  // No se elige carpeta por conversación — siempre arranca en la carpeta
+  // configurada para esta cuenta (CCM_DEFAULT_PROJECT_DIR si está seteado,
+  // si no accountHomeDir), así lee el CLAUDE.md y la memoria de esa carpeta
+  // igual que una sesión interactiva normal. Antes se podía elegir carpeta
+  // local o "proyecto VPS" por conversación (string "VPS: <nombre>", que no
+  // es una ruta real); se sacó esa opción del todo — evita, entre otras
+  // cosas, terminar pasando ese string como cwd real de un spawn.
+  const projectDir = process.env.CCM_DEFAULT_PROJECT_DIR || accountHomeDir(acc);
   const metaFile = accountMetaFile(acc);
   const convId = crypto.randomUUID();
   const data = meta.load(metaFile);
   data.conversations[convId] = { currentSessionId: null, projectDir, model: model || undefined };
   meta.save(data, metaFile);
-  // cwd = projectDir (CCM_DEFAULT_PROJECT_DIR si está seteado, si no home del
-  // usuario): así la sesión arranca leyendo el CLAUDE.md y la memoria de esa
-  // carpeta, igual que una sesión interactiva normal. Antes esto ignoraba
-  // CCM_DEFAULT_PROJECT_DIR y siempre usaba accountHomeDir(acc) sin importar
-  // lo que projectDir hubiera resuelto arriba.
-  // Si no vino texto (se dejó sin destino explícito) no hace falta mandar un
-  // primer mensaje — la conversación queda vacía, lista para escribir.
-  if ((text || '').trim()) {
-    runner.send({ convId, sessionId: null, cwd: projectDir, text: text.trim(), model: model || undefined, account: acc });
-  }
+  // Conversación arranca vacía, sin mensaje inicial — el usuario escribe el
+  // primero desde el composer como cualquier otro mensaje.
   res.status(201).json({ convId, projectDir });
 });
 
