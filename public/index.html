@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=38">
+  <link rel="stylesheet" href="style.css?v=39">
 </head>
 <body>
   <div id="app">
@@ -37,7 +37,6 @@
         <button type="button" class="pane-tab active" data-pane="0">Chats</button>
         <button type="button" class="pane-tab" data-pane="1">Archivado</button>
         <button type="button" class="pane-tab" data-pane="2">📝 Notas</button>
-        <button type="button" class="pane-tab" data-pane="3">📧 Mail</button>
       </nav>
       <div id="ptr-indicator" hidden>
         <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
@@ -54,32 +53,6 @@
               <button type="button" id="notebook-new-btn" class="notebook-new-btn" title="Nueva libreta" aria-label="Nueva libreta">+</button>
             </div>
             <nav id="notebook-list"></nav>
-          </div>
-          <div id="tree-mail" class="tree-pane mail-pane">
-            <div class="mail-header">
-              <button type="button" id="mail-back" class="archived-back">← Volver a chats</button>
-              <h2>📧 Mail</h2>
-              <span id="mail-updated" class="mail-updated"></span>
-              <span id="mail-scan-error" class="mail-scan-error" hidden>⚠️ El último escaneo falló</span>
-              <button type="button" id="mail-scan-btn" class="mail-scan-btn">Actualizar bandeja</button>
-            </div>
-            <div id="mail-paused-banner" class="mail-paused-banner" hidden>
-              ⏸️ Mail en pausa — no escanea ni gasta nada hasta que se reactive.
-            </div>
-            <div id="mail-columns" class="mail-columns">
-              <div class="mail-column" data-state="pendiente">
-                <div class="mail-column-header">Pendiente <span class="mail-count" id="mail-count-pendiente">0</span></div>
-                <div class="mail-column-cards" id="mail-cards-pendiente"></div>
-              </div>
-              <div class="mail-column" data-state="respondido">
-                <div class="mail-column-header">Respondido <span class="mail-count" id="mail-count-respondido">0</span></div>
-                <div class="mail-column-cards" id="mail-cards-respondido"></div>
-              </div>
-              <div class="mail-column" data-state="archivado">
-                <div class="mail-column-header">Archivado <span class="mail-count" id="mail-count-archivado">0</span></div>
-                <div class="mail-column-cards" id="mail-cards-archivado"></div>
-              </div>
-            </div>
           </div>
         </div>
       </div>
@@ -137,8 +110,6 @@
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
         </button>
       </form>
-      <div id="mail-detail-view" class="mail-detail-view" hidden></div>
-
       <!-- Notas: libreta abierta — reusa este mismo panel/overlay/back que el chat -->
       <div id="notebook-view" class="notes-pane" hidden>
         <header id="notebook-header">
@@ -263,6 +234,6 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=38"></script>
+  <script src="app.js?v=39"></script>
 </body>
 </html>

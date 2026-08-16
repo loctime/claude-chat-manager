@@ -157,15 +157,14 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
 #tree-viewport { flex: 1; overflow: hidden; position: relative; }
 #tree-viewport-inner {
   display: flex;
-  width: 400%;
+  width: 300%;
   height: 100%;
   transition: transform .25s ease;
   touch-action: pan-y;
 }
-#tree-viewport-inner[data-pane="1"] { transform: translateX(-25%); }
-#tree-viewport-inner[data-pane="2"] { transform: translateX(-50%); }
-#tree-viewport-inner[data-pane="3"] { transform: translateX(-75%); }
-.tree-pane { width: 25%; flex: none; height: 100%; overflow-y: auto; }
+#tree-viewport-inner[data-pane="1"] { transform: translateX(-33.3333%); }
+#tree-viewport-inner[data-pane="2"] { transform: translateX(-66.6667%); }
+.tree-pane { width: 33.3333%; flex: none; height: 100%; overflow-y: auto; }
 .tree-pane::-webkit-scrollbar { width: 4px; }
 .tree-pane::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
@@ -190,163 +189,6 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
 }
 .notes-composer button:hover { color: var(--text); }
 
-/* ── Mail (Kanban) ── */
-.mail-pane { display: flex; flex-direction: column; overflow: hidden; }
-.mail-header {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 4px 12px; border-bottom: 1px solid var(--border); flex: none;
-}
-.mail-header .archived-back { width: auto; margin: 0; padding: 6px 8px; border: none; font-size: 13px; }
-.mail-header h2 { font-size: 14px; margin: 0; flex: 1; }
-.mail-updated { font-size: 11px; color: var(--text2); white-space: nowrap; }
-.mail-updated.scanning { color: var(--accent); }
-.mail-scan-error {
-  font-size: 11px; color: var(--danger); white-space: nowrap; cursor: help;
-  border: 1px solid var(--danger); border-radius: var(--radius); padding: 2px 6px;
-}
-.mail-paused-banner {
-  font-size: 12px; color: var(--text2); background: var(--input-bg);
-  border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 8px 12px; margin: 0 12px 8px;
-}
-.mail-scan-btn {
-  background: var(--input-bg); color: var(--text); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 6px 10px; font-size: 12px; cursor: pointer;
-}
-.mail-scan-btn:hover:not(:disabled) { background: var(--header); }
-.mail-scan-btn:disabled { opacity: .5; cursor: default; }
-
-.mail-columns {
-  flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 14px;
-  padding: 10px 12px calc(10px + var(--safe-b));
-}
-/* Nota: NO usar @media(min-width) acá — .mail-columns vive siempre adentro
-   del sidebar angosto (#tree-viewport, ~300-380px), pero @media mide el
-   viewport de toda la ventana, no el de este contenedor. Con la ventana de
-   escritorio (>900px) esa regla ponía las 3 columnas en fila DENTRO de esos
-   ~340px, aplastadas e ilegibles. Se apila siempre en una sola columna. */
-.mail-column { display: flex; flex-direction: column; }
-.mail-column-header {
-  display: flex; align-items: center; gap: 6px;
-  font-size: 12px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
-  color: var(--text2); padding: 6px 4px; border-bottom: 1px solid var(--border); margin-bottom: 6px;
-}
-.mail-count {
-  font-size: 11px; font-weight: 600; color: var(--text2);
-  background: var(--input-bg); border-radius: 999px; padding: 1px 7px;
-}
-.mail-column-cards { display: flex; flex-direction: column; gap: 8px; }
-.mail-empty { color: var(--text2); font-size: 12px; padding: 10px 4px; text-align: center; }
-
-.mail-card {
-  background: var(--header); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 8px 10px; font-family: var(--chat-font); font-size: var(--chat-size);
-}
-.mail-card-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 4px; }
-.mail-badge {
-  font-size: 10px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase;
-  padding: 1px 6px; border-radius: 999px; color: #fff;
-}
-.mail-badge.account-ferzepsas { background: #3b6fa0; }
-.mail-badge.account-maximia { background: #9b1c17; }
-.mail-badge-project { font-size: 10px; color: var(--text2); background: var(--input-bg); border-radius: 999px; padding: 1px 6px; }
-.mail-urgent { color: #e05a5a; font-size: 12px; }
-.mail-subject { font-weight: 600; font-size: 13.5px; margin-bottom: 2px; word-break: break-word; }
-.mail-from { font-size: 11.5px; color: var(--text2); margin-bottom: 4px; word-break: break-word; }
-.mail-summary { line-height: 1.4; margin-bottom: 4px; word-break: break-word; }
-.mail-date { font-size: 11px; color: var(--text2); margin-bottom: 6px; }
-.mail-card-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.mail-card-actions select {
-  background: var(--input-bg); color: var(--text); border: 1px solid var(--border);
-  border-radius: 6px; padding: 3px 6px; font-size: 11.5px; cursor: pointer;
-}
-.mail-reply-btn {
-  background: none; border: 1px solid var(--accent); color: var(--accent);
-  border-radius: 6px; padding: 3px 8px; font-size: 11.5px; cursor: pointer;
-}
-.mail-reply-btn:hover { background: rgba(37,211,102,.12); }
-.mail-reply-btn.active { background: rgba(37,211,102,.18); }
-
-/* ── Mail: tarjeta expandida (mail completo + borrador + confirmar/enviar) ── */
-.mail-expand {
-  margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);
-  display: flex; flex-direction: column; gap: 6px;
-}
-.mail-expand-label {
-  font-size: 10.5px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase;
-  color: var(--text2);
-}
-.mail-draft-label { color: var(--accent); }
-.mail-body-box {
-  max-height: 220px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
-  background: var(--input-bg); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 8px 10px; font-size: 13px; line-height: 1.45;
-}
-.mail-draft-box {
-  max-height: 260px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
-  background: var(--input-bg); border: 1px solid var(--accent); border-radius: var(--radius);
-  padding: 8px 10px; font-size: 13px; line-height: 1.45;
-}
-.mail-confirm-btn {
-  background: var(--accent); color: #05341f; border: none; border-radius: var(--radius);
-  padding: 10px 14px; font-size: 14px; font-weight: 700; cursor: pointer;
-}
-.mail-confirm-btn:hover:not(:disabled) { filter: brightness(1.08); }
-.mail-confirm-btn:disabled { opacity: .5; cursor: default; }
-.mail-pending { font-size: 12px; color: var(--accent); }
-.mail-instruction-row { display: flex; gap: 6px; align-items: flex-end; }
-.mail-instruction-input {
-  flex: 1; resize: none; max-height: 100px; padding: 8px 10px;
-  background: var(--input-bg); border: none; border-radius: var(--radius);
-  color: var(--text); font-family: var(--chat-font); font-size: var(--chat-size);
-}
-.mail-draft-btn {
-  background: none; border: 1px solid var(--border); color: var(--text);
-  border-radius: var(--radius); padding: 8px 10px; font-size: 12.5px; cursor: pointer; flex: none;
-}
-.mail-draft-btn:hover:not(:disabled) { background: var(--header); }
-.mail-draft-btn:disabled, .mail-instruction-input:disabled { opacity: .5; cursor: default; }
-.mail-send-note { font-size: 11px; color: var(--text2); white-space: pre-wrap; word-break: break-word; }
-
-.mail-card-main { cursor: pointer; }
-.mail-card.active { border-color: var(--accent); background: #182229; }
-
-/* ── Mail: panel de detalle en el panel derecho (grande), en vez de tener
-   que leer todo apretado en la lista angosta de la izquierda. Mismo patrón
-   que #panel-chat en mobile: reusa openChat()/closeChat() para el back. ── */
-#mail-detail-view {
-  display: none;
-  flex: 1;
-  overflow-y: auto;
-  padding: 24px 40px 40px;
-}
-#panel-chat.mail-detail-active #chat-header,
-#panel-chat.mail-detail-active #messages-wrap,
-#panel-chat.mail-detail-active #composer-attachments,
-#panel-chat.mail-detail-active #composer {
-  display: none;
-}
-#panel-chat.mail-detail-active #mail-detail-view { display: block; }
-.mail-detail-inner { max-width: 760px; margin: 0 auto; }
-.mail-detail-topbar {
-  display: flex; align-items: center; gap: 10px; margin-bottom: 18px;
-}
-.mail-detail-close {
-  background: none; border: 1px solid var(--border); color: var(--text2);
-  border-radius: var(--radius); padding: 6px 12px; font-size: 13px; cursor: pointer;
-}
-.mail-detail-close:hover { background: var(--header); }
-.mail-detail-header { margin-bottom: 18px; }
-.mail-detail-subject { font-size: 22px; font-weight: 700; margin-bottom: 8px; word-break: break-word; }
-.mail-detail-from { font-size: 15px; color: var(--text2); margin-bottom: 4px; word-break: break-word; }
-.mail-detail-date { font-size: 13px; color: var(--text2); }
-/* Cajas de texto más grandes y con letra más cómoda que en la lista angosta */
-#mail-detail-view .mail-body-box,
-#mail-detail-view .mail-draft-box {
-  max-height: 60vh; font-size: 15px; line-height: 1.6; padding: 16px 18px;
-}
-#mail-detail-view .mail-expand { border-top: none; padding-top: 0; margin-top: 0; gap: 14px; }
-#mail-detail-view .mail-expand-label { font-size: 12px; }
 
 .project > summary {
   padding: 6px 16px;
