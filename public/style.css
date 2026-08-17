@@ -133,13 +133,13 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
   line-height: 1.4;
 }
 #account-switch:hover { filter: brightness(1.1); }
-#new-conv, #refresh-btn, #settings-btn {
+#new-conv, #refresh-btn, #settings-btn, #header-scan-btn {
   background: none; border: none; color: var(--text2); cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   width: 40px; height: 40px; border-radius: 50%; transition: background .15s;
   touch-action: manipulation; -webkit-tap-highlight-color: transparent;
 }
-#new-conv:hover, #refresh-btn:hover, #settings-btn:hover { background: var(--border); color: var(--text); }
+#new-conv:hover, #refresh-btn:hover, #settings-btn:hover, #header-scan-btn:hover { background: var(--border); color: var(--text); }
 #refresh-btn.spinning svg { animation: spin .6s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
