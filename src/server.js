@@ -10,6 +10,7 @@ const scanner = require('./scanner');
 const notes = require('./notes');
 const meta = require('./meta');
 const config = require('./config');
+const icon = require('./icon');
 const { Runner } = require('./runner');
 const { CLAUDE_CMD } = require('./claude-cmd');
 
@@ -56,6 +57,39 @@ function getAppVersion() {
 }
 
 const HOME_DIR = process.env.HOME || process.env.USERPROFILE || os.homedir();
+
+// Color de identidad de esta instancia: pinta --accent en toda la UI, el
+// theme_color del manifest y el círculo de los íconos de la PWA (ver
+// icon.js). Mismo patrón que getAppName(): se lee del archivo en cada
+// request, default = el verde original de la app.
+const DEFAULT_APP_COLOR = '#25d366';
+function getAppColor() {
+  const color = (config.load().appColor || '').trim();
+  return icon.isValidColor(color) ? color : DEFAULT_APP_COLOR;
+}
+
+// Cache en disco (no en public/, que es del repo) de los íconos regenerados
+// para el color actual. Se regeneran al guardar un color nuevo desde
+// Configuración; serveIcon() de más abajo cae al PNG original del repo si
+// todavía no se generó ninguno (instalación nueva).
+const ICON_CACHE_DIR = path.join(HOME_DIR, '.ccm-icons');
+function regenerateIconsSafe(color) {
+  try {
+    icon.regenerateIcons(color, ICON_CACHE_DIR, { magickCmd: MAGICK_CMD, magickArgs });
+  } catch (e) {
+    console.error('No se pudo regenerar el ícono PWA:', e.message);
+  }
+}
+// Al boot: si hay un color guardado de una sesión anterior pero el cache de
+// íconos no está (primera vez que corre esta versión, o se borró a mano),
+// regenerarlo — si no, serveIcon() serviría el verde default hasta el
+// próximo cambio de color desde Configuración.
+{
+  const savedColor = (config.load().appColor || '').trim();
+  if (icon.isValidColor(savedColor) && !fs.existsSync(path.join(ICON_CACHE_DIR, icon.iconFileName(512)))) {
+    regenerateIconsSafe(savedColor);
+  }
+}
 
 // GROQ_API_KEY: primero env var, si no está la buscamos en ~/.claude/settings.json (clave env)
 function loadGroqKey() {
@@ -142,6 +176,7 @@ app.get('/api/accounts', (req, res) => {
     otherPublicUrl: OTHER_PUBLIC_URL,
     otherLabel: OTHER_LABEL,
     appName: getAppName(),
+    appColor: getAppColor(),
   });
 });
 
@@ -152,7 +187,7 @@ app.post('/api/accounts/switch', (req, res) => {
   res.json({ ok: true, active: activeAccount });
 });
 
-// ── Config de instancia (hoy: solo el nombre) — pantalla de Configuración ──
+// ── Config de instancia (nombre + color de identidad) — pantalla de Configuración ──
 app.patch('/api/config', (req, res) => {
   const cfg = config.load();
   if ('appName' in req.body) {
@@ -160,13 +195,25 @@ app.patch('/api/config', (req, res) => {
     if (name) cfg.appName = name;
     else delete cfg.appName; // vacío = volver al env var / default
   }
+  if ('appColor' in req.body) {
+    const color = (req.body.appColor || '').trim();
+    if (!color) {
+      delete cfg.appColor; // vacío = volver al verde default
+    } else if (icon.isValidColor(color)) {
+      cfg.appColor = color;
+    } else {
+      return res.status(400).json({ error: 'color inválido, esperado formato #rrggbb' });
+    }
+  }
   config.save(cfg);
-  res.json({ ok: true, appName: getAppName() });
+  const appColor = getAppColor();
+  if ('appColor' in req.body) regenerateIconsSafe(appColor);
+  res.json({ ok: true, appName: getAppName(), appColor });
 });
 
-// index.html y manifest.json tienen un placeholder {{APP_NAME}} — se sirven
-// acá con el reemplazo hecho, ANTES del express.static de abajo (si no, este
-// último los serviría primero tal cual, con el placeholder crudo sin
+// index.html y manifest.json tienen placeholders {{APP_NAME}}/{{APP_COLOR}} —
+// se sirven acá con el reemplazo hecho, ANTES del express.static de abajo (si
+// no, este último los serviría primero tal cual, con el placeholder crudo sin
 // reemplazar). Reemplazo global por si el mismo archivo lo usa más de una vez.
 function serveTemplated(filePath, contentType) {
   return (req, res) => {
@@ -177,13 +224,41 @@ function serveTemplated(filePath, contentType) {
       return res.status(404).end();
     }
     res.set('Cache-Control', 'no-store');
-    res.type(contentType).send(body.replaceAll('{{APP_NAME}}', getAppName()).replaceAll('{{APP_VERSION}}', getAppVersion()));
+    res.type(contentType).send(body
+      .replaceAll('{{APP_NAME}}', getAppName())
+      .replaceAll('{{APP_VERSION}}', getAppVersion())
+      .replaceAll('{{APP_COLOR}}', getAppColor()));
   };
 }
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 app.get('/', serveTemplated(path.join(PUBLIC_DIR, 'index.html'), 'html'));
 app.get('/index.html', serveTemplated(path.join(PUBLIC_DIR, 'index.html'), 'html'));
 app.get('/manifest.json', serveTemplated(path.join(PUBLIC_DIR, 'manifest.json'), 'application/json'));
+
+// Ícono de la PWA: si hay uno regenerado en el cache para el color actual, se
+// sirve ese; si no (instalación nueva, o cache borrado a mano), cae al PNG
+// verde original del repo. Rutas explícitas ANTES del express.static de abajo
+// para que tengan prioridad sobre los archivos estáticos del mismo nombre.
+//
+// Gotcha Windows: res.sendFile(pathAbsolutoConBackslashes) tira 404 siempre
+// (Not Found) aunque el archivo exista — Express hace encodeURI() sobre el
+// path antes de pasarlo a `send`, y encodeURI codifica el backslash como
+// %5C, así que la ruta que llega a `send` queda rota. La forma correcta en
+// Windows (y la que además documenta Express) es pasar SOLO el nombre de
+// archivo + `{ root: carpeta }`, nunca la ruta absoluta ya unida.
+function serveIcon(size) {
+  const fileName = icon.iconFileName(size);
+  return (req, res) => {
+    const useCache = fs.existsSync(path.join(ICON_CACHE_DIR, fileName));
+    const root = useCache ? ICON_CACHE_DIR : PUBLIC_DIR;
+    res.set('Cache-Control', 'no-store');
+    res.sendFile(fileName, { root }, err => {
+      if (err && !res.headersSent) res.status(err.status || 500).end();
+    });
+  };
+}
+app.get('/icon-192.png', serveIcon(192));
+app.get('/icon-512.png', serveIcon(512));
 
 // index.html y archivos JS/CSS nunca cacheados por el browser
 app.use(express.static(PUBLIC_DIR, {
@@ -761,6 +836,106 @@ app.post('/api/notebooks/:id/notes/upload', notesUpload.single('file'), (req, re
   };
   notes.append(entry, notes.notebookNotesFile(req.params.id));
   res.status(201).json({ entry, notebook: nb });
+});
+
+// ── Escáner de documentos (tipo CamScanner) ──
+// Detecta el documento en la foto, endereza la perspectiva y limpia el
+// contraste (canal rojo + umbral adaptivo — mismo enfoque que ya veníamos
+// usando para remitos en mejora-imagen/, ver mejora-imagen/CLAUDE.md). Todo
+// corre local con OpenCV vía un script Python — no pasa por Claude ni gasta
+// tokens.
+const PYTHON_CMD = IS_WIN ? 'python' : 'python3';
+const SCAN_SCRIPT = path.join(
+  process.env.CCM_DEFAULT_PROJECT_DIR || path.join(__dirname, '..', '..'),
+  'mejora-imagen', 'mejorar_imagen.py'
+);
+const SCANS_DIR = path.join(HOME_DIR, '.ccm-notes', 'scans');
+
+const scanUpload = multer({
+  storage: multer.diskStorage({
+    // El id de cada escaneo se genera acá (no hay :id de ruta todavía en el
+    // POST inicial) y se cuelga del req para que el handler lo use después.
+    destination: (req, file, cb) => {
+      const id = crypto.randomUUID();
+      const dir = path.join(SCANS_DIR, id);
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        req.scanId = id;
+        req.scanDir = dir;
+        cb(null, dir);
+      } catch (err) { cb(err); }
+    },
+    filename: (req, file, cb) => {
+      const ext = (path.extname(file.originalname) || '.jpg').toLowerCase();
+      cb(null, 'original' + ext);
+    },
+  }),
+  limits: { fileSize: 25 * 1024 * 1024 },
+});
+
+app.post('/api/scan', scanUpload.single('photo'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'no se recibió foto' });
+  execFile(PYTHON_CMD, [SCAN_SCRIPT, req.file.path, req.scanDir, '--json'], { maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+    if (err) {
+      console.error('[scan] error procesando', stderr || err.message);
+      return res.status(500).json({ error: 'no se pudo procesar la imagen: ' + (stderr || err.message).toString().slice(0, 300) });
+    }
+    let result;
+    try { result = JSON.parse(stdout); } catch { return res.status(500).json({ error: 'respuesta inválida del script de escaneo' }); }
+    if (result.error) return res.status(500).json({ error: result.error });
+    res.json({
+      id: req.scanId,
+      detectado: result.detectado,
+      recortada: result.recortada,
+      limpia: result['1x'],
+      limpia2x: result['2x'],
+    });
+  });
+});
+
+// Encuentra (o crea) la libreta "Escaneos" — ahí van a parar los documentos
+// que el usuario decide conservar desde la solapa Escáner.
+function findOrCreateScanNotebook() {
+  const existing = notes.listNotebooks().find(nb => nb.name === 'Escaneos');
+  if (existing) return existing;
+  const nb = notes.createNotebook();
+  return notes.renameNotebook(nb.id, 'Escaneos') || nb;
+}
+
+const SCAN_VARIANT_SUFFIX = { recortada: '_recortada.jpg', limpia: '_limpia.jpg', limpia2x: '_limpia_2x.jpg' };
+
+app.post('/api/scan/:id/keep', (req, res) => {
+  const suffix = SCAN_VARIANT_SUFFIX[req.body && req.body.variant];
+  if (!suffix) return res.status(400).json({ error: 'variante inválida' });
+  // El id de la URL es el nombre de carpeta que armamos nosotros mismos en
+  // destination() de arriba (crypto.randomUUID()) — nunca llega a un path
+  // fuera de SCANS_DIR aunque el cliente mande cualquier cosa acá, porque
+  // path.join + fs.existsSync sobre ese path fijo no puede "escaparse" de la
+  // carpeta con un id que no matchea ningún directorio real.
+  const dir = path.join(SCANS_DIR, req.params.id);
+  let files;
+  try { files = fs.readdirSync(dir); } catch { return res.status(404).json({ error: 'escaneo no encontrado' }); }
+  const fileName = files.find(f => f.endsWith(suffix));
+  if (!fileName) return res.status(404).json({ error: 'no se encontró el archivo procesado' });
+  const srcPath = path.join(dir, fileName);
+
+  notes.ensureFilesDir();
+  const destName = notes.resolveDestName(notes.FILES_DIR, `escaneo-${req.params.id.slice(0, 8)}.jpg`);
+  const destPath = path.join(notes.FILES_DIR, destName);
+  fs.copyFileSync(srcPath, destPath);
+
+  const notebook = findOrCreateScanNotebook();
+  const entry = {
+    id: crypto.randomUUID(),
+    ts: Date.now(),
+    type: 'file',
+    fileName: destName,
+    filePath: destPath,
+    mime: 'image/jpeg',
+    size: fs.statSync(destPath).size,
+  };
+  notes.append(entry, notes.notebookNotesFile(notebook.id));
+  res.status(201).json({ entry, notebook });
 });
 
 const DEFAULT_TREE_LIMIT = 100;

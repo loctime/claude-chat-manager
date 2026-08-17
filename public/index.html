@@ -10,7 +10,12 @@
   <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=45">
+  <link rel="stylesheet" href="style.css?v=47">
+  <!-- Color de identidad server-side (Configuración → Color de identidad). Va
+       después de style.css para pisar el --accent default de ahí; el ajuste
+       personal por-dispositivo ("Acento" en Colores, más abajo) sigue
+       ganándole a esto porque se aplica como inline style del elemento. -->
+  <style>:root{--accent:{{APP_COLOR}};}</style>
 </head>
 <body>
   <div id="app">
@@ -37,6 +42,7 @@
         <button type="button" class="pane-tab active" data-pane="0">Chats</button>
         <button type="button" class="pane-tab" data-pane="1">Archivado</button>
         <button type="button" class="pane-tab" data-pane="2">📝 Notas</button>
+        <button type="button" class="pane-tab" data-pane="3">📷 Escáner</button>
       </nav>
       <div id="ptr-indicator" hidden>
         <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
@@ -48,6 +54,18 @@
           <nav id="tree-archived" class="tree-pane"></nav>
           <div id="tree-notes" class="tree-pane notes-pane">
             <nav id="notebook-list"></nav>
+          </div>
+          <div id="tree-scan" class="tree-pane scan-pane">
+            <div class="scan-header">
+              <button type="button" id="scan-back" class="archived-back">← Volver a chats</button>
+              <h2>📷 Escáner</h2>
+            </div>
+            <div id="scan-body" class="scan-body">
+              <input id="scan-file-input" type="file" accept="image/*" capture="environment" hidden>
+              <button type="button" id="scan-start-btn" class="scan-start-btn">📷 Escanear documento</button>
+              <p class="scan-hint">Sacá o subí una foto de un documento — se detecta el borde, se endereza la perspectiva y se limpia el contraste, todo local en la PC (no llama a Claude, no gasta tokens).</p>
+              <div id="scan-result" class="scan-result" hidden></div>
+            </div>
           </div>
         </div>
       </div>
@@ -149,6 +167,9 @@
         <label>Nombre
           <input type="text" id="cfg-app-name" placeholder="J.A.R.V.I.S" maxlength="40" autocomplete="off">
         </label>
+        <label>Color de identidad (ícono + tema)
+          <input type="color" id="cfg-app-color">
+        </label>
         <label class="settings-toggle">
           <input type="checkbox" id="cfg-show-tools">
           <span>Mostrar procesos del agente (Read, Bash, Edit…)</span>
@@ -210,6 +231,6 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=46"></script>
+  <script src="app.js?v=47"></script>
 </body>
 </html>

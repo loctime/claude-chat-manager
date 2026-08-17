@@ -8,7 +8,7 @@ let archivedTotal = 0;
 let archivedTreeLimit = 100;
 let archivedTreeHasMore = false;
 let archivedTreeTotal = 0;
-let activePane = 0; // 0=chats 1=archived 2=notas
+let activePane = 0; // 0=chats 1=archived 2=notas 3=escaner
 let notebookListLoaded = false;
 let notebooks = [];
 let currentNotebook = null; // {id, name} de la libreta abierta, o null si estamos en la lista
@@ -258,6 +258,10 @@ const drafts = new Map();
 // y manifest.json ya vienen con el nombre correcto server-rendered; esto es
 // solo para los pedacitos que arma el JS después (título dinámico, toasts).
 let APP_NAME = 'J.A.R.V.I.S';
+// Color de identidad server-side (ídem APP_NAME) — se usa solo para
+// precargar el input de Configuración; el pintado real ya viene hecho por el
+// <style> inline server-rendered de index.html.
+let APP_COLOR = '#25d366';
 
 const $ = id => document.getElementById(id);
 const messagesEl = $('messages');
@@ -266,9 +270,10 @@ const messagesEl = $('messages');
 async function loadAccounts() {
   try {
     const r = await fetch('/api/accounts');
-    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName } = await r.json();
+    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName, appColor } = await r.json();
     activeAccount = active;
     if (appName) { APP_NAME = appName; updateGlobalBusyIndicator(); }
+    if (appColor) APP_COLOR = appColor;
     // Botón "ir a la otra instancia": elige URL local si estamos en 127.0.0.1/localhost,
     // pública en cualquier otro caso (celu vía Cloudflare tunnel).
     const sw = $('account-switch');
@@ -799,6 +804,7 @@ function resetArchivedPane() {
 document.querySelectorAll('.pane-tab').forEach(btn => {
   btn.onclick = () => goToPane(Number(btn.dataset.pane));
 });
+$('scan-back').onclick = () => goToPane(0);
 
 $('notebook-back-btn').onclick = closeChat;
 
@@ -1691,8 +1697,16 @@ function renderTextWithPaths(container, text) {
   // /mnt/c/... (Jarvis puede correr dentro de WSL, no solo en Windows nativo
   // ni en el /home de un Linux normal).
   const PATH_WORD = "[^\\s`'\"(){}<>\\[\\]:]";
+  // (?<![A-Za-z]) antes de la letra de unidad: sin esto, "https://..." matchea
+  // como ruta — la "s" de "https" seguida de "://" cumple [A-Za-z]:[\\/] igual
+  // que "C:\". Bug real (16/08/2026): un link de SharePoint se detectaba como
+  // archivo local descargable y el botón "Descargar" tiraba 404 ("el sitio no
+  // estaba disponible"). El lookbehind exige que la letra de unidad no esté
+  // pegada a otra letra (arranque de string, espacio, etc.) — mismo criterio
+  // para /home|tmp|... con un lookahead: tiene que seguir "/" o fin de string,
+  // si no "/homepage" en una URL también matchearía.
   const PATH_RE = new RegExp(
-    "(`?)((?:[A-Za-z]:[\\\\/]|/(?:home|tmp|root|var|opt|usr|mnt))" +
+    "(`?)((?:(?<![A-Za-z])[A-Za-z]:[\\\\/]|/(?:home|tmp|root|var|opt|usr|mnt)(?=[\\\\/]|$))" +
       "(?:" + PATH_WORD + "+(?:[ \\t]" + PATH_WORD + "+){0,6}\\.[A-Za-z0-9]{1,8}" +
       "|" + "[^\\s`'\"(){}<>\\[\\]]+" +
       "))\\1",
@@ -2861,7 +2875,7 @@ function paneSwipeStart(clientX, clientY) {
   return true;
 }
 
-const PANE_COUNT = 3;
+const PANE_COUNT = 4;
 
 function paneSwipeMove(clientX, clientY) {
   if (!paneDragging) return false;
@@ -3104,6 +3118,7 @@ function readComputedColor(varName) {
 
 function openSettings() {
   $('cfg-app-name').value = APP_NAME;
+  $('cfg-app-color').value = APP_COLOR;
   $('cfg-show-tools').checked = settings.showTools;
   $('cfg-voice-assistant').value = settings.voiceAssistant;
   $('cfg-voice-user').value = settings.voiceUser;
@@ -3135,6 +3150,26 @@ $('cfg-app-name').onchange = async e => {
     toast('Nombre guardado — recargá para verlo en el título de la pestaña y reinstalá la PWA para el ícono/nombre de app instalada', 'info', 5000);
   } catch (err) {
     toast('No se pudo guardar el nombre: ' + err.message);
+  }
+};
+
+// Color de identidad: mismo patrón server-side que el nombre de arriba (no
+// localStorage, vive en ~/.ccm-config.json) — a diferencia del "Acento" de
+// más abajo, que es un ajuste personal por dispositivo. Este además
+// regenera los íconos de la PWA en el server (ver /api/config en server.js).
+$('cfg-app-color').onchange = async e => {
+  const color = e.target.value;
+  try {
+    const { appColor } = await api('/config', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appColor: color }),
+    });
+    APP_COLOR = appColor;
+    e.target.value = appColor;
+    toast('Color guardado — recargá para verlo en la interfaz y reinstalá la PWA para el ícono', 'info', 5000);
+  } catch (err) {
+    toast('No se pudo guardar el color: ' + err.message);
   }
 };
 
@@ -3263,6 +3298,103 @@ $('notes-file-input').onchange = async () => {
   const files = Array.from($('notes-file-input').files);
   $('notes-file-input').value = '';
   for (const f of files) await uploadNoteFile(f);
+};
+
+// ── Escáner de documentos (tipo CamScanner) ──
+// Todo el procesamiento (detectar el documento, enderezar la perspectiva,
+// limpiar contraste) corre local con OpenCV vía mejora-imagen/mejorar_imagen.py
+// — no pasa por Claude, no gasta tokens. Ver /api/scan en server.js.
+let scanBusy = false;
+
+function renderScanIdle() {
+  const el = $('scan-result');
+  el.hidden = true;
+  el.innerHTML = '';
+}
+
+async function processScan(file) {
+  if (scanBusy) return;
+  scanBusy = true;
+  $('scan-start-btn').disabled = true;
+  const el = $('scan-result');
+  el.hidden = false;
+  el.innerHTML = `<div class="scan-loading"><span class="attach-spinner"></span> Procesando…</div>`;
+  try {
+    const { blob, name } = await prepareForUpload(file, file.name || `foto-${Date.now()}.jpg`);
+    const fd = new FormData();
+    fd.append('photo', blob, name);
+    const res = await netFetch('/api/scan', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+    renderScanResult(await res.json());
+  } catch (err) {
+    el.hidden = true;
+    toast('No se pudo procesar la foto: ' + err.message);
+  } finally {
+    scanBusy = false;
+    $('scan-start-btn').disabled = false;
+  }
+}
+
+function renderScanResult(data) {
+  const el = $('scan-result');
+  const variants = [
+    { key: 'recortada', label: 'Color (enderezado)', path: data.recortada },
+    { key: 'limpia', label: 'Blanco y negro', path: data.limpia },
+  ];
+  const badge = data.detectado
+    ? '<span class="scan-badge scan-badge-ok">✓ documento detectado y enderezado</span>'
+    : '<span class="scan-badge">no se detectó el borde del documento — se usó la foto completa</span>';
+
+  el.innerHTML = `
+    ${badge}
+    <div class="scan-variants">
+      ${variants.map(v => `
+        <div class="scan-variant">
+          <img src="/api/files?path=${encodeURIComponent(v.path)}" alt="${v.label}">
+          <div class="scan-variant-label">${v.label}</div>
+          <div class="scan-variant-actions">
+            <button type="button" class="scan-keep-btn" data-variant="${v.key}">Guardar en Notas</button>
+            <a class="scan-dl-btn" href="/api/files?path=${encodeURIComponent(v.path)}" download>Descargar</a>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+    <button type="button" id="scan-again-btn" class="scan-again-btn">Escanear otra</button>
+  `;
+
+  el.querySelectorAll('.scan-variant img').forEach(img => {
+    img.onclick = () => openLightbox(img.src, img.src, img.alt);
+  });
+  el.querySelectorAll('.scan-keep-btn').forEach(btn => {
+    btn.onclick = () => keepScan(data.id, btn.dataset.variant, btn);
+  });
+  $('scan-again-btn').onclick = () => { renderScanIdle(); $('scan-file-input').value = ''; };
+}
+
+async function keepScan(id, variant, btn) {
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = 'Guardando…';
+  try {
+    await api(`/scan/${id}/keep`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ variant }),
+    });
+    btn.textContent = '✓ Guardado en Notas';
+    notebookListLoaded = false; // fuerza refresco la próxima vez que se entra a Notas
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = original;
+    toast('No se pudo guardar en Notas: ' + err.message);
+  }
+}
+
+$('scan-start-btn').onclick = () => { $('scan-file-input').click(); };
+$('scan-file-input').onchange = () => {
+  const file = $('scan-file-input').files[0];
+  $('scan-file-input').value = '';
+  if (file) processScan(file);
 };
 
 // ── Notas: sincronización entre dispositivos por polling ──
