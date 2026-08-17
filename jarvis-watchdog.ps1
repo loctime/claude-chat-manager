@@ -1,33 +1,14 @@
-# Watchdog Jarvis: si 127.0.0.1:3777 no responde, mata y relanza server+tunnel.
-# Si el local responde pero la URL pública no (tunel colgado/502), relanza solo cloudflared.
+# Watchdog Jarvis (migrado a PM2, 2026-08-17): si 127.0.0.1:3777 no responde,
+# "pm2 restart" server+tunnel. Si el local responde pero la URL publica no,
+# "pm2 restart" solo el tunel. Misma logica de antes, pero PM2 se encarga de
+# matar/relanzar sus propios hijos en vez de que este script cace PIDs a mano
+# (eso era lo que dejaba procesos huerfanos trabados en Session 0/integridad alta).
 $logFile = "$env:TEMP\jarvis-watchdog.log"
-$projectDir = "C:\Users\User\Desktop\Proyectos\claude-chat-manager"
 $publicUrl = "https://jarvis.controlapps.ar"
+$pm2 = "C:\Users\User\AppData\Roaming\npm\pm2.cmd"
 
 function Log($msg) {
     "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg" | Out-File -FilePath $logFile -Append -Encoding utf8
-}
-
-function Start-Server {
-    Set-Location $projectDir
-    Start-Process -FilePath "node" -ArgumentList "src\server.js" -WindowStyle Hidden `
-        -RedirectStandardOutput "$env:TEMP\jarvis-server.log" -RedirectStandardError "$env:TEMP\jarvis-server-err.log"
-}
-
-function Start-Tunnel {
-    Start-Process -FilePath "cloudflared" -ArgumentList "tunnel","run" -WindowStyle Hidden `
-        -RedirectStandardOutput "$env:TEMP\jarvis-tunnel.log" -RedirectStandardError "$env:TEMP\jarvis-tunnel-err.log"
-}
-
-function Kill-Cloudflared {
-    Get-Process cloudflared -ErrorAction SilentlyContinue | ForEach-Object {
-        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
-        if (Get-Process -Id $_.Id -ErrorAction SilentlyContinue) {
-            Log "no se pudo matar cloudflared pid $($_.Id) (acceso denegado, probablemente session 0)"
-        } else {
-            Log "killed cloudflared pid $($_.Id)"
-        }
-    }
 }
 
 $localAlive = $false
@@ -37,20 +18,10 @@ try {
 } catch { $localAlive = $false }
 
 if (-not $localAlive) {
-    Log "3777 no responde, reiniciando server + tunnel"
-
-    Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -like "*server.js*" -and $_.CommandLine -like "*claude-chat-manager*" } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; Log "killed node pid $($_.ProcessId)" }
-
-    Kill-Cloudflared
-
-    Start-Sleep -Seconds 2
-
-    Start-Server
-    Start-Tunnel
-
-    Log "relanzado"
+    Log "3777 no responde, pm2 restart server + tunnel"
+    & $pm2 restart jarvis-server 2>&1 | Out-Null
+    & $pm2 restart jarvis-tunnel 2>&1 | Out-Null
+    Log "relanzado (pm2)"
     exit 0
 }
 
@@ -62,8 +33,6 @@ try {
 
 if ($publicAlive) { exit 0 }
 
-Log "local OK pero $publicUrl no responde, reiniciando solo tunnel"
-Kill-Cloudflared
-Start-Sleep -Seconds 2
-Start-Tunnel
-Log "tunnel relanzado"
+Log "local OK pero $publicUrl no responde, pm2 restart solo tunnel"
+& $pm2 restart jarvis-tunnel 2>&1 | Out-Null
+Log "tunnel relanzado (pm2)"
