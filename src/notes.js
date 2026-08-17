@@ -92,11 +92,13 @@ function nextDefaultName(existingNames) {
 // puede ordenar/mostrar "última vez" sin tener que mantener ese dato
 // duplicado y potencialmente desincronizado en el índice.
 function listNotebooks(indexFile = NOTEBOOKS_FILE, notebooksDir = NOTEBOOKS_DIR) {
-  return readNotebooksIndex(indexFile).map(nb => {
-    const entries = readAll(notebookNotesFile(nb.id, notebooksDir));
-    const last = entries[entries.length - 1];
-    return { ...nb, lastActivity: last ? last.ts : nb.createdAt };
-  });
+  return readNotebooksIndex(indexFile)
+    .filter(nb => !nb.hidden)
+    .map(nb => {
+      const entries = readAll(notebookNotesFile(nb.id, notebooksDir));
+      const last = entries[entries.length - 1];
+      return { ...nb, lastActivity: last ? last.ts : nb.createdAt };
+    });
 }
 
 function createNotebook(indexFile = NOTEBOOKS_FILE) {
@@ -117,13 +119,24 @@ function renameNotebook(id, name, indexFile = NOTEBOOKS_FILE) {
   return nb;
 }
 
+// hidden: mismo patrón que conv.hidden en meta.json — saca la libreta de la
+// lista visible sin borrar sus notas, reversible a mano editando notebooks.json.
+function hideNotebook(id, hidden, indexFile = NOTEBOOKS_FILE) {
+  const list = readNotebooksIndex(indexFile);
+  const nb = list.find(n => n.id === id);
+  if (!nb) return null;
+  nb.hidden = !!hidden;
+  writeNotebooksIndex(list, indexFile);
+  return nb;
+}
+
 function getNotebook(id, indexFile = NOTEBOOKS_FILE) {
   return readNotebooksIndex(indexFile).find(n => n.id === id) || null;
 }
 
 module.exports = {
   append, readAll, ensureFilesDir, resolveDestName,
-  listNotebooks, createNotebook, renameNotebook, getNotebook,
+  listNotebooks, createNotebook, renameNotebook, hideNotebook, getNotebook,
   notebookNotesFile, nextDefaultName, DEFAULT_NAME_RE,
   NOTES_DIR, NOTEBOOKS_FILE, NOTEBOOKS_DIR, FILES_DIR,
 };

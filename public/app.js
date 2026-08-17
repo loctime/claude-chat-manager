@@ -140,12 +140,14 @@ async function safeLoadNotes() {
 function notebookElement(nb) {
   const div = document.createElement('div');
   // .notebook-row (además de .conv, para heredar el estilo visual de fila):
-  // esta fila nunca llama a attachRowGestures() como sí hacen las de chat
-  // (no tiene swipe-to-archive ni long-press), así que el guard de
-  // initPaneSwipe() la deja pasar explícitamente para que el swipe de
+  // esta fila no llama a attachRowGestures() como sí hacen las de chat (no
+  // tiene swipe-to-archive: las libretas no se archivan), así que el guard
+  // de initPaneSwipe() la deja pasar explícitamente para que el swipe de
   // pantalla (Chats/Libretas/Archivado) siga funcionando arrancando sobre
   // ella — si no, con la lista llena de libretas no queda fondo tocable
-  // para ese gesto. Ver Finding 2 del review final.
+  // para ese gesto. Ver Finding 2 del review final. Sí tiene su propio menú
+  // contextual (attachNotebookGestures, solo click derecho/long-press — sin
+  // arrastre horizontal — así no compite con ese swipe de pantalla).
   div.className = 'conv notebook-row';
   div.innerHTML = `
     <div class="conv-avatar">${avatarChar(nb.name)}</div>
@@ -159,6 +161,7 @@ function notebookElement(nb) {
     ? new Date(nb.lastActivity).toLocaleString('es', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
     : 'Sin notas todavía';
   div.onclick = () => openNotebook(nb.id, nb.name);
+  attachNotebookGestures(div, nb);
   return div;
 }
 
@@ -213,6 +216,39 @@ async function openNotebook(id, name) {
   openChat();
   try { await loadNotes(); }
   catch (err) { toast('No se pudieron cargar las notas: ' + err.message); }
+}
+
+// El botón "+" ya no crea la libreta al toque — abre este borrador (mismo
+// panel/overlay, currentNotebook en null) para que tocar "+" y arrepentirse
+// sin escribir nada no deje una "Nueva libreta" vacía tirada en la lista
+// (era justo lo que pasaba antes: cada toque, aunque fuera por error o para
+// mirar, ya la creaba server-side). La libreta recién se crea de verdad en
+// ensureNotebookCreated(), llamado desde el composer/upload al primer
+// contenido real.
+function openNotebookDraft() {
+  currentNotebook = null;
+  $('notebook-title').textContent = 'Nueva nota';
+  notesData = [];
+  renderNotes();
+  showNotebookView(true);
+  openChat();
+  $('notes-input').value = '';
+  autoResize($('notes-input'));
+  $('notes-input').focus();
+}
+
+// Crea la libreta recién en el momento en que hay contenido real que
+// guardar (primera nota de texto o primer archivo adjunto) — ver
+// openNotebookDraft(). Si ya existe (libreta real abierta, o ya se creó en
+// un envío anterior de este mismo borrador), no vuelve a crear nada.
+async function ensureNotebookCreated() {
+  if (currentNotebook) return currentNotebook.id;
+  const nb = await api('/notebooks', { method: 'POST' });
+  notebooks.push(nb);
+  currentNotebook = { id: nb.id, name: nb.name };
+  $('notebook-title').textContent = nb.name;
+  renderNotebookList();
+  return currentNotebook.id;
 }
 
 let archivedPaneLoaded = false;
@@ -393,9 +429,7 @@ window.addEventListener('popstate', (e) => {
   }
   // Si hay algún menú/dialog abierto, cerrar y consumir el back
   const searchDlg = $('search-dialog');
-  const newDlg = $('new-dialog');
   if (searchDlg.open) { searchDlg.close(); history.pushState({ view: 'list-guard' }, ''); return; }
-  if (newDlg.open) { newDlg.close(); history.pushState({ view: 'list-guard' }, ''); return; }
   const ctxMenu = document.querySelector('.ctx-menu');
   if (ctxMenu) { ctxMenu.remove(); history.pushState({ view: 'list-guard' }, ''); return; }
   // Si estamos en Archivado o Notas: volver a Chats en vez de ofrecer salir
@@ -534,6 +568,26 @@ function makeTtsBtn(text, kind = 'assistant') {
   return btn;
 }
 
+// Botón de copiar mensaje, mismo tamaño/estilo que el de TTS (msg-tts) —
+// Diego lo pidió duplicado (arriba y abajo de la burbuja), a diferencia del
+// TTS que solo va arriba.
+function makeCopyMsgBtn(text) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'msg-copy';
+  btn.title = 'Copiar mensaje';
+  btn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
+  if (!text || !text.trim()) btn.style.display = 'none';
+  btn.onclick = e => {
+    e.preventDefault();
+    e.stopPropagation();
+    copyToClipboard(text);
+    btn.classList.add('copied');
+    setTimeout(() => btn.classList.remove('copied'), 1200);
+  };
+  return btn;
+}
+
 // ── Refresh manual ──
 async function refreshAll() {
   const btn = $('refresh-btn');
@@ -587,7 +641,9 @@ function avatarChar(name) {
 }
 
 function convElement(c) {
-  const b = badge(c.status);
+  // El badge de estado (procesando/en cola) tiene prioridad visual sobre el
+  // punto de no leído — mientras corre, "no leído" todavía no aplica.
+  const b = badge(c.status) || (c.unread ? '<span class="unread-dot" title="Sin leer"></span>' : '');
   const pin = c.pinned ? '<span class="conv-pin" title="Fijada">📌</span>' : '';
   const arch = c.archived ? '<span class="conv-arch" title="Archivada">📁</span>' : '';
   const ai = c.aiTitle ? '<span class="conv-ai" title="Título generado por IA">✨</span>' : '';
@@ -670,13 +726,6 @@ async function loadArchivedTree() {
   const nav = $('tree-archived');
   buildTreePane(nav, resp);
 
-  const back = document.createElement('button');
-  back.className = 'archived-back';
-  back.type = 'button';
-  back.textContent = '← Volver a activas';
-  back.onclick = () => { goToPane(0); };
-  nav.insertBefore(back, nav.firstChild);
-
   if (archivedTreeHasMore) {
     const more = document.createElement('button');
     more.id = 'load-more-archived-btn';
@@ -750,18 +799,8 @@ function resetArchivedPane() {
 document.querySelectorAll('.pane-tab').forEach(btn => {
   btn.onclick = () => goToPane(Number(btn.dataset.pane));
 });
-$('notes-back').onclick = () => goToPane(0);
 
 $('notebook-back-btn').onclick = closeChat;
-
-$('notebook-new-btn').onclick = async () => {
-  try {
-    const nb = await api('/notebooks', { method: 'POST' });
-    notebooks.push(nb);
-    renderNotebookList();
-    openNotebook(nb.id, nb.name);
-  } catch (err) { toast('No se pudo crear la libreta: ' + err.message); }
-};
 
 // ── Renombrar libreta (doble click en el título, mismo patrón que #conv-title) ──
 $('notebook-title').ondblclick = () => {
@@ -1053,6 +1092,105 @@ function showConvMenu(x, y, conv) {
   }, 350);
 }
 
+// ── Menú contextual de libretas (click derecho + long-press mobile) ──
+// A diferencia de attachRowGestures (chats), sin arrastre horizontal: las
+// libretas no se archivan, solo se ocultan desde el menú — así el gesto no
+// compite con el swipe de pantalla que initPaneSwipe deja pasar sobre estas
+// filas (ver comentario en notebookElement).
+function attachNotebookGestures(el, nb) {
+  let touchTimer = null;
+  let longPressed = false;
+  let startX = 0, startY = 0;
+
+  el.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    showNotebookMenu(e.clientX, e.clientY, nb);
+  });
+
+  el.addEventListener('touchstart', e => {
+    longPressed = false;
+    const t = e.touches[0];
+    startX = t.clientX; startY = t.clientY;
+    touchTimer = setTimeout(() => {
+      longPressed = true;
+      touchTimer = null;
+      showNotebookMenu(startX, startY, nb);
+      if (navigator.vibrate) { try { navigator.vibrate(30); } catch {} }
+    }, 500);
+  }, { passive: true });
+
+  el.addEventListener('touchmove', e => {
+    if (!touchTimer) return;
+    const t = e.touches[0];
+    if (Math.abs(t.clientX - startX) > 10 || Math.abs(t.clientY - startY) > 10) {
+      clearTimeout(touchTimer); touchTimer = null;
+    }
+  }, { passive: true });
+
+  el.addEventListener('touchend', () => {
+    if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
+  });
+
+  // Bloquear el click sintético que dispara touchend después del long-press
+  // (si no, abre la libreta y cierra el menú)
+  el.addEventListener('click', e => {
+    if (longPressed) {
+      longPressed = false;
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }, { capture: true });
+}
+
+function showNotebookMenu(x, y, nb) {
+  document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  menu.innerHTML = `<button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`;
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  const maxX = window.innerWidth - rect.width - 8;
+  const maxY = window.innerHeight - rect.height - 8;
+  menu.style.left = Math.min(x, maxX) + 'px';
+  menu.style.top = Math.min(y, maxY) + 'px';
+
+  const doAction = async (action) => {
+    menu.remove();
+    document.removeEventListener('click', dismiss, true);
+    document.removeEventListener('touchstart', dismiss, true);
+    if (action !== 'hide') return;
+    try {
+      await api(`/notebooks/${nb.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hidden: true }),
+      });
+      notebooks = notebooks.filter(n => n.id !== nb.id);
+      renderNotebookList();
+      if (currentNotebook && currentNotebook.id === nb.id) closeChat();
+      toast('Libreta ocultada', 'info', 2500);
+    } catch (err) { toast('No se pudo ocultar: ' + err.message); }
+  };
+
+  menu.addEventListener('click', e => {
+    e.stopPropagation();
+    const action = e.target.dataset && e.target.dataset.action;
+    if (action) doAction(action);
+  });
+  menu.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+  function dismiss(e) {
+    if (menu.contains(e.target)) return;
+    menu.remove();
+    document.removeEventListener('click', dismiss, true);
+    document.removeEventListener('touchstart', dismiss, true);
+  }
+  setTimeout(() => {
+    document.addEventListener('click', dismiss, true);
+    document.addEventListener('touchstart', dismiss, true);
+  }, 350);
+}
+
 // ── Menú contextual de mensajes (click derecho / long-press en burbujas) ──
 
 async function copyToClipboard(text) {
@@ -1257,8 +1395,24 @@ function addCodeCopyChip(pre) {
 }
 
 // ── Messages ──
-function now() {
-  return new Date().toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
+// Con ts (viene del jsonl real, historial cargado) muestra esa fecha/hora;
+// sin ts (mensaje recién mandado u optimista) usa el momento actual.
+function now(ts) {
+  return new Date(ts || Date.now()).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
+}
+
+// Fecha centrada arriba de la burbuja, separada de la hora (que va en la
+// esquina) para no confundir las dos — Diego lo pidió después de ver ambas
+// pegadas. Color por antigüedad: hoy=azul, ayer/anteayer=blanco, 3+ días=rojo.
+function dateLabel(ts) {
+  const d = new Date(ts || Date.now());
+  const day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const today = new Date();
+  const todayDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const diffDays = Math.round((todayDay - day) / 86400000);
+  const cls = diffDays <= 0 ? 'msg-date-today' : diffDays <= 2 ? 'msg-date-recent' : 'msg-date-old';
+  const text = d.toLocaleDateString('es', { day: 'numeric', month: 'long' });
+  return { text, cls };
 }
 
 // ── Lightbox ──
@@ -1708,6 +1862,14 @@ function addMsg(role, text, opts = {}) {
   div.className = 'msg ' + role;
   if (opts.compacted) div.classList.add('compacted');
   if (role !== 'error') {
+    const kind = role === 'user' ? 'user' : 'assistant';
+
+    // Barra arriba: copiar + escuchar, uno en cada punta.
+    const topBar = document.createElement('div');
+    topBar.className = 'msg-toolbar-top';
+    topBar.appendChild(makeCopyMsgBtn(text));
+    topBar.appendChild(makeTtsBtn(text, kind));
+
     const span = document.createElement('div');
     span.className = 'msg-text';
     if (role === 'assistant') {
@@ -1716,13 +1878,29 @@ function addMsg(role, text, opts = {}) {
     } else {
       renderTextWithPaths(span, text);
     }
-    const ttsBtn = makeTtsBtn(text, role === 'user' ? 'user' : 'assistant');
+
+    // Barra abajo: una sola fila con copiar + escuchar a la izquierda, fecha
+    // al medio y hora a la derecha (antes eran dos filas separadas).
+    const date = dateLabel(opts.ts);
+    const dateEl = document.createElement('span');
+    dateEl.className = 'msg-date ' + date.cls;
+    dateEl.textContent = date.text;
     const time = document.createElement('span');
     time.className = 'msg-time';
-    time.textContent = now();
+    time.textContent = now(opts.ts);
+    const bottomIcons = document.createElement('span');
+    bottomIcons.className = 'msg-bottom-icons';
+    bottomIcons.appendChild(makeCopyMsgBtn(text));
+    bottomIcons.appendChild(makeTtsBtn(text, kind));
+    const bottomBar = document.createElement('div');
+    bottomBar.className = 'msg-bottom-bar';
+    bottomBar.appendChild(bottomIcons);
+    bottomBar.appendChild(dateEl);
+    bottomBar.appendChild(time);
+
+    div.appendChild(topBar);
     div.appendChild(span);
-    div.appendChild(ttsBtn);
-    div.appendChild(time);
+    div.appendChild(bottomBar);
     attachMsgGestures(div, { role, text, uuid: opts.uuid, compacted: !!opts.compacted });
   } else {
     div.textContent = text;
@@ -1857,7 +2035,7 @@ async function loadMessages(convId) {
         inCompacted = false;
       }
       if (m.role === 'system-compact') { addCompactBoundary(m); continue; }
-      const opts = { compacted: !!m.compacted, uuid: m.uuid };
+      const opts = { compacted: !!m.compacted, uuid: m.uuid, ts: m.ts };
       if (m.role === 'tool') addTool(m.name, m.input, m.output, opts);
       else addMsg(m.role, m.text, opts);
     }
@@ -2023,7 +2201,16 @@ async function selectConv(convId, name, model, lastModel, projectDir) {
   // posición de scroll de la anterior.
   stickToBottom = true;
   syncJumpBtn();
+  // Abrir la conversación cuenta como "leída" — se lanza en paralelo con
+  // loadMessages y se espera antes de refrescar el árbol, así el punto de no
+  // leído no queda pegado un instante de más por una carrera con loadTree().
+  const markReadPromise = api(`/conversations/${convId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(withAccountBody({ unread: false })),
+  }).catch(() => {});
   await loadMessages(convId);
+  await markReadPromise;
   openStream(convId);
   loadTree();
   refreshCostBadge(convId);
@@ -2336,6 +2523,12 @@ function addUserMsgWithFiles(text, attachments) {
   const div = document.createElement('div');
   div.className = 'msg user';
 
+  const topBar = document.createElement('div');
+  topBar.className = 'msg-toolbar-top';
+  topBar.appendChild(makeCopyMsgBtn(text || ''));
+  topBar.appendChild(makeTtsBtn(text || '', 'user'));
+  div.appendChild(topBar);
+
   // Previews de adjuntos encima del texto
   for (const a of attachments) {
     const ext = a.name.split('.').pop().toLowerCase();
@@ -2366,12 +2559,23 @@ function addUserMsgWithFiles(text, attachments) {
     div.appendChild(span);
   }
 
-  const ttsBtn = makeTtsBtn(text || '', 'user');
+  const date = dateLabel();
+  const dateEl = document.createElement('span');
+  dateEl.className = 'msg-date ' + date.cls;
+  dateEl.textContent = date.text;
   const time = document.createElement('span');
   time.className = 'msg-time';
   time.textContent = now();
-  div.appendChild(ttsBtn);
-  div.appendChild(time);
+  const bottomIcons = document.createElement('span');
+  bottomIcons.className = 'msg-bottom-icons';
+  bottomIcons.appendChild(makeCopyMsgBtn(text || ''));
+  bottomIcons.appendChild(makeTtsBtn(text || '', 'user'));
+  const bottomBar = document.createElement('div');
+  bottomBar.className = 'msg-bottom-bar';
+  bottomBar.appendChild(bottomIcons);
+  bottomBar.appendChild(dateEl);
+  bottomBar.appendChild(time);
+  div.appendChild(bottomBar);
   // Burbuja optimista: todavía no tiene uuid en el jsonl (aparece recién al
   // recargar en el idle), así que el menú ofrece copiar/citar pero no rebobinar.
   if (text) attachMsgGestures(div, { role: 'user', text, uuid: null, compacted: false });
@@ -2494,36 +2698,36 @@ $('conv-title').ondblclick = () => {
   el.onkeydown = ev => { if (ev.key === 'Enter') { ev.preventDefault(); el.blur(); } };
 };
 
-// ── Nueva conversación ──
+// ── Nueva conversación / nueva libreta ──
 // Ya no se elige carpeta acá (ni local ni VPS) — cada cuenta siempre arranca
 // en su carpeta configurada del lado del server (accountHomeDir o
-// CCM_DEFAULT_PROJECT_DIR si está seteado). Lo único que se elige es el modelo.
-$('new-conv').onclick = () => {
-  $('new-dialog').showModal();
-};
-
-$('new-form').onsubmit = async e => {
-  if (e.submitter && e.submitter.value === 'cancel') return;
-  e.preventDefault();
-  const model = $('new-model').value;
-  const submitBtn = e.submitter;
-  if (submitBtn) submitBtn.disabled = true;
+// CCM_DEFAULT_PROJECT_DIR si está seteado). Tampoco se elige modelo (queda el
+// default) — el botón crea y entra directo, sin modal de por medio.
+// En el pane de Notas este mismo botón crea una libreta nueva en vez de una
+// conversación — ya no hay un "+" propio ahí (ver notebookElement/goToPane).
+$('new-conv').onclick = async () => {
+  const btn = $('new-conv');
+  btn.disabled = true;
   try {
+    if (activePane === 2) {
+      // No crea la libreta acá — abre un borrador que recién se persiste en
+      // ensureNotebookCreated() al mandar la primera nota (ver comentario ahí).
+      openNotebookDraft();
+      return;
+    }
     const { convId, projectDir } = await api('/conversations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(withAccountBody({ model: model || undefined })),
+      body: JSON.stringify(withAccountBody({})),
     });
-    $('new-dialog').close();
-    $('new-model').value = '';
-    await selectConv(convId, 'Nueva conversación', model, null, projectDir);
+    await selectConv(convId, 'Nueva conversación', undefined, null, projectDir);
     // Crear conversación es una acción explícita (no un tap en la lista),
     // así que acá sí autofocuseamos el campo aunque estemos en mobile.
     $('input').focus();
   } catch (err) {
-    toast('No se pudo crear la conversación: ' + err.message);
+    toast('No se pudo crear: ' + err.message);
   } finally {
-    if (submitBtn) submitBtn.disabled = false;
+    btn.disabled = false;
   }
 };
 
@@ -2965,14 +3169,18 @@ $('notes-input').addEventListener('keydown', e => {
 
 $('notes-composer').addEventListener('submit', async e => {
   e.preventDefault();
-  if (!currentNotebook) return;
+  // notebook-view oculto = ni libreta real ni borrador abiertos (estamos en
+  // la lista) — nada que guardar acá.
+  if ($('notebook-view').hidden) return;
   const input = $('notes-input');
   const text = input.value.trim();
   if (!text) return;
-  const notebookId = currentNotebook.id;
   input.value = '';
   autoResize(input);
   try {
+    // Con un borrador (currentNotebook todavía null) esto crea la libreta
+    // recién ahora, con esta nota como la primera — ver ensureNotebookCreated().
+    const notebookId = await ensureNotebookCreated();
     const { entry, notebook } = await api(`/notebooks/${notebookId}/notes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3013,8 +3221,8 @@ $('notes-composer').addEventListener('submit', async e => {
 // mitad de camino. prepareForUpload ya resuelve esto (materializa a Blob +
 // comprime fotos grandes) — reusarlo acá en vez de mandar `file` directo.
 async function uploadNoteFile(file) {
-  if (!currentNotebook) return;
-  const notebookId = currentNotebook.id;
+  // notebook-view oculto = ni libreta real ni borrador abiertos.
+  if ($('notebook-view').hidden) return;
   const displayName = file.name || `pegado-${Date.now()}.${(file.type.split('/')[1] || 'bin')}`;
   const loadingChip = document.createElement('div');
   loadingChip.className = 'attach-chip attach-chip-loading';
@@ -3025,6 +3233,9 @@ async function uploadNoteFile(file) {
   const t0 = Date.now();
   let sentBytes = 0;
   try {
+    // Con un borrador, adjuntar un archivo también cuenta como contenido
+    // real — crea la libreta acá si todavía no existe (ver ensureNotebookCreated).
+    const notebookId = await ensureNotebookCreated();
     const { blob, name: uploadName } = await prepareForUpload(file, displayName);
     sentBytes = blob.size;
     const fd = new FormData();

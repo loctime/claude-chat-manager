@@ -5,7 +5,7 @@ const path = require('path');
 const os = require('os');
 const {
   append, readAll, resolveDestName, ensureFilesDir,
-  listNotebooks, createNotebook, renameNotebook, getNotebook,
+  listNotebooks, createNotebook, renameNotebook, hideNotebook, getNotebook,
   notebookNotesFile, nextDefaultName, DEFAULT_NAME_RE,
 } = require('../src/notes');
 
@@ -108,6 +108,37 @@ test('renameNotebook devuelve null si el id no existe', () => {
 
 test('getNotebook devuelve null si el id no existe', () => {
   assert.equal(getNotebook('no-existe', tmpIndexFile()), null);
+});
+
+test('hideNotebook marca hidden y devuelve la entrada actualizada', () => {
+  const indexFile = tmpIndexFile();
+  const nb = createNotebook(indexFile);
+  const hidden = hideNotebook(nb.id, true, indexFile);
+  assert.equal(hidden.hidden, true);
+  assert.equal(getNotebook(nb.id, indexFile).hidden, true);
+});
+
+test('hideNotebook devuelve null si el id no existe', () => {
+  assert.equal(hideNotebook('no-existe', true, tmpIndexFile()), null);
+});
+
+test('hideNotebook(false) revierte la ocultación', () => {
+  const indexFile = tmpIndexFile();
+  const nb = createNotebook(indexFile);
+  hideNotebook(nb.id, true, indexFile);
+  hideNotebook(nb.id, false, indexFile);
+  assert.equal(getNotebook(nb.id, indexFile).hidden, false);
+});
+
+test('listNotebooks no incluye libretas ocultas', () => {
+  const indexFile = tmpIndexFile();
+  const notebooksDir = tmpNotebooksDir();
+  const a = createNotebook(indexFile);
+  const b = createNotebook(indexFile);
+  hideNotebook(a.id, true, indexFile);
+  const list = listNotebooks(indexFile, notebooksDir);
+  assert.equal(list.length, 1);
+  assert.equal(list[0].id, b.id);
 });
 
 test('listNotebooks calcula lastActivity desde la última nota de cada libreta', () => {

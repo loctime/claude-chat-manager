@@ -44,6 +44,17 @@ function getAppName() {
   return name || process.env.CCM_APP_NAME || 'J.A.R.V.I.S';
 }
 
+// Versión mostrada en la pantalla de Configuración. Se lee de package.json
+// (bump manual a mano en cada release) en cada request, no en una constante
+// al boot, mismo motivo que getAppName().
+function getAppVersion() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version || '';
+  } catch {
+    return '';
+  }
+}
+
 const HOME_DIR = process.env.HOME || process.env.USERPROFILE || os.homedir();
 
 // GROQ_API_KEY: primero env var, si no está la buscamos en ~/.claude/settings.json (clave env)
@@ -166,7 +177,7 @@ function serveTemplated(filePath, contentType) {
       return res.status(404).end();
     }
     res.set('Cache-Control', 'no-store');
-    res.type(contentType).send(body.replaceAll('{{APP_NAME}}', getAppName()));
+    res.type(contentType).send(body.replaceAll('{{APP_NAME}}', getAppName()).replaceAll('{{APP_VERSION}}', getAppVersion()));
   };
 }
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -243,6 +254,12 @@ function broadcast(convId, payload) {
   for (const res of set) res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
+function convStatus(convId) {
+  return (runner.running.has(convId) || compacting.has(convId)) ? 'running'
+    : runner.isBusy(convId) ? 'queued'
+    : 'idle';
+}
+
 runner.on('event', ({ convId, event, account }) => {
   const sid = event.session_id;
   if (sid) {
@@ -260,6 +277,23 @@ runner.on('status', s => {
   broadcast(s.convId, { kind: 'status', ...s });
   if (s.status === 'idle' && s.code === 0) {
     maybeGenerateTitle(s.convId, s.account || activeAccount).catch(() => {});
+  }
+  // Un turno terminó sin que nadie lo estuviera mirando (ni en este dispositivo
+  // ni en otro): marcarla "no leída". "Nadie mirando" = sin conexión SSE abierta
+  // a esta convId ahora mismo — mismo canal que usa el chat para verse en vivo,
+  // así que si estás en la conversación no se marca (ya la viste aparecer).
+  // No aplica a cancelaciones manuales: no hay "respuesta nueva" que anunciar.
+  if (s.status === 'idle' && !s.cancelled) {
+    const hasViewer = (sseClients.get(s.convId)?.size || 0) > 0;
+    if (!hasViewer) {
+      const metaFile = accountMetaFile(s.account || activeAccount);
+      const data = meta.load(metaFile);
+      const conv = data.conversations[s.convId];
+      if (conv) {
+        conv.unread = true;
+        meta.save(data, metaFile);
+      }
+    }
   }
 });
 
@@ -666,11 +700,16 @@ app.post('/api/notebooks', (req, res) => {
 });
 
 app.patch('/api/notebooks/:id', (req, res) => {
-  const name = (req.body.name || '').trim();
-  if (!name) return res.status(400).json({ error: 'nombre vacío' });
-  const nb = notes.renameNotebook(req.params.id, name);
-  if (!nb) return res.status(404).json({ error: 'libreta no encontrada' });
-  res.json(nb);
+  if (!notes.getNotebook(req.params.id)) return res.status(404).json({ error: 'libreta no encontrada' });
+  if ('name' in req.body) {
+    const name = (req.body.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'nombre vacío' });
+    notes.renameNotebook(req.params.id, name);
+  }
+  // hidden: saca la libreta de la lista sin borrar sus notas — mismo patrón
+  // que conv.hidden (ver PATCH /api/conversations/:id).
+  if ('hidden' in req.body) notes.hideNotebook(req.params.id, !!req.body.hidden);
+  res.json(notes.getNotebook(req.params.id));
 });
 
 app.get('/api/notebooks/:id/notes', (req, res) => {
@@ -759,8 +798,9 @@ app.get('/api/tree', (req, res) => {
       pinned: !!c.pinned,
       archived: !!c.archived,
       aiTitle: !!c.aiTitle,
+      unread: !!c.unread,
       contextPct: contextPctFor(s),
-      status: (runner.running.has(convId) || compacting.has(convId)) ? 'running' : (runner.isBusy(convId) ? 'queued' : 'idle'),
+      status: convStatus(convId),
     });
   }
   for (const s of sessions) {
@@ -778,7 +818,7 @@ app.get('/api/tree', (req, res) => {
       pinned: false,
       archived: false,
       contextPct: contextPctFor(s),
-      status: (runner.running.has(s.sessionId) || compacting.has(s.sessionId)) ? 'running' : (runner.isBusy(s.sessionId) ? 'queued' : 'idle'),
+      status: convStatus(s.sessionId),
     });
   }
 
@@ -1001,6 +1041,7 @@ app.patch('/api/conversations/:id', (req, res) => {
   if ('model' in req.body) conv.model = (req.body.model || '').trim() || undefined;
   if ('pinned' in req.body) conv.pinned = !!req.body.pinned;
   if ('archived' in req.body) conv.archived = !!req.body.archived;
+  if ('unread' in req.body) conv.unread = !!req.body.unread;
   // hidden: saca la conversación de las dos listas (activas y archivadas) sin
   // tocar el .jsonl real — a diferencia de un borrado, es reversible a mano
   // editando meta.json si hiciera falta.
@@ -1024,6 +1065,13 @@ app.get('/api/conversations/:id/stream', (req, res) => {
   res.write('\n');
   if (!sseClients.has(convId)) sseClients.set(convId, new Set());
   sseClients.get(convId).add(res);
+  // Si la conversación ya está procesando un turno cuando este cliente se
+  // conecta (ej. volviste a abrirla mientras corría, o el broadcast único de
+  // 'running' pasó mientras estabas mirando otra conversación), el cliente
+  // nunca se entera y el botón de cancelar queda oculto hasta el 'idle' final.
+  // Mandamos el estado actual como primer evento para que se sincronice solo.
+  const st = convStatus(convId);
+  if (st !== 'idle') res.write(`data: ${JSON.stringify({ kind: 'status', status: st })}\n\n`);
   // Cloudflare Tunnel corta conexiones SSE inactivas (~100s de idle).
   // Sin este ping, un turno largo de Claude sin output deja el stream mudo
   // y el edge lo mata a mitad de camino, perdiendo el evento 'idle' final.
