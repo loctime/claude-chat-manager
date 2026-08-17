@@ -245,7 +245,7 @@ app.patch('/api/config', (req, res) => {
 function doRestart() {
   if (process.env.RESTART_CMD) {
     console.log('[restart] ejecutando RESTART_CMD:', process.env.RESTART_CMD);
-    exec(process.env.RESTART_CMD, err => {
+    exec(process.env.RESTART_CMD, { windowsHide: true }, err => {
       if (err) console.error('[restart] RESTART_CMD falló:', err.message);
     });
     return;
@@ -260,6 +260,7 @@ function doRestart() {
     env: process.env,
     detached: true,
     stdio: 'ignore',
+    windowsHide: true, // mismo motivo que el resto de los spawn del server (ver 6eba406): sin consola propia, Windows abriría una nueva
   });
   child.unref();
   process.exit(0);
