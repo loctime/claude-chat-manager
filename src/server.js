@@ -766,6 +766,106 @@ app.post('/api/notebooks/:id/notes/upload', notesUpload.single('file'), (req, re
   res.status(201).json({ entry, notebook: nb });
 });
 
+// ── Escáner de documentos (tipo CamScanner) ──
+// Detecta el documento en la foto, endereza la perspectiva y limpia el
+// contraste (canal rojo + umbral adaptivo — mismo enfoque que ya veníamos
+// usando para remitos en mejora-imagen/, ver mejora-imagen/CLAUDE.md). Todo
+// corre local con OpenCV vía un script Python — a diferencia de Mail, esto
+// NO pasa por Claude ni gasta tokens.
+const PYTHON_CMD = IS_WIN ? 'python' : 'python3';
+const SCAN_SCRIPT = path.join(
+  process.env.CCM_DEFAULT_PROJECT_DIR || path.join(__dirname, '..', '..'),
+  'mejora-imagen', 'mejorar_imagen.py'
+);
+const SCANS_DIR = path.join(HOME_DIR, '.ccm-notes', 'scans');
+
+const scanUpload = multer({
+  storage: multer.diskStorage({
+    // El id de cada escaneo se genera acá (no hay :id de ruta todavía en el
+    // POST inicial) y se cuelga del req para que el handler lo use después.
+    destination: (req, file, cb) => {
+      const id = crypto.randomUUID();
+      const dir = path.join(SCANS_DIR, id);
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        req.scanId = id;
+        req.scanDir = dir;
+        cb(null, dir);
+      } catch (err) { cb(err); }
+    },
+    filename: (req, file, cb) => {
+      const ext = (path.extname(file.originalname) || '.jpg').toLowerCase();
+      cb(null, 'original' + ext);
+    },
+  }),
+  limits: { fileSize: 25 * 1024 * 1024 },
+});
+
+app.post('/api/scan', scanUpload.single('photo'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'no se recibió foto' });
+  execFile(PYTHON_CMD, [SCAN_SCRIPT, req.file.path, req.scanDir, '--json'], { maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+    if (err) {
+      console.error('[scan] error procesando', stderr || err.message);
+      return res.status(500).json({ error: 'no se pudo procesar la imagen: ' + (stderr || err.message).toString().slice(0, 300) });
+    }
+    let result;
+    try { result = JSON.parse(stdout); } catch { return res.status(500).json({ error: 'respuesta inválida del script de escaneo' }); }
+    if (result.error) return res.status(500).json({ error: result.error });
+    res.json({
+      id: req.scanId,
+      detectado: result.detectado,
+      recortada: result.recortada,
+      limpia: result['1x'],
+      limpia2x: result['2x'],
+    });
+  });
+});
+
+// Encuentra (o crea) la libreta "Escaneos" — ahí van a parar los documentos
+// que el usuario decide conservar desde la solapa Escáner.
+function findOrCreateScanNotebook() {
+  const existing = notes.listNotebooks().find(nb => nb.name === 'Escaneos');
+  if (existing) return existing;
+  const nb = notes.createNotebook();
+  return notes.renameNotebook(nb.id, 'Escaneos') || nb;
+}
+
+const SCAN_VARIANT_SUFFIX = { recortada: '_recortada.jpg', limpia: '_limpia.jpg', limpia2x: '_limpia_2x.jpg' };
+
+app.post('/api/scan/:id/keep', (req, res) => {
+  const suffix = SCAN_VARIANT_SUFFIX[req.body && req.body.variant];
+  if (!suffix) return res.status(400).json({ error: 'variante inválida' });
+  // El id de la URL es el nombre de carpeta que armamos nosotros mismos en
+  // destination() de arriba (crypto.randomUUID()) — nunca llega a un path
+  // fuera de SCANS_DIR aunque el cliente mande cualquier cosa acá, porque
+  // path.join + fs.existsSync sobre ese path fijo no puede "escaparse" de la
+  // carpeta con un id que no matchea ningún directorio real.
+  const dir = path.join(SCANS_DIR, req.params.id);
+  let files;
+  try { files = fs.readdirSync(dir); } catch { return res.status(404).json({ error: 'escaneo no encontrado' }); }
+  const fileName = files.find(f => f.endsWith(suffix));
+  if (!fileName) return res.status(404).json({ error: 'no se encontró el archivo procesado' });
+  const srcPath = path.join(dir, fileName);
+
+  notes.ensureFilesDir();
+  const destName = notes.resolveDestName(notes.FILES_DIR, `escaneo-${req.params.id.slice(0, 8)}.jpg`);
+  const destPath = path.join(notes.FILES_DIR, destName);
+  fs.copyFileSync(srcPath, destPath);
+
+  const notebook = findOrCreateScanNotebook();
+  const entry = {
+    id: crypto.randomUUID(),
+    ts: Date.now(),
+    type: 'file',
+    fileName: destName,
+    filePath: destPath,
+    mime: 'image/jpeg',
+    size: fs.statSync(destPath).size,
+  };
+  notes.append(entry, notes.notebookNotesFile(notebook.id));
+  res.status(201).json({ entry, notebook });
+});
+
 // ── Mail (panel Kanban Pendiente/Respondido/Archivado) ──
 // El escaneo real de las bandejas lo hace un job de Claude Code CLI (mismo
 // mecanismo que un mensaje de chat normal, vía runner), porque solo esa
