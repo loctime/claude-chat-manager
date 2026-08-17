@@ -11,6 +11,11 @@
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
   <link rel="stylesheet" href="style.css?v=45">
+  <!-- Color de identidad server-side (Configuración → Color de identidad). Va
+       después de style.css para pisar el --accent default de ahí; el ajuste
+       personal por-dispositivo ("Acento" en Colores, más abajo) sigue
+       ganándole a esto porque se aplica como inline style del elemento. -->
+  <style>:root{--accent:{{APP_COLOR}};}</style>
 </head>
 <body>
   <div id="app">
@@ -148,6 +153,9 @@
       <div class="settings-grid">
         <label>Nombre
           <input type="text" id="cfg-app-name" placeholder="J.A.R.V.I.S" maxlength="40" autocomplete="off">
+        </label>
+        <label>Color de identidad (ícono + tema)
+          <input type="color" id="cfg-app-color">
         </label>
         <label class="settings-toggle">
           <input type="checkbox" id="cfg-show-tools">

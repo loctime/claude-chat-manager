@@ -258,6 +258,10 @@ const drafts = new Map();
 // y manifest.json ya vienen con el nombre correcto server-rendered; esto es
 // solo para los pedacitos que arma el JS después (título dinámico, toasts).
 let APP_NAME = 'J.A.R.V.I.S';
+// Color de identidad server-side (ídem APP_NAME) — se usa solo para
+// precargar el input de Configuración; el pintado real ya viene hecho por el
+// <style> inline server-rendered de index.html.
+let APP_COLOR = '#25d366';
 
 const $ = id => document.getElementById(id);
 const messagesEl = $('messages');
@@ -266,9 +270,10 @@ const messagesEl = $('messages');
 async function loadAccounts() {
   try {
     const r = await fetch('/api/accounts');
-    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName } = await r.json();
+    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName, appColor } = await r.json();
     activeAccount = active;
     if (appName) { APP_NAME = appName; updateGlobalBusyIndicator(); }
+    if (appColor) APP_COLOR = appColor;
     // Botón "ir a la otra instancia": elige URL local si estamos en 127.0.0.1/localhost,
     // pública en cualquier otro caso (celu vía Cloudflare tunnel).
     const sw = $('account-switch');
@@ -3104,6 +3109,7 @@ function readComputedColor(varName) {
 
 function openSettings() {
   $('cfg-app-name').value = APP_NAME;
+  $('cfg-app-color').value = APP_COLOR;
   $('cfg-show-tools').checked = settings.showTools;
   $('cfg-voice-assistant').value = settings.voiceAssistant;
   $('cfg-voice-user').value = settings.voiceUser;
@@ -3135,6 +3141,26 @@ $('cfg-app-name').onchange = async e => {
     toast('Nombre guardado — recargá para verlo en el título de la pestaña y reinstalá la PWA para el ícono/nombre de app instalada', 'info', 5000);
   } catch (err) {
     toast('No se pudo guardar el nombre: ' + err.message);
+  }
+};
+
+// Color de identidad: mismo patrón server-side que el nombre de arriba (no
+// localStorage, vive en ~/.ccm-config.json) — a diferencia del "Acento" de
+// más abajo, que es un ajuste personal por dispositivo. Este además
+// regenera los íconos de la PWA en el server (ver /api/config en server.js).
+$('cfg-app-color').onchange = async e => {
+  const color = e.target.value;
+  try {
+    const { appColor } = await api('/config', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appColor: color }),
+    });
+    APP_COLOR = appColor;
+    e.target.value = appColor;
+    toast('Color guardado — recargá para verlo en la interfaz y reinstalá la PWA para el ícono', 'info', 5000);
+  } catch (err) {
+    toast('No se pudo guardar el color: ' + err.message);
   }
 };
 
