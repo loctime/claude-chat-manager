@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { execFile, execFileSync, spawn } = require('child_process');
+const { execFile, execFileSync, exec, spawn } = require('child_process');
 const multer = require('multer');
 const archiver = require('archiver');
 const scanner = require('./scanner');
@@ -209,6 +209,61 @@ app.patch('/api/config', (req, res) => {
   const appColor = getAppColor();
   if ('appColor' in req.body) regenerateIconsSafe(appColor);
   res.json({ ok: true, appName: getAppName(), appColor });
+});
+
+// ── Reinicio del server desde la pantalla de Configuración ──
+// Mismo alcance que la tarea programada "JarvisRestart"/restart-jarvis.ps1 ya
+// existente: reinicia SOLO el proceso Node, no el túnel de Cloudflare (no
+// hace falta para tomar código nuevo). Pensado para no depender de abrir otra
+// terminal — pero OJO: si el que aprieta el botón está viendo la UI a través
+// de ESTE mismo server, su propia conexión se corta durante el restart, es
+// inevitable (el proceso que la sirve muere). Por eso se responde `ok` ANTES
+// de matar nada, y recién con la respuesta ya en vuelo se dispara el restart.
+//
+// Dos modos, elegidos por si hay o no un supervisor externo:
+//  - RESTART_CMD seteado (env var): se ejecuta ese comando y se deja que ÉL
+//    mate y relance — pensado para deploys bajo un supervisor de verdad (ej.
+//    FerStark en WSL: "systemctl --user restart ferstark-server.service").
+//    No hacemos process.exit() acá: si RESTART_CMD nos mata, el supervisor
+//    ya se encarga; si no nos mata, seguir vivos es más seguro que adivinar.
+//  - Sin RESTART_CMD, en Windows (los dos deploys de escritorio, User/locti):
+//    este mismo proceso se relanza a sí mismo — spawn detached de
+//    "node src/server.js" con el mismo cwd/env — y recién ahí hace
+//    process.exit(). Mismo resultado que restart-jarvis.ps1 pero sin
+//    terminal ni Task Scheduler de por medio.
+//  - Sin RESTART_CMD fuera de Windows: no hay forma segura de auto-relanzarse
+//    sin supervisor (podría duplicar el proceso o perder los logs) — se
+//    avisa por consola y no se hace nada más.
+function doRestart() {
+  if (process.env.RESTART_CMD) {
+    console.log('[restart] ejecutando RESTART_CMD:', process.env.RESTART_CMD);
+    exec(process.env.RESTART_CMD, err => {
+      if (err) console.error('[restart] RESTART_CMD falló:', err.message);
+    });
+    return;
+  }
+  if (!IS_WIN) {
+    console.error('[restart] no es Windows y no hay RESTART_CMD seteado — no se puede autoreiniciar. Configurá RESTART_CMD para este deploy.');
+    return;
+  }
+  console.log('[restart] relanzando server.js...');
+  const child = spawn(process.execPath, [__filename], {
+    cwd: path.join(__dirname, '..'),
+    env: process.env,
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+  process.exit(0);
+}
+
+app.post('/api/restart', (req, res) => {
+  res.json({ ok: true, restarting: true });
+  // Esperar a que la respuesta ya haya salido por el socket antes de matar el
+  // proceso que la está sirviendo (si no, el cliente puede quedarse sin
+  // confirmación aunque el restart haya salido bien). El pequeño delay extra
+  // le da margen a proxies de por medio (el túnel de Cloudflare).
+  res.on('finish', () => setTimeout(doRestart, 300));
 });
 
 // index.html y manifest.json tienen placeholders {{APP_NAME}}/{{APP_COLOR}} —

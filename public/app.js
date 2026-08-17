@@ -3185,6 +3185,22 @@ $('cfg-color-ai').oninput = e => { settings.colorAi = e.target.value; applySetti
 $('cfg-font-family').onchange = e => { settings.fontFamily = e.target.value; applySettings(); saveSettings(); };
 $('cfg-font-size').onchange = e => { settings.fontSize = e.target.value; applySettings(); saveSettings(); };
 
+// Reinicio del server (toma código nuevo tras un git pull) — ver /api/restart
+// en server.js. netFetch/api normal no sirve acá: el server responde igual,
+// pero se muere unos milisegundos después de mandar la respuesta, así que la
+// conexión puede leerse como error de red aunque el restart haya salido bien
+// — por eso el catch de abajo no muestra error, solo el then es best-effort.
+$('cfg-restart-btn').onclick = async () => {
+  if (!confirm('Reiniciar el server?\n\nAplica cambios de código nuevos (después de un git pull). Se corta la conexión unos segundos y después hay que recargar la página a mano.')) return;
+  toast('Reiniciando server…', 'info', 6000);
+  try {
+    await fetch('/api/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+  } catch {
+    // Esperado: el server puede cerrar la conexión antes de que el fetch
+    // termine de leer la respuesta. No es un error real, ver comentario arriba.
+  }
+};
+
 $('cfg-reset').onclick = () => {
   Object.assign(settings, DEFAULT_SETTINGS);
   applySettings(); saveSettings();

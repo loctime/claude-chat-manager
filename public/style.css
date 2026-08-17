@@ -786,6 +786,13 @@ dialog button:hover { background: var(--border); }
 #settings-dialog input[type="color"] {
   width: 100%; height: 40px; padding: 2px; cursor: pointer;
 }
+#settings-dialog .settings-server {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap;
+}
+#settings-dialog .settings-hint {
+  font-size: 12px; color: var(--text2);
+}
+#cfg-restart-btn { color: var(--danger); border-color: var(--danger); flex-shrink: 0; }
 #cfg-reset { color: var(--danger); border-color: var(--danger); }
 #settings-dialog .settings-version {
   text-align: center; font-size: 12px; color: var(--text2); margin-top: 10px;
