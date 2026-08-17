@@ -10,7 +10,7 @@ function resolveClaudeCommand() {
   if (process.env.CLAUDE_CMD) return process.env.CLAUDE_CMD;
   let candidates = [];
   try {
-    candidates = execFileSync('where', ['claude'], { encoding: 'utf8' })
+    candidates = execFileSync('where', ['claude'], { encoding: 'utf8', windowsHide: true })
       .split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   } catch {}
   // Un .exe directo en el PATH sirve tal cual

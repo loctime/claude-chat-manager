@@ -73,11 +73,19 @@ function getAppColor() {
 // Configuración; serveIcon() de más abajo cae al PNG original del repo si
 // todavía no se generó ninguno (instalación nueva).
 const ICON_CACHE_DIR = path.join(HOME_DIR, '.ccm-icons');
+// Devuelve true/false (no tira) para que el caller pueda avisarle al
+// usuario si falló — antes quedaba solo en el log del server, invisible
+// desde la UI, y el toast decía "guardado" igual aunque ImageMagick no
+// esté en el PATH de esta cuenta de Windows (gotcha real: se instaló en el
+// PATH de usuario de `User`, no machine-wide — otra cuenta como `locti` no
+// lo ve).
 function regenerateIconsSafe(color) {
   try {
     icon.regenerateIcons(color, ICON_CACHE_DIR, { magickCmd: MAGICK_CMD, magickArgs });
+    return true;
   } catch (e) {
     console.error('No se pudo regenerar el ícono PWA:', e.message);
+    return false;
   }
 }
 // Al boot: si hay un color guardado de una sesión anterior pero el cache de
@@ -207,8 +215,8 @@ app.patch('/api/config', (req, res) => {
   }
   config.save(cfg);
   const appColor = getAppColor();
-  if ('appColor' in req.body) regenerateIconsSafe(appColor);
-  res.json({ ok: true, appName: getAppName(), appColor });
+  const iconOk = ('appColor' in req.body) ? regenerateIconsSafe(appColor) : true;
+  res.json({ ok: true, appName: getAppName(), appColor, iconOk });
 });
 
 // index.html y manifest.json tienen placeholders {{APP_NAME}}/{{APP_COLOR}} —
@@ -395,7 +403,7 @@ function _groqTitle(excerpt) {
       '-H', 'Content-Type: application/json',
       '--max-time', '15',
       '-d', body,
-    ], { maxBuffer: 512 * 1024 }, (err, stdout) => {
+    ], { maxBuffer: 512 * 1024, windowsHide: true }, (err, stdout) => {
       if (err) return resolve(null);
       try {
         const parsed = JSON.parse(stdout);
@@ -420,7 +428,7 @@ function _groqTitle(excerpt) {
 function _claudeCompact(sessionId, cwd) {
   return new Promise((resolve, reject) => {
     const args = ['--resume', sessionId, '-p', '/compact', '--dangerously-skip-permissions', '--output-format', 'json'];
-    const child = spawn(CLAUDE_CMD, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(CLAUDE_CMD, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => {
@@ -523,7 +531,7 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
       '-quality', '82',
       '-strip',
       outPath,
-    ]), (err) => {
+    ]), { windowsHide: true }, (err) => {
       if (err) {
         // Fallback: usar original renombrado (ej. ImageMagick no instalado)
         fs.renameSync(req.file.path, finalPath);
@@ -554,7 +562,7 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
     '-F', 'model=whisper-large-v3',
     '-F', 'language=es',
     '-F', `file=@${audioPath};filename=${originalName}`,
-  ], { maxBuffer: 2 * 1024 * 1024 }, (err, stdout, stderr) => {
+  ], { maxBuffer: 2 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
     fs.unlink(audioPath, () => {});
     if (err) return res.status(500).json({ error: 'error de transcripción: ' + (stderr || err.message) });
     let parsed;
@@ -570,7 +578,7 @@ const GS_AVAILABLE = (() => {
     // 'where' en Windows, 'which' en Unix; gs en Linux, gswin64c en Windows
     const cmd = IS_WIN ? 'where' : 'which';
     const gsName = IS_WIN ? 'gswin64c' : 'gs';
-    execFileSync(cmd, [gsName]);
+    execFileSync(cmd, [gsName], { windowsHide: true });
     return true;
   } catch { return false; }
 })();
@@ -598,7 +606,7 @@ app.get('/api/thumbnail', (req, res) => {
     args = [filePath, '-resize', '200x200>', '-background', '#111b21', '-flatten', 'jpeg:-'];
   }
 
-  execFile(MAGICK_CMD, magickArgs(args), { encoding: 'buffer', maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+  execFile(MAGICK_CMD, magickArgs(args), { encoding: 'buffer', maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
     if (err || !stdout || stdout.length === 0) return res.status(404).end();
     res.end(stdout);
   });
@@ -875,7 +883,7 @@ const scanUpload = multer({
 
 app.post('/api/scan', scanUpload.single('photo'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'no se recibió foto' });
-  execFile(PYTHON_CMD, [SCAN_SCRIPT, req.file.path, req.scanDir, '--json'], { maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+  execFile(PYTHON_CMD, [SCAN_SCRIPT, req.file.path, req.scanDir, '--json'], { maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
     if (err) {
       console.error('[scan] error procesando', stderr || err.message);
       return res.status(500).json({ error: 'no se pudo procesar la imagen: ' + (stderr || err.message).toString().slice(0, 300) });

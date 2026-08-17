@@ -37,7 +37,7 @@ class Runner extends EventEmitter {
     if (child) {
       if (IS_WIN && child.pid) {
         // En Windows kill() no baja los subprocesos del CLI; taskkill /T mata el árbol
-        try { execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }); }
+        try { execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); }
         catch { child.kill('SIGTERM'); }
       } else {
         child.kill('SIGTERM');
@@ -88,7 +88,11 @@ class Runner extends EventEmitter {
     const spawnCmd = usesudo ? 'sudo' : this.command;
     const spawnArgs = usesudo ? ['-u', account, this.command, ...args] : args;
     const homeDir = usesudo ? `/home/${account}` : os.homedir();
-    const child = this.spawnFn(spawnCmd, spawnArgs, { cwd: job.cwd, env: { ...process.env, HOME: homeDir }, stdio: ['ignore', 'pipe', 'pipe'] });
+    // windowsHide: Jarvis corre sin consola (lanzado por el .vbs de autostart,
+    // sin ventana) — sin esta opción, Windows le abre una consola nueva a
+    // cada claude.exe que se spawnea igual, porque el padre no tiene una
+    // propia que heredar. No hace nada en Linux/Mac.
+    const child = this.spawnFn(spawnCmd, spawnArgs, { cwd: job.cwd, env: { ...process.env, HOME: homeDir }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     this.running.set(job.convId, child);
     this.emit('status', { convId: job.convId, status: 'running', account });
 
