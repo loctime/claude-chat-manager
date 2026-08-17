@@ -38,7 +38,7 @@ function regenerateIcons(color, cacheDir, opts = {}) {
   const files = [];
   for (const size of sizes) {
     const out = path.join(cacheDir, iconFileName(size));
-    exec(magickCmd, magickArgs([...circleDrawArgs(size, color), out]));
+    exec(magickCmd, magickArgs([...circleDrawArgs(size, color), out]), { windowsHide: true });
     files.push(out);
   }
   return files;

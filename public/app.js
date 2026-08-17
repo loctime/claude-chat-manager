@@ -3160,14 +3160,22 @@ $('cfg-app-name').onchange = async e => {
 $('cfg-app-color').onchange = async e => {
   const color = e.target.value;
   try {
-    const { appColor } = await api('/config', {
+    const { appColor, iconOk } = await api('/config', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ appColor: color }),
     });
     APP_COLOR = appColor;
     e.target.value = appColor;
-    toast('Color guardado — recargá para verlo en la interfaz y reinstalá la PWA para el ícono', 'info', 5000);
+    if (iconOk) {
+      toast('Color guardado — recargá para verlo en la interfaz y reinstalá la PWA para el ícono', 'info', 5000);
+    } else {
+      // ImageMagick no encontrado en el PATH de esta cuenta de Windows (u
+      // otro fallo al regenerar el PNG) — el color de la interfaz sí quedó
+      // guardado, pero el ícono de la PWA se va a seguir viendo con el
+      // verde default hasta que se resuelva del lado del server.
+      toast('Color guardado, pero no se pudo generar el ícono nuevo (¿ImageMagick instalado en esta cuenta?) — la interfaz sí cambia', 'error', 8000);
+    }
   } catch (err) {
     toast('No se pudo guardar el color: ' + err.message);
   }
