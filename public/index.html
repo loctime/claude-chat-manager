@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=47">
+  <link rel="stylesheet" href="style.css?v=52">
   <!-- Color de identidad server-side (Configuración → Color de identidad). Va
        después de style.css para pisar el --accent default de ahí; el ajuste
        personal por-dispositivo ("Acento" en Colores, más abajo) sigue
@@ -38,6 +38,21 @@
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.17L4 17.17V4h16v12z"/><rect x="11" y="6.5" width="2" height="7" rx="0.5"/><rect x="8.5" y="9" width="7" height="2" rx="0.5"/></svg>
         </button>
       </header>
+      <div id="account-status" hidden>
+        <span id="account-status-email"></span>
+        <div class="usage-row">
+          <div class="usage-bar" id="usage-5h" hidden>
+            <span class="usage-bar-label">5h</span>
+            <span class="usage-bar-track"><span class="usage-bar-fill"></span></span>
+            <span class="usage-bar-pct"></span>
+          </div>
+          <div class="usage-bar" id="usage-7d" hidden>
+            <span class="usage-bar-label">Semana</span>
+            <span class="usage-bar-track"><span class="usage-bar-fill"></span></span>
+            <span class="usage-bar-pct"></span>
+          </div>
+        </div>
+      </div>
       <nav id="pane-tabs">
         <button type="button" class="pane-tab active" data-pane="0">Chats</button>
         <button type="button" class="pane-tab" data-pane="1">Archivado</button>
@@ -153,6 +168,10 @@
   <dialog id="search-dialog">
     <form id="search-form" method="dialog">
       <input id="search-input" type="search" placeholder="Buscar en todas las conversaciones… (Ctrl+K)" autocomplete="off">
+      <label id="search-tools-label">
+        <input type="checkbox" id="search-tools">
+        Incluir herramientas
+      </label>
       <div id="search-results"></div>
       <div id="search-hint">Enter para abrir el primer resultado · Esc para cerrar</div>
     </form>
@@ -237,6 +256,6 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=48"></script>
+  <script src="app.js?v=49"></script>
 </body>
 </html>

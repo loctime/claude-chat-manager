@@ -57,6 +57,7 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
   }
   body.sidebar-hidden #panel-resizer { display: none; }
   body.sidebar-hidden #list-header,
+  body.sidebar-hidden #account-status,
   body.sidebar-hidden #ptr-indicator,
   body.sidebar-hidden #pane-tabs,
   body.sidebar-hidden .project > summary,
@@ -73,7 +74,7 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px;
+  padding: 10px 16px;
   background: var(--header);
 }
 #list-header h1 { font-size: 20px; font-weight: 600; letter-spacing: .3px; display: flex; align-items: center; }
@@ -133,13 +134,13 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
   line-height: 1.4;
 }
 #account-switch:hover { filter: brightness(1.1); }
-#new-conv, #refresh-btn, #settings-btn {
+#search-btn, #new-conv, #refresh-btn, #settings-btn {
   background: none; border: none; color: var(--text2); cursor: pointer;
   display: flex; align-items: center; justify-content: center;
-  width: 40px; height: 40px; border-radius: 50%; transition: background .15s;
+  width: 36px; height: 36px; border-radius: 50%; transition: background .15s;
   touch-action: manipulation; -webkit-tap-highlight-color: transparent;
 }
-#new-conv:hover, #refresh-btn:hover, #settings-btn:hover { background: var(--border); color: var(--text); }
+#search-btn:hover, #new-conv:hover, #refresh-btn:hover, #settings-btn:hover { background: var(--border); color: var(--text); }
 #refresh-btn.spinning svg { animation: spin .6s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -150,6 +151,44 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
 }
 #ptr-indicator[hidden] { display: none; }
 #ptr-indicator svg { animation: spin .6s linear infinite; }
+
+/* ── Estado de cuenta: email logueado + uso 5h/semanal ── */
+#account-status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 16px 10px;
+  background: var(--header);
+  border-bottom: 1px solid var(--border);
+}
+#account-status-email {
+  font-size: 11px;
+  color: var(--text2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.usage-row { display: flex; gap: 14px; }
+.usage-bar { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+.usage-bar-label { font-size: 10px; color: var(--text2); flex-shrink: 0; }
+.usage-bar-track {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+.usage-bar-fill {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width .3s ease;
+}
+.usage-bar-fill[data-tone="warm"] { background: #d9a441; }
+.usage-bar-fill[data-tone="hot"]  { background: #e05a5a; }
+.usage-bar-pct { font-size: 10px; color: var(--text2); flex-shrink: 0; min-width: 26px; text-align: right; }
 
 #pane-tabs { display: none; }
 @media (min-width: 768px) {
@@ -847,13 +886,20 @@ body.hide-tools details.tool { display: none !important; }
 }
 #install-dismiss:hover, #ios-tip-close:hover { color: var(--text); }
 
-/* ── Inline image preview en mensajes ── */
+/* ── Inline image preview en mensajes ──
+   Mismo marco que .file-card (bg + borde + radius) — antes era un thumbnail
+   suelto sin caja, se veía "desarmado" al lado de las cards de archivo/carpeta. */
 .inline-img-wrap {
   display: inline-flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   margin: 4px 0;
   vertical-align: top;
+  width: 200px;
+  background: var(--header);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
 }
 .inline-thumb {
   display: block;
@@ -867,6 +913,27 @@ body.hide-tools details.tool { display: none !important; }
 }
 .inline-thumb:hover { opacity: .85; }
 
+/* Mención chica de una ruta ya mostrada antes en el mismo mensaje — toda la
+   "pastilla" tiene marco y es clickeable (copia), sin repetir la card entera. */
+.path-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+  background: var(--header);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  margin: 2px 0;
+  font-size: 12px;
+  color: rgba(233,237,239,.75);
+  cursor: pointer;
+}
+.path-chip:hover { border-color: var(--accent); color: var(--text); }
+
 /* ── File card (PDF, audio, video, otros) ── */
 .file-card {
   display: inline-flex;
@@ -877,7 +944,7 @@ body.hide-tools details.tool { display: none !important; }
   border-radius: 8px;
   padding: 8px 10px;
   margin: 4px 0;
-  max-width: 260px;
+  max-width: 340px;
   overflow: hidden;
 }
 .file-card-icon {
@@ -914,10 +981,10 @@ body.hide-tools details.tool { display: none !important; }
   font-weight: 600;
 }
 .file-card-dl:hover { text-decoration: underline; }
+/* La versión <button> (folder cards, arma un .zip) no trae reset de UA —
+   se la iguala a la <a> de arriba para que se vean como la misma acción. */
+.file-card-dl-btn { background: none; border: none; padding: 0; font-family: inherit; cursor: pointer; }
 
-/* Folder cards muestran la ruta completa — necesitan más ancho que el
-   max-width: 260px genérico de .file-card (pensado para nombres de archivo). */
-.file-card-folder { max-width: 340px; }
 .file-card-path-row {
   display: flex;
   align-items: center;
@@ -931,7 +998,9 @@ body.hide-tools details.tool { display: none !important; }
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+  cursor: pointer;
 }
+.file-card-path:hover { color: rgba(233,237,239,.85); text-decoration: underline; }
 .file-card-actions {
   display: flex;
   gap: 2px;
@@ -1188,6 +1257,18 @@ body.hide-tools details.tool { display: none !important; }
   font-size: 16px;
   outline: none;
 }
+#search-tools-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  color: var(--text2);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+#search-tools-label[hidden] { display: none; }
+#search-tools { accent-color: var(--accent); margin: 0; }
 #search-results {
   max-height: 55vh;
   overflow-y: auto;
@@ -1215,7 +1296,7 @@ body.hide-tools details.tool { display: none !important; }
 .search-snippet mark { background: rgba(37,211,102,.25); color: var(--text); padding: 0 2px; border-radius: 2px; }
 .search-meta { font-size: 11px; color: var(--text2); opacity: .7; }
 .search-loading, .search-empty { padding: 14px; color: var(--text2); font-size: 13px; text-align: center; }
-.msg.search-hit, details.tool.search-hit {
+.msg.search-hit, details.tool.search-hit, .note-bubble.search-hit {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   transition: outline .3s;
