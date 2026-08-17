@@ -1,41 +1,25 @@
-# Reinicia solo el server de Jarvis (no el tunnel) para que tome codigo nuevo.
-# Corre como scheduled task "JarvisRestart" a nivel NORMAL (/RL LIMITED), a proposito:
-# asi el node.exe que arranca aca siempre queda a integridad estandar, nunca elevada.
-# Esto importa porque si alguna vez se mata el proceso desde un contexto elevado (ej.
-# "Reiniciar Jarvis (Admin).bat"), el hijo hereda integridad "High" y despues ni esta
-# tarea ni un Stop-Process normal lo pueden volver a matar ("Acceso denegado" aunque
-# sea el mismo usuario), por eso ese .bat delega el arranque aca en vez de lanzar
-# node directamente. Vale tambien el motivo original: el proceso puede terminar en
-# Session 0, donde un Stop-Process interactivo normal (Session 1) da "Acceso denegado".
+# Reinicia el server de Jarvis via PM2 (migrado 2026-08-17 desde kill-by-PID).
+# Corre como scheduled task "JarvisRestart" (/RL LIMITED). Ya no necesita el
+# ".bat" de Admin: "pm2 restart" mata su propio hijo, no pega con procesos
+# de integridad mas alta/Session 0 (ver historia vieja mas abajo).
 #
-# Nota: este archivo debe ser puro ASCII. Un guion largo metido sin querer en un
-# string rompio el parseo de PowerShell 5.1 (sin BOM UTF-8 no lo banca) y dejo esta
-# tarea fallando en silencio durante un rato el 2026-07-26.
-$projectDir = "C:\Users\User\Desktop\Proyectos\claude-chat-manager"
+# Historia (ya no aplica, PM2 evita este problema): antes este script mataba
+# por PID dueno del puerto 3777 y relanzaba node directo; si se mataba desde
+# un contexto elevado el hijo heredaba integridad "High" y quedaba
+# ilegible/inmatable para procesos normales.
 $logFile = "$env:TEMP\jarvis-restart.log"
+$projectDir = "C:\Users\User\Desktop\Proyectos\claude-chat-manager"
+$pm2 = "C:\Users\User\AppData\Roaming\npm\pm2.cmd"
 
 function Log($msg) {
     "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg" | Out-File -FilePath $logFile -Append -Encoding utf8
 }
 
-# Identificamos por quien tiene el puerto 3777 escuchando (no por nombre/CommandLine,
-# que puede ser ilegible via WMI para procesos en Session 0 o de integridad distinta).
-$listeners = Get-NetTCPConnection -LocalPort 3777 -State Listen -ErrorAction SilentlyContinue |
-    Select-Object -ExpandProperty OwningProcess -Unique
-foreach ($procId in $listeners) {
-    Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 500
-    if (Get-Process -Id $procId -ErrorAction SilentlyContinue) {
-        Log "NO SE PUDO matar pid $procId (sigue vivo, probablemente integridad mas alta que esta tarea; hace falta el bat de Admin)"
-    } else {
-        Log "killed pid $procId (dueno del puerto 3777)"
-    }
-}
-if (-not $listeners) { Log "nada escuchaba en 3777 (igual arranco uno nuevo)" }
-
-Start-Sleep -Seconds 2
 Set-Location $projectDir
-Start-Process -FilePath "node" -ArgumentList "src\server.js" -WindowStyle Hidden `
-    -RedirectStandardOutput "$env:TEMP\jarvis-server.log" -RedirectStandardError "$env:TEMP\jarvis-server-err.log"
-
-Log "restarted"
+$out = & $pm2 restart jarvis-server 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0 -or $out -match "process or namespace not found") {
+    Log "jarvis-server no existia en pm2, arrancando desde ecosystem.win.config.js"
+    & $pm2 start ecosystem.win.config.js --only jarvis-server 2>&1 | Out-Null
+} else {
+    Log "restarted (pm2)"
+}

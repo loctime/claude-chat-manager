@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { execFile, execFileSync, spawn } = require('child_process');
+const { execFile, execFileSync, exec, spawn } = require('child_process');
 const multer = require('multer');
 const archiver = require('archiver');
 const scanner = require('./scanner');
@@ -73,11 +73,19 @@ function getAppColor() {
 // Configuración; serveIcon() de más abajo cae al PNG original del repo si
 // todavía no se generó ninguno (instalación nueva).
 const ICON_CACHE_DIR = path.join(HOME_DIR, '.ccm-icons');
+// Devuelve true/false (no tira) para que el caller pueda avisarle al
+// usuario si falló — antes quedaba solo en el log del server, invisible
+// desde la UI, y el toast decía "guardado" igual aunque ImageMagick no
+// esté en el PATH de esta cuenta de Windows (gotcha real: se instaló en el
+// PATH de usuario de `User`, no machine-wide — otra cuenta como `locti` no
+// lo ve).
 function regenerateIconsSafe(color) {
   try {
     icon.regenerateIcons(color, ICON_CACHE_DIR, { magickCmd: MAGICK_CMD, magickArgs });
+    return true;
   } catch (e) {
     console.error('No se pudo regenerar el ícono PWA:', e.message);
+    return false;
   }
 }
 // Al boot: si hay un color guardado de una sesión anterior pero el cache de
@@ -207,8 +215,64 @@ app.patch('/api/config', (req, res) => {
   }
   config.save(cfg);
   const appColor = getAppColor();
-  if ('appColor' in req.body) regenerateIconsSafe(appColor);
-  res.json({ ok: true, appName: getAppName(), appColor });
+  const iconOk = ('appColor' in req.body) ? regenerateIconsSafe(appColor) : true;
+  res.json({ ok: true, appName: getAppName(), appColor, iconOk });
+});
+
+// ── Reinicio del server desde la pantalla de Configuración ──
+// Mismo alcance que la tarea programada "JarvisRestart"/restart-jarvis.ps1 ya
+// existente: reinicia SOLO el proceso Node, no el túnel de Cloudflare (no
+// hace falta para tomar código nuevo). Pensado para no depender de abrir otra
+// terminal — pero OJO: si el que aprieta el botón está viendo la UI a través
+// de ESTE mismo server, su propia conexión se corta durante el restart, es
+// inevitable (el proceso que la sirve muere). Por eso se responde `ok` ANTES
+// de matar nada, y recién con la respuesta ya en vuelo se dispara el restart.
+//
+// Dos modos, elegidos por si hay o no un supervisor externo:
+//  - RESTART_CMD seteado (env var): se ejecuta ese comando y se deja que ÉL
+//    mate y relance — pensado para deploys bajo un supervisor de verdad (ej.
+//    FerStark en WSL: "systemctl --user restart ferstark-server.service").
+//    No hacemos process.exit() acá: si RESTART_CMD nos mata, el supervisor
+//    ya se encarga; si no nos mata, seguir vivos es más seguro que adivinar.
+//  - Sin RESTART_CMD, en Windows (los dos deploys de escritorio, User/locti):
+//    este mismo proceso se relanza a sí mismo — spawn detached de
+//    "node src/server.js" con el mismo cwd/env — y recién ahí hace
+//    process.exit(). Mismo resultado que restart-jarvis.ps1 pero sin
+//    terminal ni Task Scheduler de por medio.
+//  - Sin RESTART_CMD fuera de Windows: no hay forma segura de auto-relanzarse
+//    sin supervisor (podría duplicar el proceso o perder los logs) — se
+//    avisa por consola y no se hace nada más.
+function doRestart() {
+  if (process.env.RESTART_CMD) {
+    console.log('[restart] ejecutando RESTART_CMD:', process.env.RESTART_CMD);
+    exec(process.env.RESTART_CMD, { windowsHide: true }, err => {
+      if (err) console.error('[restart] RESTART_CMD falló:', err.message);
+    });
+    return;
+  }
+  if (!IS_WIN) {
+    console.error('[restart] no es Windows y no hay RESTART_CMD seteado — no se puede autoreiniciar. Configurá RESTART_CMD para este deploy.');
+    return;
+  }
+  console.log('[restart] relanzando server.js...');
+  const child = spawn(process.execPath, [__filename], {
+    cwd: path.join(__dirname, '..'),
+    env: process.env,
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true, // mismo motivo que el resto de los spawn del server (ver 6eba406): sin consola propia, Windows abriría una nueva
+  });
+  child.unref();
+  process.exit(0);
+}
+
+app.post('/api/restart', (req, res) => {
+  res.json({ ok: true, restarting: true });
+  // Esperar a que la respuesta ya haya salido por el socket antes de matar el
+  // proceso que la está sirviendo (si no, el cliente puede quedarse sin
+  // confirmación aunque el restart haya salido bien). El pequeño delay extra
+  // le da margen a proxies de por medio (el túnel de Cloudflare).
+  res.on('finish', () => setTimeout(doRestart, 300));
 });
 
 // index.html y manifest.json tienen placeholders {{APP_NAME}}/{{APP_COLOR}} —
@@ -239,13 +303,22 @@ app.get('/manifest.json', serveTemplated(path.join(PUBLIC_DIR, 'manifest.json'),
 // sirve ese; si no (instalación nueva, o cache borrado a mano), cae al PNG
 // verde original del repo. Rutas explícitas ANTES del express.static de abajo
 // para que tengan prioridad sobre los archivos estáticos del mismo nombre.
+//
+// Gotcha Windows: res.sendFile(pathAbsolutoConBackslashes) tira 404 siempre
+// (Not Found) aunque el archivo exista — Express hace encodeURI() sobre el
+// path antes de pasarlo a `send`, y encodeURI codifica el backslash como
+// %5C, así que la ruta que llega a `send` queda rota. La forma correcta en
+// Windows (y la que además documenta Express) es pasar SOLO el nombre de
+// archivo + `{ root: carpeta }`, nunca la ruta absoluta ya unida.
 function serveIcon(size) {
   const fileName = icon.iconFileName(size);
   return (req, res) => {
-    const cached = path.join(ICON_CACHE_DIR, fileName);
-    const file = fs.existsSync(cached) ? cached : path.join(PUBLIC_DIR, fileName);
+    const useCache = fs.existsSync(path.join(ICON_CACHE_DIR, fileName));
+    const root = useCache ? ICON_CACHE_DIR : PUBLIC_DIR;
     res.set('Cache-Control', 'no-store');
-    res.sendFile(file);
+    res.sendFile(fileName, { root }, err => {
+      if (err && !res.headersSent) res.status(err.status || 500).end();
+    });
   };
 }
 app.get('/icon-192.png', serveIcon(192));
@@ -386,7 +459,7 @@ function _groqTitle(excerpt) {
       '-H', 'Content-Type: application/json',
       '--max-time', '15',
       '-d', body,
-    ], { maxBuffer: 512 * 1024 }, (err, stdout) => {
+    ], { maxBuffer: 512 * 1024, windowsHide: true }, (err, stdout) => {
       if (err) return resolve(null);
       try {
         const parsed = JSON.parse(stdout);
@@ -411,7 +484,7 @@ function _groqTitle(excerpt) {
 function _claudeCompact(sessionId, cwd) {
   return new Promise((resolve, reject) => {
     const args = ['--resume', sessionId, '-p', '/compact', '--dangerously-skip-permissions', '--output-format', 'json'];
-    const child = spawn(CLAUDE_CMD, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(CLAUDE_CMD, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => {
@@ -514,7 +587,7 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
       '-quality', '82',
       '-strip',
       outPath,
-    ]), (err) => {
+    ]), { windowsHide: true }, (err) => {
       if (err) {
         // Fallback: usar original renombrado (ej. ImageMagick no instalado)
         fs.renameSync(req.file.path, finalPath);
@@ -545,7 +618,7 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
     '-F', 'model=whisper-large-v3',
     '-F', 'language=es',
     '-F', `file=@${audioPath};filename=${originalName}`,
-  ], { maxBuffer: 2 * 1024 * 1024 }, (err, stdout, stderr) => {
+  ], { maxBuffer: 2 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
     fs.unlink(audioPath, () => {});
     if (err) return res.status(500).json({ error: 'error de transcripción: ' + (stderr || err.message) });
     let parsed;
@@ -561,7 +634,7 @@ const GS_AVAILABLE = (() => {
     // 'where' en Windows, 'which' en Unix; gs en Linux, gswin64c en Windows
     const cmd = IS_WIN ? 'where' : 'which';
     const gsName = IS_WIN ? 'gswin64c' : 'gs';
-    execFileSync(cmd, [gsName]);
+    execFileSync(cmd, [gsName], { windowsHide: true });
     return true;
   } catch { return false; }
 })();
@@ -589,7 +662,7 @@ app.get('/api/thumbnail', (req, res) => {
     args = [filePath, '-resize', '200x200>', '-background', '#111b21', '-flatten', 'jpeg:-'];
   }
 
-  execFile(MAGICK_CMD, magickArgs(args), { encoding: 'buffer', maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+  execFile(MAGICK_CMD, magickArgs(args), { encoding: 'buffer', maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
     if (err || !stdout || stdout.length === 0) return res.status(404).end();
     res.end(stdout);
   });
@@ -866,7 +939,7 @@ const scanUpload = multer({
 
 app.post('/api/scan', scanUpload.single('photo'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'no se recibió foto' });
-  execFile(PYTHON_CMD, [SCAN_SCRIPT, req.file.path, req.scanDir, '--json'], { maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+  execFile(PYTHON_CMD, [SCAN_SCRIPT, req.file.path, req.scanDir, '--json'], { maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
     if (err) {
       console.error('[scan] error procesando', stderr || err.message);
       return res.status(500).json({ error: 'no se pudo procesar la imagen: ' + (stderr || err.message).toString().slice(0, 300) });

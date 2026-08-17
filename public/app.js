@@ -3165,14 +3165,22 @@ $('cfg-app-name').onchange = async e => {
 $('cfg-app-color').onchange = async e => {
   const color = e.target.value;
   try {
-    const { appColor } = await api('/config', {
+    const { appColor, iconOk } = await api('/config', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ appColor: color }),
     });
     APP_COLOR = appColor;
     e.target.value = appColor;
-    toast('Color guardado — recargá para verlo en la interfaz y reinstalá la PWA para el ícono', 'info', 5000);
+    if (iconOk) {
+      toast('Color guardado — recargá para verlo en la interfaz y reinstalá la PWA para el ícono', 'info', 5000);
+    } else {
+      // ImageMagick no encontrado en el PATH de esta cuenta de Windows (u
+      // otro fallo al regenerar el PNG) — el color de la interfaz sí quedó
+      // guardado, pero el ícono de la PWA se va a seguir viendo con el
+      // verde default hasta que se resuelva del lado del server.
+      toast('Color guardado, pero no se pudo generar el ícono nuevo (¿ImageMagick instalado en esta cuenta?) — la interfaz sí cambia', 'error', 8000);
+    }
   } catch (err) {
     toast('No se pudo guardar el color: ' + err.message);
   }
@@ -3189,6 +3197,22 @@ $('cfg-color-me').oninput = e => { settings.colorMe = e.target.value; applySetti
 $('cfg-color-ai').oninput = e => { settings.colorAi = e.target.value; applySettings(); saveSettings(); };
 $('cfg-font-family').onchange = e => { settings.fontFamily = e.target.value; applySettings(); saveSettings(); };
 $('cfg-font-size').onchange = e => { settings.fontSize = e.target.value; applySettings(); saveSettings(); };
+
+// Reinicio del server (toma código nuevo tras un git pull) — ver /api/restart
+// en server.js. netFetch/api normal no sirve acá: el server responde igual,
+// pero se muere unos milisegundos después de mandar la respuesta, así que la
+// conexión puede leerse como error de red aunque el restart haya salido bien
+// — por eso el catch de abajo no muestra error, solo el then es best-effort.
+$('cfg-restart-btn').onclick = async () => {
+  if (!confirm('Reiniciar el server?\n\nAplica cambios de código nuevos (después de un git pull). Se corta la conexión unos segundos y después hay que recargar la página a mano.')) return;
+  toast('Reiniciando server…', 'info', 6000);
+  try {
+    await fetch('/api/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+  } catch {
+    // Esperado: el server puede cerrar la conexión antes de que el fetch
+    // termine de leer la respuesta. No es un error real, ver comentario arriba.
+  }
+};
 
 $('cfg-reset').onclick = () => {
   Object.assign(settings, DEFAULT_SETTINGS);
