@@ -239,13 +239,22 @@ app.get('/manifest.json', serveTemplated(path.join(PUBLIC_DIR, 'manifest.json'),
 // sirve ese; si no (instalación nueva, o cache borrado a mano), cae al PNG
 // verde original del repo. Rutas explícitas ANTES del express.static de abajo
 // para que tengan prioridad sobre los archivos estáticos del mismo nombre.
+//
+// Gotcha Windows: res.sendFile(pathAbsolutoConBackslashes) tira 404 siempre
+// (Not Found) aunque el archivo exista — Express hace encodeURI() sobre el
+// path antes de pasarlo a `send`, y encodeURI codifica el backslash como
+// %5C, así que la ruta que llega a `send` queda rota. La forma correcta en
+// Windows (y la que además documenta Express) es pasar SOLO el nombre de
+// archivo + `{ root: carpeta }`, nunca la ruta absoluta ya unida.
 function serveIcon(size) {
   const fileName = icon.iconFileName(size);
   return (req, res) => {
-    const cached = path.join(ICON_CACHE_DIR, fileName);
-    const file = fs.existsSync(cached) ? cached : path.join(PUBLIC_DIR, fileName);
+    const useCache = fs.existsSync(path.join(ICON_CACHE_DIR, fileName));
+    const root = useCache ? ICON_CACHE_DIR : PUBLIC_DIR;
     res.set('Cache-Control', 'no-store');
-    res.sendFile(file);
+    res.sendFile(fileName, { root }, err => {
+      if (err && !res.headersSent) res.status(err.status || 500).end();
+    });
   };
 }
 app.get('/icon-192.png', serveIcon(192));
