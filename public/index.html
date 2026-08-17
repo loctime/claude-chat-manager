@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=38">
+  <link rel="stylesheet" href="style.css?v=46">
 </head>
 <body>
   <div id="app">
@@ -30,15 +30,14 @@
           <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
         </button>
         <button id="new-conv" title="Nueva conversación" aria-label="Nueva conversación">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.17L4 17.17V4h16v12z"/></svg>
+          <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.17L4 17.17V4h16v12z"/><rect x="11" y="6.5" width="2" height="7" rx="0.5"/><rect x="8.5" y="9" width="7" height="2" rx="0.5"/></svg>
         </button>
       </header>
       <nav id="pane-tabs">
         <button type="button" class="pane-tab active" data-pane="0">Chats</button>
         <button type="button" class="pane-tab" data-pane="1">Archivado</button>
         <button type="button" class="pane-tab" data-pane="2">📝 Notas</button>
-        <button type="button" class="pane-tab" data-pane="3">📧 Mail</button>
-        <button type="button" class="pane-tab" data-pane="4">📷 Escáner</button>
+        <button type="button" class="pane-tab" data-pane="3">📷 Escáner</button>
       </nav>
       <div id="ptr-indicator" hidden>
         <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
@@ -49,38 +48,7 @@
           <nav id="tree" class="tree-pane"></nav>
           <nav id="tree-archived" class="tree-pane"></nav>
           <div id="tree-notes" class="tree-pane notes-pane">
-            <div class="notes-header">
-              <button type="button" id="notes-back" class="archived-back">← Volver a chats</button>
-              <h2>📝 Notas</h2>
-              <button type="button" id="notebook-new-btn" class="notebook-new-btn" title="Nueva libreta" aria-label="Nueva libreta">+</button>
-            </div>
             <nav id="notebook-list"></nav>
-          </div>
-          <div id="tree-mail" class="tree-pane mail-pane">
-            <div class="mail-header">
-              <button type="button" id="mail-back" class="archived-back">← Volver a chats</button>
-              <h2>📧 Mail</h2>
-              <span id="mail-updated" class="mail-updated"></span>
-              <span id="mail-scan-error" class="mail-scan-error" hidden>⚠️ El último escaneo falló</span>
-              <button type="button" id="mail-scan-btn" class="mail-scan-btn">Actualizar bandeja</button>
-            </div>
-            <div id="mail-paused-banner" class="mail-paused-banner" hidden>
-              ⏸️ Mail en pausa — no escanea ni gasta nada hasta que se reactive.
-            </div>
-            <div id="mail-columns" class="mail-columns">
-              <div class="mail-column" data-state="pendiente">
-                <div class="mail-column-header">Pendiente <span class="mail-count" id="mail-count-pendiente">0</span></div>
-                <div class="mail-column-cards" id="mail-cards-pendiente"></div>
-              </div>
-              <div class="mail-column" data-state="respondido">
-                <div class="mail-column-header">Respondido <span class="mail-count" id="mail-count-respondido">0</span></div>
-                <div class="mail-column-cards" id="mail-cards-respondido"></div>
-              </div>
-              <div class="mail-column" data-state="archivado">
-                <div class="mail-column-header">Archivado <span class="mail-count" id="mail-count-archivado">0</span></div>
-                <div class="mail-column-cards" id="mail-cards-archivado"></div>
-              </div>
-            </div>
           </div>
           <div id="tree-scan" class="tree-pane scan-pane">
             <div class="scan-header">
@@ -150,8 +118,6 @@
           <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
         </button>
       </form>
-      <div id="mail-detail-view" class="mail-detail-view" hidden></div>
-
       <!-- Notas: libreta abierta — reusa este mismo panel/overlay/back que el chat -->
       <div id="notebook-view" class="notes-pane" hidden>
         <header id="notebook-header">
@@ -184,26 +150,6 @@
       <input id="search-input" type="search" placeholder="Buscar en todas las conversaciones… (Ctrl+K)" autocomplete="off">
       <div id="search-results"></div>
       <div id="search-hint">Enter para abrir el primer resultado · Esc para cerrar</div>
-    </form>
-  </dialog>
-
-  <!-- Modal nueva conversación -->
-  <dialog id="new-dialog">
-    <form method="dialog" id="new-form">
-      <h2>Nueva conversación</h2>
-      <label>Modelo
-        <select id="new-model">
-          <option value="">Default</option>
-          <option value="opus">Opus</option>
-          <option value="fable">Fable</option>
-          <option value="sonnet">Sonnet</option>
-          <option value="haiku">Haiku</option>
-        </select>
-      </label>
-      <menu>
-        <button value="cancel">Cancelar</button>
-        <button id="create-conv" value="default">Crear</button>
-      </menu>
     </form>
   </dialog>
 
@@ -258,6 +204,7 @@
         <button type="button" id="cfg-reset">Restaurar</button>
         <button value="cancel">Cerrar</button>
       </menu>
+      <div class="settings-version">{{APP_NAME}} v{{APP_VERSION}}</div>
     </form>
   </dialog>
 
@@ -276,6 +223,6 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=39"></script>
+  <script src="app.js?v=47"></script>
 </body>
 </html>

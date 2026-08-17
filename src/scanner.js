@@ -330,11 +330,11 @@ function toChatMessages(entries) {
     if (e.type === 'user') {
       const text = contentToText(e.message.content);
       if (isLocalCommandArtifact(text)) continue;
-      if (text.trim()) items.push({ role: 'user', text, uuid: e.uuid });
+      if (text.trim()) items.push({ role: 'user', text, uuid: e.uuid, ts: e.timestamp });
     } else if (e.type === 'assistant' && Array.isArray(e.message.content)) {
       for (const b of e.message.content) {
-        if (b.type === 'text' && b.text.trim()) items.push({ role: 'assistant', text: b.text });
-        else if (b.type === 'tool_use') items.push({ role: 'tool', name: b.name, input: b.input, output: toolResults[b.id] || '' });
+        if (b.type === 'text' && b.text.trim()) items.push({ role: 'assistant', text: b.text, ts: e.timestamp });
+        else if (b.type === 'tool_use') items.push({ role: 'tool', name: b.name, input: b.input, output: toolResults[b.id] || '', ts: e.timestamp });
       }
     }
   }

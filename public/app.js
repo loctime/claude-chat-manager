@@ -8,20 +8,11 @@ let archivedTotal = 0;
 let archivedTreeLimit = 100;
 let archivedTreeHasMore = false;
 let archivedTreeTotal = 0;
-let activePane = 0; // 0=chats 1=archived 2=notas 3=mail 4=escaner
+let activePane = 0; // 0=chats 1=archived 2=notas 3=escaner
 let notebookListLoaded = false;
 let notebooks = [];
 let currentNotebook = null; // {id, name} de la libreta abierta, o null si estamos en la lista
 let notesData = [];
-let mailPaneLoaded = false;
-let mailData = { updatedAt: null, scanning: false, items: [] };
-let mailPollTimer = null;
-let expandedMailId = null; // id del mail cuya tarjeta está expandida (o null si ninguna)
-let mailThreadPollTimer = null; // poll del hilo draft/send del mail expandido (uno solo a la vez)
-// Puramente local, para saber qué texto de "cargando" mostrar (Generando…
-// vs Enviando…) — no hace falta que el backend lo exponga, alcanza con
-// recordar qué endpoint disparamos nosotros mismos.
-let mailThreadJobKind = new Map(); // id → 'draft'|'send'
 
 function noteTimeLabel(ts) {
   return new Date(ts).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
@@ -145,544 +136,18 @@ async function safeLoadNotes() {
   finally { notesPolling = false; }
 }
 
-// ── Mail (panel Kanban) ──
-const MAIL_ACCOUNT_LABEL = { ferzepsas: 'ferzepsas', maximia: 'maximia' };
-const MAIL_STATES = ['pendiente', 'respondido', 'archivado'];
-const MAIL_NEXT_STATE = { pendiente: 'respondido', respondido: 'archivado', archivado: 'pendiente' };
-
-function mailRelativeTime(iso) {
-  const d = new Date(iso);
-  if (!iso || isNaN(d.getTime())) return '';
-  const diffMin = Math.round((Date.now() - d.getTime()) / 60000);
-  if (diffMin < 1) return 'ahora';
-  if (diffMin < 60) return `hace ${diffMin} min`;
-  const diffH = Math.round(diffMin / 60);
-  if (diffH < 24) return `hace ${diffH} h`;
-  const diffD = Math.round(diffH / 24);
-  if (diffD < 7) return `hace ${diffD} d`;
-  return d.toLocaleDateString('es', { day: '2-digit', month: '2-digit', year: '2-digit' });
-}
-
-function renderMailCard(item) {
-  const card = document.createElement('div');
-  card.className = 'mail-card';
-  card.classList.toggle('active', item.id === expandedMailId);
-
-  // Todo lo de acá adentro es clickeable y expande/colapsa la tarjeta in situ
-  // (el bloque de acciones queda afuera para no disparar el toggle sin querer
-  // al tocar el select o el botón de responder).
-  const main = document.createElement('div');
-  main.className = 'mail-card-main';
-  main.onclick = () => toggleMailExpand(item);
-
-  const top = document.createElement('div');
-  top.className = 'mail-card-top';
-  const accBadge = document.createElement('span');
-  accBadge.className = 'mail-badge account-' + item.account;
-  accBadge.textContent = MAIL_ACCOUNT_LABEL[item.account] || item.account;
-  top.appendChild(accBadge);
-  if (item.project) {
-    const projBadge = document.createElement('span');
-    projBadge.className = 'mail-badge-project';
-    projBadge.textContent = item.project;
-    top.appendChild(projBadge);
-  }
-  if (item.urgent) {
-    const urgent = document.createElement('span');
-    urgent.className = 'mail-urgent';
-    urgent.title = 'Urgente';
-    urgent.textContent = '🔴';
-    top.appendChild(urgent);
-  }
-  main.appendChild(top);
-
-  const subject = document.createElement('div');
-  subject.className = 'mail-subject';
-  subject.textContent = item.subject || '(sin asunto)';
-  main.appendChild(subject);
-
-  const from = document.createElement('div');
-  from.className = 'mail-from';
-  from.textContent = item.from || '';
-  main.appendChild(from);
-
-  if (item.summary) {
-    const summary = document.createElement('div');
-    summary.className = 'mail-summary';
-    summary.textContent = item.summary;
-    main.appendChild(summary);
-  }
-
-  const date = document.createElement('div');
-  date.className = 'mail-date';
-  date.textContent = mailRelativeTime(item.receivedAt);
-  main.appendChild(date);
-
-  card.appendChild(main);
-
-  const actions = document.createElement('div');
-  actions.className = 'mail-card-actions';
-
-  const moveSel = document.createElement('select');
-  moveSel.setAttribute('aria-label', 'Mover a');
-  for (const st of MAIL_STATES) {
-    const opt = document.createElement('option');
-    opt.value = st;
-    opt.textContent = st.charAt(0).toUpperCase() + st.slice(1);
-    if (st === item.state) opt.selected = true;
-    moveSel.appendChild(opt);
-  }
-  moveSel.onchange = () => updateMailState(item.id, moveSel.value);
-  actions.appendChild(moveSel);
-
-  const expanded = item.id === expandedMailId;
-  const replyBtn = document.createElement('button');
-  replyBtn.type = 'button';
-  replyBtn.className = 'mail-reply-btn';
-  replyBtn.classList.toggle('active', expanded);
-  replyBtn.textContent = expanded ? 'Cerrar' : 'Responder';
-  replyBtn.onclick = (e) => { e.stopPropagation(); toggleMailExpand(item); };
-  actions.appendChild(replyBtn);
-
-  card.appendChild(actions);
-
-  // El bloque expandido (mail completo + original + borrador) ya NO va acá
-  // adentro — se ve chiquito en la lista angosta. Va en el panel grande de
-  // la derecha, ver showMailDetail().
-  return card;
-}
-
-// ── Tarjeta expandida: mail completo + borrador + confirmar y enviar ──
-
-function mailLoadingLabel(item) {
-  const kind = mailThreadJobKind.get(item.id);
-  if (kind === 'send') return 'Enviando…';
-  if (kind === 'raw') return 'Buscando el original…';
-  return 'Generando…';
-}
-
-function buildMailExpandBlock(item) {
-  const wrap = document.createElement('div');
-  wrap.className = 'mail-expand';
-  wrap.id = 'mail-expand-' + item.id;
-
-  const bodyLabel = document.createElement('div');
-  bodyLabel.className = 'mail-expand-label';
-  bodyLabel.textContent = 'Mail completo';
-  wrap.appendChild(bodyLabel);
-
-  const bodyBox = document.createElement('div');
-  bodyBox.className = 'mail-body-box';
-  bodyBox.textContent = item.body
-    || (item.summary ? `${item.summary}\n\n(este mail se escaneó antes de guardar el texto completo — "Actualizar bandeja" va a traer el cuerpo entero la próxima vez)` : '(sin contenido)');
-  wrap.appendChild(bodyBox);
-
-  // El texto de arriba lo "limpia" el LLM del escaneo (hoy Haiku) para que
-  // sea legible en la tarjeta — no garantiza ser palabra por palabra igual
-  // al original. Este botón trae el texto tal cual está en el servidor de
-  // correo, sin resumir ni reformular (ver /api/mail/:id/raw en server.js).
-  const rawBtn = document.createElement('button');
-  rawBtn.type = 'button';
-  rawBtn.className = 'mail-draft-btn';
-  rawBtn.textContent = item.rawBody ? 'Volver a traer el original' : 'Ver texto original (sin resumir)';
-  rawBtn.disabled = !!item.draftPending || !!item.rawBodyPending || !!mailData.paused;
-  rawBtn.onclick = () => fetchMailRaw(item);
-  wrap.appendChild(rawBtn);
-
-  if (item.rawBody) {
-    const rawLabel = document.createElement('div');
-    rawLabel.className = 'mail-expand-label';
-    rawLabel.textContent = 'Texto original (verbatim)';
-    wrap.appendChild(rawLabel);
-
-    const rawBox = document.createElement('div');
-    rawBox.className = 'mail-body-box';
-    rawBox.textContent = item.rawBody;
-    wrap.appendChild(rawBox);
-  }
-
-  if (item.draft) {
-    const draftLabel = document.createElement('div');
-    draftLabel.className = 'mail-expand-label mail-draft-label';
-    draftLabel.textContent = 'Borrador';
-    wrap.appendChild(draftLabel);
-
-    const draftBox = document.createElement('div');
-    draftBox.className = 'mail-draft-box';
-    draftBox.textContent = item.draft;
-    wrap.appendChild(draftBox);
-
-    const confirmBtn = document.createElement('button');
-    confirmBtn.type = 'button';
-    confirmBtn.className = 'mail-confirm-btn';
-    confirmBtn.textContent = '✅ Confirmar y enviar';
-    confirmBtn.disabled = !!item.draftPending || !!item.rawBodyPending || !!mailData.paused;
-    confirmBtn.onclick = () => confirmMailSend(item);
-    wrap.appendChild(confirmBtn);
-  }
-
-  if (item.draftPending || item.rawBodyPending) {
-    const pending = document.createElement('div');
-    pending.className = 'mail-pending';
-    pending.textContent = mailLoadingLabel(item);
-    wrap.appendChild(pending);
-  }
-
-  const instrRow = document.createElement('div');
-  instrRow.className = 'mail-instruction-row';
-  const textarea = document.createElement('textarea');
-  textarea.className = 'mail-instruction-input';
-  textarea.rows = 2;
-  textarea.placeholder = '¿Qué querés que le responda? (vacío = borrador genérico)';
-  textarea.disabled = !!item.draftPending || !!item.rawBodyPending || !!mailData.paused;
-  instrRow.appendChild(textarea);
-  const askBtn = document.createElement('button');
-  askBtn.type = 'button';
-  askBtn.className = 'mail-draft-btn';
-  askBtn.textContent = item.draft ? 'Pedir otro borrador' : 'Pedir borrador';
-  askBtn.disabled = !!item.draftPending || !!item.rawBodyPending || !!mailData.paused;
-  askBtn.onclick = () => askMailDraft(item, textarea.value.trim());
-  instrRow.appendChild(askBtn);
-  wrap.appendChild(instrRow);
-
-  if (item.sendResult) {
-    const resultNote = document.createElement('div');
-    resultNote.className = 'mail-send-note';
-    resultNote.textContent = item.sendResult;
-    wrap.appendChild(resultNote);
-  }
-
-  return wrap;
-}
-
-// ── Detalle de mail en el panel grande de la derecha ──
-// Antes esto se expandía inline en la tarjeta, adentro de la lista angosta
-// de la izquierda — quedaba todo chiquito para leer. Ahora usa el mismo
-// panel grande donde normalmente se ve una conversación (#panel-chat),
-// reusando openChat()/closeChat() para que el back de mobile funcione igual
-// que con una conversación común.
-
-// Header del detalle (asunto/from/fecha/badges) + botón de volver — separado
-// de buildMailExpandBlock porque ese solo arma mail completo/original/borrador.
-function buildMailDetailHeader(item) {
-  const frag = document.createDocumentFragment();
-
-  const topbar = document.createElement('div');
-  topbar.className = 'mail-detail-topbar';
-  const closeBtn = document.createElement('button');
-  closeBtn.type = 'button';
-  closeBtn.className = 'mail-detail-close';
-  closeBtn.textContent = '← Volver a la bandeja';
-  closeBtn.onclick = () => closeMailDetail();
-  topbar.appendChild(closeBtn);
-  frag.appendChild(topbar);
-
-  const header = document.createElement('div');
-  header.className = 'mail-detail-header';
-
-  const top = document.createElement('div');
-  top.className = 'mail-card-top';
-  const accBadge = document.createElement('span');
-  accBadge.className = 'mail-badge account-' + item.account;
-  accBadge.textContent = MAIL_ACCOUNT_LABEL[item.account] || item.account;
-  top.appendChild(accBadge);
-  if (item.project) {
-    const projBadge = document.createElement('span');
-    projBadge.className = 'mail-badge-project';
-    projBadge.textContent = item.project;
-    top.appendChild(projBadge);
-  }
-  if (item.urgent) {
-    const urgent = document.createElement('span');
-    urgent.className = 'mail-urgent';
-    urgent.title = 'Urgente';
-    urgent.textContent = '🔴';
-    top.appendChild(urgent);
-  }
-  header.appendChild(top);
-
-  const subject = document.createElement('div');
-  subject.className = 'mail-detail-subject';
-  subject.textContent = item.subject || '(sin asunto)';
-  header.appendChild(subject);
-
-  const from = document.createElement('div');
-  from.className = 'mail-detail-from';
-  from.textContent = item.from || '';
-  header.appendChild(from);
-
-  const date = document.createElement('div');
-  date.className = 'mail-detail-date';
-  date.textContent = mailRelativeTime(item.receivedAt);
-  header.appendChild(date);
-
-  frag.appendChild(header);
-  return frag;
-}
-
-// Arma y muestra el detalle completo de un mail en el panel de la derecha.
-function showMailDetail(item) {
-  // #mail-detail-view y #notebook-view comparten el mismo panel derecho
-  // (#panel-chat) — en desktop ninguno de los dos es un overlay, así que si
-  // no cerramos la libreta a mano quedan las dos mostrándose superpuestas.
-  showNotebookView(false);
-  const view = $('mail-detail-view');
-  const inner = document.createElement('div');
-  inner.className = 'mail-detail-inner';
-  inner.appendChild(buildMailDetailHeader(item));
-  inner.appendChild(buildMailExpandBlock(item));
-  view.innerHTML = '';
-  view.appendChild(inner);
-  view.hidden = false;
-  view.scrollTop = 0;
-  $('panel-chat').classList.add('mail-detail-active');
-  openChat();
-}
-
-function hideMailDetail() {
-  $('panel-chat').classList.remove('mail-detail-active');
-  const view = $('mail-detail-view');
-  view.hidden = true;
-  view.innerHTML = '';
-}
-
-// Cierra el detalle: corta el poll, limpia el estado, vuelve a la lista.
-// Se llama desde "← Volver a la bandeja", desde el toggle de la tarjeta, y
-// desde el back de mobile (ver el handler de popstate más abajo).
-function closeMailDetail() {
-  stopMailThreadPoll();
-  expandedMailId = null;
-  hideMailDetail();
-  closeChat();
-  renderMail();
-}
-
-// Reemplaza solo el contenido del panel de detalle (preserva el scroll) —
-// usado durante el poll de draft/original/send para no perder lo que el
-// usuario esté escribiendo en el textarea de instrucción.
-function refreshExpandedMailCard(item) {
-  if (item.id !== expandedMailId) return;
-  const view = $('mail-detail-view');
-  if (view.hidden) return;
-  const scrollTop = view.scrollTop;
-  const inner = document.createElement('div');
-  inner.className = 'mail-detail-inner';
-  inner.appendChild(buildMailDetailHeader(item));
-  inner.appendChild(buildMailExpandBlock(item));
-  view.innerHTML = '';
-  view.appendChild(inner);
-  view.scrollTop = scrollTop;
-}
-
-function stopMailThreadPoll() {
-  if (mailThreadPollTimer) { clearInterval(mailThreadPollTimer); mailThreadPollTimer = null; }
-}
-
-// Expande (abre el detalle a la derecha) o colapsa (vuelve a la lista) una
-// tarjeta. Solo puede haber un poll de hilo de mail activo a la vez
-// (independiente del poll de escaneo, que sigue su curso aparte), así que
-// cortamos cualquiera en vuelo al cambiar de tarjeta.
-function toggleMailExpand(item) {
-  if (expandedMailId === item.id) {
-    closeMailDetail();
-    return;
-  }
-  stopMailThreadPoll();
-  expandedMailId = item.id;
-  renderMail();
-  showMailDetail(item);
-}
-
-// Poll a GET /api/mail/:id cada ~2.5s hasta que draftPending vuelva a false.
-// Actualiza el item en mailData.items in place y refresca solo la tarjeta
-// expandida — salvo que el estado haya cambiado (p.ej. a "respondido" tras
-// un envío exitoso), en cuyo caso recién ahí redibujamos todo el board para
-// que la tarjeta salte de columna.
-function pollMailThread(id) {
-  stopMailThreadPoll();
-  mailThreadPollTimer = setInterval(async () => {
-    let fresh;
-    try { fresh = await api('/mail/' + encodeURIComponent(id)); }
-    catch { return; } // falla de red puntual: reintenta en el próximo tick
-    const idx = mailData.items.findIndex(i => i.id === id);
-    const prevState = idx >= 0 ? mailData.items[idx].state : fresh.state;
-    if (idx >= 0) mailData.items[idx] = fresh; else mailData.items.push(fresh);
-
-    if (fresh.draftPending || fresh.rawBodyPending) {
-      if (expandedMailId === id) refreshExpandedMailCard(fresh);
-      return;
-    }
-    stopMailThreadPoll();
-    mailThreadJobKind.delete(id);
-    if (fresh.state !== prevState) renderMail();
-    else if (expandedMailId === id) refreshExpandedMailCard(fresh);
-  }, 2500);
-}
-
-// Pide un borrador (primero o siguiente ajuste) para el mail. `item` viene
-// como referencia directa a mailData.items, así que tocar sus campos acá
-// también actualiza la fuente de verdad en memoria.
-async function askMailDraft(item, instruction) {
-  mailThreadJobKind.set(item.id, 'draft');
-  try {
-    await api('/mail/' + encodeURIComponent(item.id) + '/draft', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ instruction }),
-    });
-  } catch (err) {
-    toast('No se pudo pedir el borrador: ' + err.message);
-    mailThreadJobKind.delete(item.id);
-    return;
-  }
-  item.draftPending = true;
-  if (expandedMailId === item.id) refreshExpandedMailCard(item);
-  pollMailThread(item.id);
-}
-
-// Pide el texto original (sin resumir) del mail — mismo mecanismo de poll
-// que el borrador, comparten hilo/sesión así que el server ya serializa los
-// pedidos (isBusy del mismo convId).
-async function fetchMailRaw(item) {
-  mailThreadJobKind.set(item.id, 'raw');
-  try {
-    await api('/mail/' + encodeURIComponent(item.id) + '/raw', { method: 'POST' });
-  } catch (err) {
-    toast('No se pudo pedir el texto original: ' + err.message);
-    mailThreadJobKind.delete(item.id);
-    return;
-  }
-  item.rawBodyPending = true;
-  if (expandedMailId === item.id) refreshExpandedMailCard(item);
-  pollMailThread(item.id);
-}
-
-// Manda el draft ya guardado tal cual, como reply al mail original — SOLO se
-// llama desde este botón explícito, nunca por texto libre. El confirm()
-// nativo es un freno extra además del propio click en el botón.
-async function confirmMailSend(item) {
-  if (!confirm('¿Confirmás el envío de este mail?')) return;
-  mailThreadJobKind.set(item.id, 'send');
-  try {
-    await api('/mail/' + encodeURIComponent(item.id) + '/send', { method: 'POST' });
-  } catch (err) {
-    toast('No se pudo mandar el mail: ' + err.message);
-    mailThreadJobKind.delete(item.id);
-    return;
-  }
-  item.draftPending = true;
-  if (expandedMailId === item.id) refreshExpandedMailCard(item);
-  pollMailThread(item.id);
-}
-
-function renderMail() {
-  const byState = { pendiente: [], respondido: [], archivado: [] };
-  for (const item of mailData.items) {
-    (byState[item.state] || byState.pendiente).push(item);
-  }
-  const sortFn = (a, b) => {
-    if (!!b.urgent !== !!a.urgent) return (b.urgent ? 1 : 0) - (a.urgent ? 1 : 0);
-    return new Date(b.receivedAt || 0) - new Date(a.receivedAt || 0);
-  };
-  for (const state of MAIL_STATES) {
-    const list = byState[state].sort(sortFn);
-    const wrap = $('mail-cards-' + state);
-    wrap.innerHTML = '';
-    if (!list.length) {
-      const empty = document.createElement('div');
-      empty.className = 'mail-empty';
-      empty.textContent = 'Sin mails';
-      wrap.appendChild(empty);
-    } else {
-      for (const item of list) wrap.appendChild(renderMailCard(item));
-    }
-    $('mail-count-' + state).textContent = String(list.length);
-  }
-  const updated = $('mail-updated');
-  updated.classList.toggle('scanning', !!mailData.scanning);
-  updated.textContent = mailData.scanning
-    ? 'Escaneando…'
-    : (mailData.updatedAt ? 'Actualizado ' + mailRelativeTime(mailData.updatedAt) : 'Sin escanear todavía');
-  $('mail-scan-btn').disabled = !!mailData.scanning || !!mailData.paused;
-
-  // Pausado a pedido de Fernando (15/08) — no gasta nada mientras esté así.
-  // El server ya rechaza las 4 acciones que disparan un job aunque alguien
-  // las dispare igual; esto es solo para que se vea claro en la UI.
-  $('mail-paused-banner').hidden = !mailData.paused;
-
-  // El último intento de escaneo no trajo nada (MCP caído, sesión sin tools,
-  // etc.) — sin esto se ve exactamente igual que "no había nada nuevo" y no
-  // hay forma de notar que en realidad no se leyó el correo.
-  const scanError = $('mail-scan-error');
-  scanError.hidden = !mailData.lastScanError || !!mailData.paused;
-  if (mailData.lastScanError) scanError.title = mailData.lastScanError;
-}
-
-async function loadMail() {
-  mailData = await api('/mail');
-  renderMail();
-}
-
-// Actualiza el estado de un mail en el server y, si sale bien, actualiza la
-// copia en memoria y re-renderiza sin recargar todo el panel.
-async function updateMailState(id, state) {
-  try {
-    const updated = await api('/mail/' + encodeURIComponent(id), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ state }),
-    });
-    const idx = mailData.items.findIndex(i => i.id === id);
-    if (idx >= 0) mailData.items[idx] = updated;
-    renderMail();
-  } catch (err) {
-    toast('No se pudo actualizar el mail: ' + err.message);
-  }
-}
-
-// Dispara el escaneo y hace polling hasta que scanning vuelva a false.
-// Cuida no dejar más de un poll corriendo si clickean el botón varias veces
-// (mailPollTimer global).
-async function startMailScan() {
-  if (mailPollTimer) return; // ya hay un escaneo/poll en curso
-  try {
-    await api('/mail/scan', { method: 'POST' });
-  } catch (err) {
-    toast('No se pudo iniciar el escaneo: ' + err.message);
-    return;
-  }
-  mailData.scanning = true;
-  renderMail();
-  mailPollTimer = setInterval(async () => {
-    try {
-      const fresh = await api('/mail');
-      mailData = fresh;
-      renderMail();
-      // Antes acá también exigíamos que updatedAt hubiera cambiado para
-      // cortar el poll — pero si el escaneo falla (MCP caído) updatedAt
-      // nunca cambia, y el intervalo quedaba corriendo para siempre: el
-      // botón parecía habilitado pero startMailScan cortaba en seco por el
-      // guard de arriba (mailPollTimer nunca se limpiaba). mergeScan ya
-      // garantiza que scanning se apague pase lo que pase, así que alcanza
-      // con mirar solo eso.
-      if (!fresh.scanning) {
-        clearInterval(mailPollTimer);
-        mailPollTimer = null;
-      }
-    } catch { /* noop, próximo tick reintenta */ }
-  }, 3500);
-}
-
 // ── Notas: lista de libretas ──
 function notebookElement(nb) {
   const div = document.createElement('div');
   // .notebook-row (además de .conv, para heredar el estilo visual de fila):
-  // esta fila nunca llama a attachRowGestures() como sí hacen las de chat
-  // (no tiene swipe-to-archive ni long-press), así que el guard de
-  // initPaneSwipe() la deja pasar explícitamente para que el swipe de
+  // esta fila no llama a attachRowGestures() como sí hacen las de chat (no
+  // tiene swipe-to-archive: las libretas no se archivan), así que el guard
+  // de initPaneSwipe() la deja pasar explícitamente para que el swipe de
   // pantalla (Chats/Libretas/Archivado) siga funcionando arrancando sobre
   // ella — si no, con la lista llena de libretas no queda fondo tocable
-  // para ese gesto. Ver Finding 2 del review final.
+  // para ese gesto. Ver Finding 2 del review final. Sí tiene su propio menú
+  // contextual (attachNotebookGestures, solo click derecho/long-press — sin
+  // arrastre horizontal — así no compite con ese swipe de pantalla).
   div.className = 'conv notebook-row';
   div.innerHTML = `
     <div class="conv-avatar">${avatarChar(nb.name)}</div>
@@ -696,6 +161,7 @@ function notebookElement(nb) {
     ? new Date(nb.lastActivity).toLocaleString('es', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
     : 'Sin notas todavía';
   div.onclick = () => openNotebook(nb.id, nb.name);
+  attachNotebookGestures(div, nb);
   return div;
 }
 
@@ -742,9 +208,6 @@ function showNotebookView(show) {
 }
 
 async function openNotebook(id, name) {
-  // Mismo motivo que en showMailDetail(): #notebook-view y #mail-detail-view
-  // comparten panel y ninguno es overlay en desktop — cerrar el otro a mano.
-  if (expandedMailId !== null) { stopMailThreadPoll(); expandedMailId = null; hideMailDetail(); }
   currentNotebook = { id, name };
   $('notebook-title').textContent = name;
   notesData = [];
@@ -753,6 +216,39 @@ async function openNotebook(id, name) {
   openChat();
   try { await loadNotes(); }
   catch (err) { toast('No se pudieron cargar las notas: ' + err.message); }
+}
+
+// El botón "+" ya no crea la libreta al toque — abre este borrador (mismo
+// panel/overlay, currentNotebook en null) para que tocar "+" y arrepentirse
+// sin escribir nada no deje una "Nueva libreta" vacía tirada en la lista
+// (era justo lo que pasaba antes: cada toque, aunque fuera por error o para
+// mirar, ya la creaba server-side). La libreta recién se crea de verdad en
+// ensureNotebookCreated(), llamado desde el composer/upload al primer
+// contenido real.
+function openNotebookDraft() {
+  currentNotebook = null;
+  $('notebook-title').textContent = 'Nueva nota';
+  notesData = [];
+  renderNotes();
+  showNotebookView(true);
+  openChat();
+  $('notes-input').value = '';
+  autoResize($('notes-input'));
+  $('notes-input').focus();
+}
+
+// Crea la libreta recién en el momento en que hay contenido real que
+// guardar (primera nota de texto o primer archivo adjunto) — ver
+// openNotebookDraft(). Si ya existe (libreta real abierta, o ya se creó en
+// un envío anterior de este mismo borrador), no vuelve a crear nada.
+async function ensureNotebookCreated() {
+  if (currentNotebook) return currentNotebook.id;
+  const nb = await api('/notebooks', { method: 'POST' });
+  notebooks.push(nb);
+  currentNotebook = { id: nb.id, name: nb.name };
+  $('notebook-title').textContent = nb.name;
+  renderNotebookList();
+  return currentNotebook.id;
 }
 
 let archivedPaneLoaded = false;
@@ -928,23 +424,12 @@ window.addEventListener('popstate', (e) => {
   // Si estábamos en chat: cerrar y re-armar guarda
   if ($('panel-chat').classList.contains('open')) {
     $('panel-chat').classList.remove('open');
-    // Si lo que estaba abierto era el detalle de un mail (no una conversación
-    // normal), limpiar ese estado también — si no, expandedMailId queda
-    // colgado y la tarjeta se ve seleccionada/con "Cerrar" sin el panel abierto.
-    if (expandedMailId !== null) {
-      stopMailThreadPoll();
-      expandedMailId = null;
-      hideMailDetail();
-      renderMail();
-    }
     history.pushState({ view: 'list-guard' }, '');
     return;
   }
   // Si hay algún menú/dialog abierto, cerrar y consumir el back
   const searchDlg = $('search-dialog');
-  const newDlg = $('new-dialog');
   if (searchDlg.open) { searchDlg.close(); history.pushState({ view: 'list-guard' }, ''); return; }
-  if (newDlg.open) { newDlg.close(); history.pushState({ view: 'list-guard' }, ''); return; }
   const ctxMenu = document.querySelector('.ctx-menu');
   if (ctxMenu) { ctxMenu.remove(); history.pushState({ view: 'list-guard' }, ''); return; }
   // Si estamos en Archivado o Notas: volver a Chats en vez de ofrecer salir
@@ -1083,6 +568,26 @@ function makeTtsBtn(text, kind = 'assistant') {
   return btn;
 }
 
+// Botón de copiar mensaje, mismo tamaño/estilo que el de TTS (msg-tts) —
+// Diego lo pidió duplicado (arriba y abajo de la burbuja), a diferencia del
+// TTS que solo va arriba.
+function makeCopyMsgBtn(text) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'msg-copy';
+  btn.title = 'Copiar mensaje';
+  btn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
+  if (!text || !text.trim()) btn.style.display = 'none';
+  btn.onclick = e => {
+    e.preventDefault();
+    e.stopPropagation();
+    copyToClipboard(text);
+    btn.classList.add('copied');
+    setTimeout(() => btn.classList.remove('copied'), 1200);
+  };
+  return btn;
+}
+
 // ── Refresh manual ──
 async function refreshAll() {
   const btn = $('refresh-btn');
@@ -1136,7 +641,9 @@ function avatarChar(name) {
 }
 
 function convElement(c) {
-  const b = badge(c.status);
+  // El badge de estado (procesando/en cola) tiene prioridad visual sobre el
+  // punto de no leído — mientras corre, "no leído" todavía no aplica.
+  const b = badge(c.status) || (c.unread ? '<span class="unread-dot" title="Sin leer"></span>' : '');
   const pin = c.pinned ? '<span class="conv-pin" title="Fijada">📌</span>' : '';
   const arch = c.archived ? '<span class="conv-arch" title="Archivada">📁</span>' : '';
   const ai = c.aiTitle ? '<span class="conv-ai" title="Título generado por IA">✨</span>' : '';
@@ -1219,13 +726,6 @@ async function loadArchivedTree() {
   const nav = $('tree-archived');
   buildTreePane(nav, resp);
 
-  const back = document.createElement('button');
-  back.className = 'archived-back';
-  back.type = 'button';
-  back.textContent = '← Volver a activas';
-  back.onclick = () => { goToPane(0); };
-  nav.insertBefore(back, nav.firstChild);
-
   if (archivedTreeHasMore) {
     const more = document.createElement('button');
     more.id = 'load-more-archived-btn';
@@ -1252,10 +752,6 @@ let paneNavTarget = 0; // pane que debe quedar activo una vez termine la navegac
 
 async function goToPane(index) {
   if (index === paneNavTarget) return;
-  // Si había un detalle de mail abierto en el panel derecho y nos vamos a
-  // otro pane (Chats/Archivado/Notas), cerrarlo — si no, #panel-chat queda
-  // mostrando el mail viejo en vez de la conversación normal.
-  if (index !== 3 && expandedMailId !== null) closeMailDetail();
   // paneNavTarget (no activePane) es lo que compara el guard de arriba: activePane
   // recién se actualiza al final, así que si hay una navegación en vuelo (p.ej.
   // click rápido Archivado→Notas→Chats) activePane todavía dice "0" aunque ya
@@ -1285,16 +781,6 @@ async function goToPane(index) {
       return;
     }
   }
-  if (index === 3 && !mailPaneLoaded) {
-    try {
-      await loadMail();
-      mailPaneLoaded = true;
-    } catch (err) {
-      toast('No se pudo cargar el mail: ' + err.message);
-      if (myGeneration === paneNavGeneration) paneNavTarget = activePane;
-      return;
-    }
-  }
   if (myGeneration !== paneNavGeneration) return; // otra navegación más nueva ya tomó el control
   activePane = index;
   $('tree-viewport-inner').dataset.pane = String(index);
@@ -1313,21 +799,9 @@ function resetArchivedPane() {
 document.querySelectorAll('.pane-tab').forEach(btn => {
   btn.onclick = () => goToPane(Number(btn.dataset.pane));
 });
-$('notes-back').onclick = () => goToPane(0);
-$('mail-back').onclick = () => goToPane(0);
 $('scan-back').onclick = () => goToPane(0);
-$('mail-scan-btn').onclick = () => startMailScan();
 
 $('notebook-back-btn').onclick = closeChat;
-
-$('notebook-new-btn').onclick = async () => {
-  try {
-    const nb = await api('/notebooks', { method: 'POST' });
-    notebooks.push(nb);
-    renderNotebookList();
-    openNotebook(nb.id, nb.name);
-  } catch (err) { toast('No se pudo crear la libreta: ' + err.message); }
-};
 
 // ── Renombrar libreta (doble click en el título, mismo patrón que #conv-title) ──
 $('notebook-title').ondblclick = () => {
@@ -1619,6 +1093,105 @@ function showConvMenu(x, y, conv) {
   }, 350);
 }
 
+// ── Menú contextual de libretas (click derecho + long-press mobile) ──
+// A diferencia de attachRowGestures (chats), sin arrastre horizontal: las
+// libretas no se archivan, solo se ocultan desde el menú — así el gesto no
+// compite con el swipe de pantalla que initPaneSwipe deja pasar sobre estas
+// filas (ver comentario en notebookElement).
+function attachNotebookGestures(el, nb) {
+  let touchTimer = null;
+  let longPressed = false;
+  let startX = 0, startY = 0;
+
+  el.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    showNotebookMenu(e.clientX, e.clientY, nb);
+  });
+
+  el.addEventListener('touchstart', e => {
+    longPressed = false;
+    const t = e.touches[0];
+    startX = t.clientX; startY = t.clientY;
+    touchTimer = setTimeout(() => {
+      longPressed = true;
+      touchTimer = null;
+      showNotebookMenu(startX, startY, nb);
+      if (navigator.vibrate) { try { navigator.vibrate(30); } catch {} }
+    }, 500);
+  }, { passive: true });
+
+  el.addEventListener('touchmove', e => {
+    if (!touchTimer) return;
+    const t = e.touches[0];
+    if (Math.abs(t.clientX - startX) > 10 || Math.abs(t.clientY - startY) > 10) {
+      clearTimeout(touchTimer); touchTimer = null;
+    }
+  }, { passive: true });
+
+  el.addEventListener('touchend', () => {
+    if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
+  });
+
+  // Bloquear el click sintético que dispara touchend después del long-press
+  // (si no, abre la libreta y cierra el menú)
+  el.addEventListener('click', e => {
+    if (longPressed) {
+      longPressed = false;
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }, { capture: true });
+}
+
+function showNotebookMenu(x, y, nb) {
+  document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  menu.innerHTML = `<button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`;
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  const maxX = window.innerWidth - rect.width - 8;
+  const maxY = window.innerHeight - rect.height - 8;
+  menu.style.left = Math.min(x, maxX) + 'px';
+  menu.style.top = Math.min(y, maxY) + 'px';
+
+  const doAction = async (action) => {
+    menu.remove();
+    document.removeEventListener('click', dismiss, true);
+    document.removeEventListener('touchstart', dismiss, true);
+    if (action !== 'hide') return;
+    try {
+      await api(`/notebooks/${nb.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hidden: true }),
+      });
+      notebooks = notebooks.filter(n => n.id !== nb.id);
+      renderNotebookList();
+      if (currentNotebook && currentNotebook.id === nb.id) closeChat();
+      toast('Libreta ocultada', 'info', 2500);
+    } catch (err) { toast('No se pudo ocultar: ' + err.message); }
+  };
+
+  menu.addEventListener('click', e => {
+    e.stopPropagation();
+    const action = e.target.dataset && e.target.dataset.action;
+    if (action) doAction(action);
+  });
+  menu.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+  function dismiss(e) {
+    if (menu.contains(e.target)) return;
+    menu.remove();
+    document.removeEventListener('click', dismiss, true);
+    document.removeEventListener('touchstart', dismiss, true);
+  }
+  setTimeout(() => {
+    document.addEventListener('click', dismiss, true);
+    document.addEventListener('touchstart', dismiss, true);
+  }, 350);
+}
+
 // ── Menú contextual de mensajes (click derecho / long-press en burbujas) ──
 
 async function copyToClipboard(text) {
@@ -1823,8 +1396,24 @@ function addCodeCopyChip(pre) {
 }
 
 // ── Messages ──
-function now() {
-  return new Date().toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
+// Con ts (viene del jsonl real, historial cargado) muestra esa fecha/hora;
+// sin ts (mensaje recién mandado u optimista) usa el momento actual.
+function now(ts) {
+  return new Date(ts || Date.now()).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
+}
+
+// Fecha centrada arriba de la burbuja, separada de la hora (que va en la
+// esquina) para no confundir las dos — Diego lo pidió después de ver ambas
+// pegadas. Color por antigüedad: hoy=azul, ayer/anteayer=blanco, 3+ días=rojo.
+function dateLabel(ts) {
+  const d = new Date(ts || Date.now());
+  const day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const today = new Date();
+  const todayDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const diffDays = Math.round((todayDay - day) / 86400000);
+  const cls = diffDays <= 0 ? 'msg-date-today' : diffDays <= 2 ? 'msg-date-recent' : 'msg-date-old';
+  const text = d.toLocaleDateString('es', { day: 'numeric', month: 'long' });
+  return { text, cls };
 }
 
 // ── Lightbox ──
@@ -2282,6 +1871,14 @@ function addMsg(role, text, opts = {}) {
   div.className = 'msg ' + role;
   if (opts.compacted) div.classList.add('compacted');
   if (role !== 'error') {
+    const kind = role === 'user' ? 'user' : 'assistant';
+
+    // Barra arriba: copiar + escuchar, uno en cada punta.
+    const topBar = document.createElement('div');
+    topBar.className = 'msg-toolbar-top';
+    topBar.appendChild(makeCopyMsgBtn(text));
+    topBar.appendChild(makeTtsBtn(text, kind));
+
     const span = document.createElement('div');
     span.className = 'msg-text';
     if (role === 'assistant') {
@@ -2290,13 +1887,29 @@ function addMsg(role, text, opts = {}) {
     } else {
       renderTextWithPaths(span, text);
     }
-    const ttsBtn = makeTtsBtn(text, role === 'user' ? 'user' : 'assistant');
+
+    // Barra abajo: una sola fila con copiar + escuchar a la izquierda, fecha
+    // al medio y hora a la derecha (antes eran dos filas separadas).
+    const date = dateLabel(opts.ts);
+    const dateEl = document.createElement('span');
+    dateEl.className = 'msg-date ' + date.cls;
+    dateEl.textContent = date.text;
     const time = document.createElement('span');
     time.className = 'msg-time';
-    time.textContent = now();
+    time.textContent = now(opts.ts);
+    const bottomIcons = document.createElement('span');
+    bottomIcons.className = 'msg-bottom-icons';
+    bottomIcons.appendChild(makeCopyMsgBtn(text));
+    bottomIcons.appendChild(makeTtsBtn(text, kind));
+    const bottomBar = document.createElement('div');
+    bottomBar.className = 'msg-bottom-bar';
+    bottomBar.appendChild(bottomIcons);
+    bottomBar.appendChild(dateEl);
+    bottomBar.appendChild(time);
+
+    div.appendChild(topBar);
     div.appendChild(span);
-    div.appendChild(ttsBtn);
-    div.appendChild(time);
+    div.appendChild(bottomBar);
     attachMsgGestures(div, { role, text, uuid: opts.uuid, compacted: !!opts.compacted });
   } else {
     div.textContent = text;
@@ -2431,7 +2044,7 @@ async function loadMessages(convId) {
         inCompacted = false;
       }
       if (m.role === 'system-compact') { addCompactBoundary(m); continue; }
-      const opts = { compacted: !!m.compacted, uuid: m.uuid };
+      const opts = { compacted: !!m.compacted, uuid: m.uuid, ts: m.ts };
       if (m.role === 'tool') addTool(m.name, m.input, m.output, opts);
       else addMsg(m.role, m.text, opts);
     }
@@ -2591,16 +2204,22 @@ async function selectConv(convId, name, model, lastModel, projectDir) {
   folderEl.hidden = !dirName;
   setBusy(false);
   clearAttachments();
-  // Al abrir un chat real, cerrar cualquier otro "modo" que estuviera usando
-  // este mismo panel (libreta o detalle de mail) — ver showMailDetail().
-  if (expandedMailId !== null) { stopMailThreadPoll(); expandedMailId = null; hideMailDetail(); }
   showNotebookView(false);
   openChat();
   // Al abrir otra conversación siempre arrancamos abajo, sin heredar la
   // posición de scroll de la anterior.
   stickToBottom = true;
   syncJumpBtn();
+  // Abrir la conversación cuenta como "leída" — se lanza en paralelo con
+  // loadMessages y se espera antes de refrescar el árbol, así el punto de no
+  // leído no queda pegado un instante de más por una carrera con loadTree().
+  const markReadPromise = api(`/conversations/${convId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(withAccountBody({ unread: false })),
+  }).catch(() => {});
   await loadMessages(convId);
+  await markReadPromise;
   openStream(convId);
   loadTree();
   refreshCostBadge(convId);
@@ -2913,6 +2532,12 @@ function addUserMsgWithFiles(text, attachments) {
   const div = document.createElement('div');
   div.className = 'msg user';
 
+  const topBar = document.createElement('div');
+  topBar.className = 'msg-toolbar-top';
+  topBar.appendChild(makeCopyMsgBtn(text || ''));
+  topBar.appendChild(makeTtsBtn(text || '', 'user'));
+  div.appendChild(topBar);
+
   // Previews de adjuntos encima del texto
   for (const a of attachments) {
     const ext = a.name.split('.').pop().toLowerCase();
@@ -2943,12 +2568,23 @@ function addUserMsgWithFiles(text, attachments) {
     div.appendChild(span);
   }
 
-  const ttsBtn = makeTtsBtn(text || '', 'user');
+  const date = dateLabel();
+  const dateEl = document.createElement('span');
+  dateEl.className = 'msg-date ' + date.cls;
+  dateEl.textContent = date.text;
   const time = document.createElement('span');
   time.className = 'msg-time';
   time.textContent = now();
-  div.appendChild(ttsBtn);
-  div.appendChild(time);
+  const bottomIcons = document.createElement('span');
+  bottomIcons.className = 'msg-bottom-icons';
+  bottomIcons.appendChild(makeCopyMsgBtn(text || ''));
+  bottomIcons.appendChild(makeTtsBtn(text || '', 'user'));
+  const bottomBar = document.createElement('div');
+  bottomBar.className = 'msg-bottom-bar';
+  bottomBar.appendChild(bottomIcons);
+  bottomBar.appendChild(dateEl);
+  bottomBar.appendChild(time);
+  div.appendChild(bottomBar);
   // Burbuja optimista: todavía no tiene uuid en el jsonl (aparece recién al
   // recargar en el idle), así que el menú ofrece copiar/citar pero no rebobinar.
   if (text) attachMsgGestures(div, { role: 'user', text, uuid: null, compacted: false });
@@ -3071,36 +2707,36 @@ $('conv-title').ondblclick = () => {
   el.onkeydown = ev => { if (ev.key === 'Enter') { ev.preventDefault(); el.blur(); } };
 };
 
-// ── Nueva conversación ──
+// ── Nueva conversación / nueva libreta ──
 // Ya no se elige carpeta acá (ni local ni VPS) — cada cuenta siempre arranca
 // en su carpeta configurada del lado del server (accountHomeDir o
-// CCM_DEFAULT_PROJECT_DIR si está seteado). Lo único que se elige es el modelo.
-$('new-conv').onclick = () => {
-  $('new-dialog').showModal();
-};
-
-$('new-form').onsubmit = async e => {
-  if (e.submitter && e.submitter.value === 'cancel') return;
-  e.preventDefault();
-  const model = $('new-model').value;
-  const submitBtn = e.submitter;
-  if (submitBtn) submitBtn.disabled = true;
+// CCM_DEFAULT_PROJECT_DIR si está seteado). Tampoco se elige modelo (queda el
+// default) — el botón crea y entra directo, sin modal de por medio.
+// En el pane de Notas este mismo botón crea una libreta nueva en vez de una
+// conversación — ya no hay un "+" propio ahí (ver notebookElement/goToPane).
+$('new-conv').onclick = async () => {
+  const btn = $('new-conv');
+  btn.disabled = true;
   try {
+    if (activePane === 2) {
+      // No crea la libreta acá — abre un borrador que recién se persiste en
+      // ensureNotebookCreated() al mandar la primera nota (ver comentario ahí).
+      openNotebookDraft();
+      return;
+    }
     const { convId, projectDir } = await api('/conversations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(withAccountBody({ model: model || undefined })),
+      body: JSON.stringify(withAccountBody({})),
     });
-    $('new-dialog').close();
-    $('new-model').value = '';
-    await selectConv(convId, 'Nueva conversación', model, null, projectDir);
+    await selectConv(convId, 'Nueva conversación', undefined, null, projectDir);
     // Crear conversación es una acción explícita (no un tap en la lista),
     // así que acá sí autofocuseamos el campo aunque estemos en mobile.
     $('input').focus();
   } catch (err) {
-    toast('No se pudo crear la conversación: ' + err.message);
+    toast('No se pudo crear: ' + err.message);
   } finally {
-    if (submitBtn) submitBtn.disabled = false;
+    btn.disabled = false;
   }
 };
 
@@ -3234,7 +2870,7 @@ function paneSwipeStart(clientX, clientY) {
   return true;
 }
 
-const PANE_COUNT = 5;
+const PANE_COUNT = 4;
 
 function paneSwipeMove(clientX, clientY) {
   if (!paneDragging) return false;
@@ -3542,14 +3178,18 @@ $('notes-input').addEventListener('keydown', e => {
 
 $('notes-composer').addEventListener('submit', async e => {
   e.preventDefault();
-  if (!currentNotebook) return;
+  // notebook-view oculto = ni libreta real ni borrador abiertos (estamos en
+  // la lista) — nada que guardar acá.
+  if ($('notebook-view').hidden) return;
   const input = $('notes-input');
   const text = input.value.trim();
   if (!text) return;
-  const notebookId = currentNotebook.id;
   input.value = '';
   autoResize(input);
   try {
+    // Con un borrador (currentNotebook todavía null) esto crea la libreta
+    // recién ahora, con esta nota como la primera — ver ensureNotebookCreated().
+    const notebookId = await ensureNotebookCreated();
     const { entry, notebook } = await api(`/notebooks/${notebookId}/notes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3590,8 +3230,8 @@ $('notes-composer').addEventListener('submit', async e => {
 // mitad de camino. prepareForUpload ya resuelve esto (materializa a Blob +
 // comprime fotos grandes) — reusarlo acá en vez de mandar `file` directo.
 async function uploadNoteFile(file) {
-  if (!currentNotebook) return;
-  const notebookId = currentNotebook.id;
+  // notebook-view oculto = ni libreta real ni borrador abiertos.
+  if ($('notebook-view').hidden) return;
   const displayName = file.name || `pegado-${Date.now()}.${(file.type.split('/')[1] || 'bin')}`;
   const loadingChip = document.createElement('div');
   loadingChip.className = 'attach-chip attach-chip-loading';
@@ -3602,6 +3242,9 @@ async function uploadNoteFile(file) {
   const t0 = Date.now();
   let sentBytes = 0;
   try {
+    // Con un borrador, adjuntar un archivo también cuenta como contenido
+    // real — crea la libreta acá si todavía no existe (ver ensureNotebookCreated).
+    const notebookId = await ensureNotebookCreated();
     const { blob, name: uploadName } = await prepareForUpload(file, displayName);
     sentBytes = blob.size;
     const fd = new FormData();
