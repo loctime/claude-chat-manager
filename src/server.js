@@ -10,6 +10,7 @@ const scanner = require('./scanner');
 const notes = require('./notes');
 const meta = require('./meta');
 const config = require('./config');
+const icon = require('./icon');
 const { Runner } = require('./runner');
 const { CLAUDE_CMD } = require('./claude-cmd');
 
@@ -56,6 +57,39 @@ function getAppVersion() {
 }
 
 const HOME_DIR = process.env.HOME || process.env.USERPROFILE || os.homedir();
+
+// Color de identidad de esta instancia: pinta --accent en toda la UI, el
+// theme_color del manifest y el círculo de los íconos de la PWA (ver
+// icon.js). Mismo patrón que getAppName(): se lee del archivo en cada
+// request, default = el verde original de la app.
+const DEFAULT_APP_COLOR = '#25d366';
+function getAppColor() {
+  const color = (config.load().appColor || '').trim();
+  return icon.isValidColor(color) ? color : DEFAULT_APP_COLOR;
+}
+
+// Cache en disco (no en public/, que es del repo) de los íconos regenerados
+// para el color actual. Se regeneran al guardar un color nuevo desde
+// Configuración; serveIcon() de más abajo cae al PNG original del repo si
+// todavía no se generó ninguno (instalación nueva).
+const ICON_CACHE_DIR = path.join(HOME_DIR, '.ccm-icons');
+function regenerateIconsSafe(color) {
+  try {
+    icon.regenerateIcons(color, ICON_CACHE_DIR, { magickCmd: MAGICK_CMD, magickArgs });
+  } catch (e) {
+    console.error('No se pudo regenerar el ícono PWA:', e.message);
+  }
+}
+// Al boot: si hay un color guardado de una sesión anterior pero el cache de
+// íconos no está (primera vez que corre esta versión, o se borró a mano),
+// regenerarlo — si no, serveIcon() serviría el verde default hasta el
+// próximo cambio de color desde Configuración.
+{
+  const savedColor = (config.load().appColor || '').trim();
+  if (icon.isValidColor(savedColor) && !fs.existsSync(path.join(ICON_CACHE_DIR, icon.iconFileName(512)))) {
+    regenerateIconsSafe(savedColor);
+  }
+}
 
 // GROQ_API_KEY: primero env var, si no está la buscamos en ~/.claude/settings.json (clave env)
 function loadGroqKey() {
@@ -142,6 +176,7 @@ app.get('/api/accounts', (req, res) => {
     otherPublicUrl: OTHER_PUBLIC_URL,
     otherLabel: OTHER_LABEL,
     appName: getAppName(),
+    appColor: getAppColor(),
   });
 });
 
@@ -152,7 +187,7 @@ app.post('/api/accounts/switch', (req, res) => {
   res.json({ ok: true, active: activeAccount });
 });
 
-// ── Config de instancia (hoy: solo el nombre) — pantalla de Configuración ──
+// ── Config de instancia (nombre + color de identidad) — pantalla de Configuración ──
 app.patch('/api/config', (req, res) => {
   const cfg = config.load();
   if ('appName' in req.body) {
@@ -160,13 +195,25 @@ app.patch('/api/config', (req, res) => {
     if (name) cfg.appName = name;
     else delete cfg.appName; // vacío = volver al env var / default
   }
+  if ('appColor' in req.body) {
+    const color = (req.body.appColor || '').trim();
+    if (!color) {
+      delete cfg.appColor; // vacío = volver al verde default
+    } else if (icon.isValidColor(color)) {
+      cfg.appColor = color;
+    } else {
+      return res.status(400).json({ error: 'color inválido, esperado formato #rrggbb' });
+    }
+  }
   config.save(cfg);
-  res.json({ ok: true, appName: getAppName() });
+  const appColor = getAppColor();
+  if ('appColor' in req.body) regenerateIconsSafe(appColor);
+  res.json({ ok: true, appName: getAppName(), appColor });
 });
 
-// index.html y manifest.json tienen un placeholder {{APP_NAME}} — se sirven
-// acá con el reemplazo hecho, ANTES del express.static de abajo (si no, este
-// último los serviría primero tal cual, con el placeholder crudo sin
+// index.html y manifest.json tienen placeholders {{APP_NAME}}/{{APP_COLOR}} —
+// se sirven acá con el reemplazo hecho, ANTES del express.static de abajo (si
+// no, este último los serviría primero tal cual, con el placeholder crudo sin
 // reemplazar). Reemplazo global por si el mismo archivo lo usa más de una vez.
 function serveTemplated(filePath, contentType) {
   return (req, res) => {
@@ -177,13 +224,32 @@ function serveTemplated(filePath, contentType) {
       return res.status(404).end();
     }
     res.set('Cache-Control', 'no-store');
-    res.type(contentType).send(body.replaceAll('{{APP_NAME}}', getAppName()).replaceAll('{{APP_VERSION}}', getAppVersion()));
+    res.type(contentType).send(body
+      .replaceAll('{{APP_NAME}}', getAppName())
+      .replaceAll('{{APP_VERSION}}', getAppVersion())
+      .replaceAll('{{APP_COLOR}}', getAppColor()));
   };
 }
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 app.get('/', serveTemplated(path.join(PUBLIC_DIR, 'index.html'), 'html'));
 app.get('/index.html', serveTemplated(path.join(PUBLIC_DIR, 'index.html'), 'html'));
 app.get('/manifest.json', serveTemplated(path.join(PUBLIC_DIR, 'manifest.json'), 'application/json'));
+
+// Ícono de la PWA: si hay uno regenerado en el cache para el color actual, se
+// sirve ese; si no (instalación nueva, o cache borrado a mano), cae al PNG
+// verde original del repo. Rutas explícitas ANTES del express.static de abajo
+// para que tengan prioridad sobre los archivos estáticos del mismo nombre.
+function serveIcon(size) {
+  const fileName = icon.iconFileName(size);
+  return (req, res) => {
+    const cached = path.join(ICON_CACHE_DIR, fileName);
+    const file = fs.existsSync(cached) ? cached : path.join(PUBLIC_DIR, fileName);
+    res.set('Cache-Control', 'no-store');
+    res.sendFile(file);
+  };
+}
+app.get('/icon-192.png', serveIcon(192));
+app.get('/icon-512.png', serveIcon(512));
 
 // index.html y archivos JS/CSS nunca cacheados por el browser
 app.use(express.static(PUBLIC_DIR, {
