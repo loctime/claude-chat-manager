@@ -316,6 +316,26 @@ function usageTone(pct) {
   if (pct >= 70) return 'warm';
   return '';
 }
+// "2 : 30 min" — lo que falta para el reinicio de la ventana, formato reloj.
+// Horas sin tope en 24 (la semanal puede llegar a mostrar "36 : 15 min").
+// Redondeado a favor del usuario (floor) para no mostrar "0 : 00 min" un
+// instante antes de que en realidad reinicie.
+function formatCountdown(ms) {
+  if (ms == null || ms <= 0) return '¡ya!';
+  const totalMin = Math.floor(ms / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return `${h} : ${String(m).padStart(2, '0')} min`;
+}
+// El label ("5h" / "Semana") se reemplaza por la cuenta regresiva al reinicio
+// mientras haya resetsAt guardado en el dataset — se recalcula solo (ver
+// setInterval más abajo) sin esperar al próximo loadUsage(), así el número
+// baja solo entre polls en vez de quedar pegado al valor de la última carga.
+function updateCountdownLabel(el) {
+  const label = el.querySelector('.usage-bar-label');
+  const resetsAt = el.dataset.resetsAt ? Number(el.dataset.resetsAt) : null;
+  label.textContent = resetsAt ? formatCountdown(resetsAt - Date.now()) : label.dataset.staticLabel;
+}
 function renderUsageBar(el, info) {
   if (!info || info.pct == null) { el.hidden = true; return; }
   el.hidden = false;
@@ -326,8 +346,17 @@ function renderUsageBar(el, info) {
   if (tone) fill.dataset.tone = tone; else delete fill.dataset.tone;
   el.querySelector('.usage-bar-pct').textContent = Math.round(pct) + '%';
   const resets = info.resetsAt ? new Date(info.resetsAt) : null;
+  if (resets) el.dataset.resetsAt = String(resets.getTime()); else delete el.dataset.resetsAt;
+  updateCountdownLabel(el);
   el.title = resets ? `Reinicia ${resets.toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : '';
 }
+// Tick liviano cada 30s para que la cuenta regresiva baje sola entre polls
+// reales (loadUsage corre cada 10min + con cada mensaje, no cada 30s).
+setInterval(() => {
+  const b5 = $('usage-5h'), b7 = $('usage-7d');
+  if (b5 && !b5.hidden) updateCountdownLabel(b5);
+  if (b7 && !b7.hidden) updateCountdownLabel(b7);
+}, 30000);
 async function loadUsage() {
   try {
     const d = await api(withAccount('/usage'));
