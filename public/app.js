@@ -2193,12 +2193,67 @@ function setStatus(text) {
   $('conv-status').textContent = text;
 }
 
-function setBusy(busy) {
-  $('input').disabled = busy || !currentConv;
-  $('send').disabled = busy || !currentConv;
-  $('attach-btn').disabled = busy || !currentConv;
-  $('mic-btn').disabled = busy || !currentConv;
+// ── Cola de un mensaje adicional ──
+// Con el turno en curso el composer ya NO se bloquea entero: podés escribir
+// (y adjuntar) un mensaje más, que queda "en cola" —tope de uno por
+// conversación— y se dispara solo apenas termina el turno actual. Si ese
+// turno lo cancelaste vos, o si terminó en error, el mensaje en cola se
+// descarta sin perderlo: vuelve al cuadro de texto para que decidas.
+const queuedMessages = new Map(); // convId -> { text, attachments }
+let busy = false;
+
+function queueMessage(convId, text, attachments) {
+  queuedMessages.set(convId, { text, attachments });
+}
+
+function dequeueMessage(convId) {
+  const q = queuedMessages.get(convId);
+  queuedMessages.delete(convId);
+  return q;
+}
+
+function renderQueuedBar() {
+  const bar = $('queued-bar');
+  const q = currentConv && queuedMessages.get(currentConv);
+  bar.innerHTML = '';
+  bar.hidden = !q;
+  if (!q) return;
+  const label = document.createElement('span');
+  label.className = 'queued-bar-text';
+  const preview = q.text ? (q.text.length > 90 ? q.text.slice(0, 90) + '…' : q.text) : '';
+  const attCount = q.attachments.length;
+  label.textContent = '⏳ En cola: ' + (preview || `${attCount} adjunto${attCount === 1 ? '' : 's'}`);
+  label.title = q.text || '';
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'queued-bar-remove';
+  removeBtn.setAttribute('aria-label', 'Sacar mensaje de la cola');
+  removeBtn.textContent = '✕';
+  removeBtn.onclick = () => {
+    const removed = dequeueMessage(currentConv);
+    renderQueuedBar();
+    updateComposerLock();
+    if (removed) restoreComposer(removed.text, removed.attachments);
+  };
+  bar.appendChild(label);
+  bar.appendChild(removeBtn);
+}
+
+function updateComposerLock() {
+  // Solo se bloquea si no hay conversación abierta, o si ya hay un mensaje
+  // en cola (tope de uno) — con el turno corriendo pero la cola vacía, se
+  // puede seguir escribiendo/adjuntando normalmente.
+  const locked = !currentConv || (busy && queuedMessages.has(currentConv));
+  $('input').disabled = locked;
+  $('send').disabled = locked;
+  $('attach-btn').disabled = locked;
+  $('mic-btn').disabled = locked;
   $('cancel-btn').hidden = !busy || !currentConv;
+}
+
+function setBusy(b) {
+  busy = b;
+  updateComposerLock();
   setStatus(busy ? 'escribiendo…' : '');
 }
 
@@ -2222,11 +2277,31 @@ function openStream(convId) {
         setBusy(false);
         // Recargar ANTES de mostrar el error: loadMessages() reemplaza todo
         // messagesEl.innerHTML, así que si el addMsg('error', ...) va primero
-        // queda tapado al instante por el reload.
+        // queda tapado al instante por el reload. El disparo del mensaje en
+        // cola también espera a este reload, por la misma razón: si lo
+        // mandáramos antes, la burbuja optimista que agrega quedaría tapada
+        // (o directamente borrada) apenas termine de recargar.
         loadMessages(convId).then(() => {
           if (payload.code !== 0 && payload.stderr) addMsg('error', 'Error: ' + payload.stderr);
           // Turno terminado: si estás leyendo más arriba, el botón pasa a verde.
           flagJumpBtn('done');
+          if (convId !== currentConv) return; // te fuiste a otra conversación mientras recargaba
+          // Mensaje en cola esperando este turno: se dispara solo, salvo que
+          // el turno anterior lo hayas cancelado o haya terminado en error
+          // — ahí se descarta el envío pero se devuelve al composer, no se pierde.
+          const queued = dequeueMessage(convId);
+          if (queued) {
+            renderQueuedBar();
+            if (payload.cancelled) {
+              restoreComposer(queued.text, queued.attachments);
+              toast('Cancelaste el turno — también se descartó el mensaje en cola', 'info', 5000);
+            } else if (payload.code !== 0) {
+              restoreComposer(queued.text, queued.attachments);
+              toast('El turno anterior terminó con error — no se mandó el mensaje en cola', 'info', 5000);
+            } else {
+              performSend(convId, queued.text, queued.attachments);
+            }
+          }
         });
         refreshVisibleTrees();
         refreshCostBadge(convId);
@@ -2336,6 +2411,24 @@ async function selectConv(convId, name, model, lastModel, projectDir) {
   folderEl.hidden = !dirName;
   setBusy(false);
   clearAttachments();
+  renderQueuedBar();
+  // Si esta conversación tenía un mensaje en cola y el turno terminó mientras
+  // no la mirabas, el reconnect de abajo (dentro de openChat→openStream) solo
+  // avisa si SIGUE ocupada — si ya terminó, el server no manda ningún evento
+  // y la cola quedaría "colgada" sin que nadie la dispare nunca. A los 1.5s
+  // sin señal de que está ocupada, asumimos que ya terminó y devolvemos el
+  // mensaje al composer en vez de dejarlo esperando para siempre.
+  if (queuedMessages.has(convId)) {
+    setTimeout(() => {
+      if (currentConv !== convId || busy) return;
+      const queued = dequeueMessage(convId);
+      if (queued) {
+        restoreComposer(queued.text, queued.attachments);
+        renderQueuedBar();
+        toast('Ese turno ya había terminado mientras no mirabas — te devolvimos el mensaje en cola al cuadro de texto', 'info', 6000);
+      }
+    }, 1500);
+  }
   showNotebookView(false);
   openChat();
   // Al abrir otra conversación siempre arrancamos abajo, sin heredar la
@@ -2773,27 +2866,19 @@ function restoreComposer(text, attachments) {
   }
 }
 
-$('composer').onsubmit = async e => {
-  e.preventDefault();
-  const rawText = $('input').value.trim();
-  if ((!rawText && pendingAttachments.length === 0) || !currentConv) return;
-
-  const attachments = [...pendingAttachments];
+// Arma el texto final (con los prefijos [Archivo adjunto: ...]), muestra la
+// burbuja optimista y postea al server. Lo usan tanto un submit normal como
+// el disparo automático de un mensaje que estaba en cola.
+async function performSend(convId, rawText, attachments) {
   let text = rawText;
   if (attachments.length > 0) {
     const paths = attachments.map(a => `[Archivo adjunto: ${a.path}]`).join('\n');
     text = paths + (rawText ? '\n\n' + rawText : '');
   }
-
-  // Mostrar mensaje con previews de archivos adjuntos
   const bubble = addUserMsgWithFiles(rawText, attachments);
-  $('input').value = '';
-  autoResize($('input'));
-  drafts.delete(currentConv);
-  clearAttachments();
   setBusy(true);
   try {
-    await sendMessage(currentConv, text);
+    await sendMessage(convId, text);
   } catch (err) {
     setBusy(false);
     if (err.isNetwork) {
@@ -2805,6 +2890,29 @@ $('composer').onsubmit = async e => {
       addMsg('error', err.message);
     }
   }
+}
+
+$('composer').onsubmit = async e => {
+  e.preventDefault();
+  const rawText = $('input').value.trim();
+  if ((!rawText && pendingAttachments.length === 0) || !currentConv) return;
+
+  const convId = currentConv;
+  const attachments = [...pendingAttachments];
+  $('input').value = '';
+  autoResize($('input'));
+  drafts.delete(convId);
+  clearAttachments();
+
+  if (busy) {
+    // Ya hay un turno corriendo: no pega al server, lo deja en cola (tope 1)
+    // y se dispara solo cuando ese turno termine (ver el handler de 'idle').
+    queueMessage(convId, rawText, attachments);
+    renderQueuedBar();
+    updateComposerLock();
+    return;
+  }
+  await performSend(convId, rawText, attachments);
 };
 
 // ── Model change ──

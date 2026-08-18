@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=53">
+  <link rel="stylesheet" href="style.css?v=54">
   <!-- Color de identidad server-side (Configuración → Color de identidad). Va
        después de style.css para pisar el --accent default de ahí; el ajuste
        personal por-dispositivo ("Acento" en Colores, más abajo) sigue
@@ -125,6 +125,7 @@
         </button>
       </div>
       <div id="composer-attachments"></div>
+      <div id="queued-bar" hidden></div>
       <form id="composer">
         <input id="file-input" type="file" hidden accept="image/*,text/*,application/*" multiple>
         <button id="attach-btn" type="button" title="Adjuntar archivo" aria-label="Adjuntar archivo" disabled>
@@ -259,6 +260,6 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=51"></script>
+  <script src="app.js?v=52"></script>
 </body>
 </html>
