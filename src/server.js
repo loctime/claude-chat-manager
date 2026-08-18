@@ -381,6 +381,13 @@ app.patch('/api/config', (req, res) => {
 // inevitable (el proceso que la sirve muere). Por eso se responde `ok` ANTES
 // de matar nada, y recién con la respuesta ya en vuelo se dispara el restart.
 //
+// Antes de reiniciar se intenta un `git pull` (gitPull() abajo) — es lo que
+// el botón dice que hace ("aplica cambios de código nuevos") pero hasta acá
+// nunca hacía de verdad, solo relanzaba el mismo código que ya estaba en
+// disco. Best-effort: si el pull falla (sin red, conflicto, etc.) o hay
+// cambios sin commitear en el working tree, se loguea y se reinicia igual
+// con el código que hay — nunca se bloquea el restart por el pull.
+//
 // Dos modos, elegidos por si hay o no un supervisor externo:
 //  - RESTART_CMD seteado (env var): se ejecuta ese comando y se deja que ÉL
 //    mate y relance — pensado para deploys bajo un supervisor de verdad (ej.
@@ -419,13 +426,83 @@ function doRestart() {
   process.exit(0);
 }
 
+// Repo root: el mismo cwd que ya usa el relanzamiento de arriba.
+const REPO_ROOT = path.join(__dirname, '..');
+
+// Cuando el git pull automático del restart no se puede resolver solo
+// (working tree sucio, o el pull mismo falla — típicamente un merge
+// conflict), en vez de dejarlo solo en un log que nadie mira se crea una
+// conversación nueva en Jarvis con lo que pasó y se le manda a Claude de
+// entrada, así aparece lista (con "no leído") la próxima vez que se abre la
+// PWA, en vez de tener que ir a buscar por qué el código no se actualizó.
+// Mismo patrón que POST /api/conversations + POST /api/conversations/:id/message,
+// pero disparado desde el propio server en vez de una request de un cliente.
+async function reportGitPullIssue(text) {
+  try {
+    const acc = activeAccount;
+    const projectDir = process.env.CCM_DEFAULT_PROJECT_DIR || accountHomeDir(acc);
+    const metaFile = accountMetaFile(acc);
+    const convId = crypto.randomUUID();
+    const data = meta.load(metaFile);
+    data.conversations[convId] = { currentSessionId: null, projectDir, name: 'git pull tras reinicio' };
+    meta.save(data, metaFile);
+    runner.send({ convId, sessionId: null, cwd: projectDir, text, account: acc });
+    console.error('[restart] git pull con problemas — se creó la conversación', convId, 'para resolverlo');
+  } catch (err) {
+    // Best-effort sobre best-effort: si esto falla, ya quedó el console.error
+    // de gitPull() de todos modos — no es la única forma de enterarse.
+    console.error('[restart] git pull con problemas, y además falló crear la conversación de aviso:', err.message);
+  }
+}
+
+// git pull best-effort. Se salta (sin tocar nada) si hay cambios sin
+// commitear — un pull sobre un working tree sucio puede fallar a mitad de
+// camino o traer un merge conflict, y este server no tiene forma de
+// resolverlo solo. En ese caso el restart sigue de largo con el código
+// actual, tal cual se comportaba antes de agregar esto.
+function gitPull() {
+  return new Promise(resolve => {
+    exec('git status --porcelain', { cwd: REPO_ROOT, windowsHide: true }, (err, stdout) => {
+      if (err) {
+        console.error('[restart] git status falló, se saltea el pull:', err.message);
+        return resolve();
+      }
+      if (stdout.trim()) {
+        console.warn('[restart] hay cambios sin commitear en el repo, se saltea el git pull (reinicia con el código actual):\n' + stdout);
+        reportGitPullIssue(
+          `Al reiniciar el server (botón de Configuración) se intentó un "git pull" en ${REPO_ROOT}, ` +
+          `pero el working tree tenía cambios sin commitear, así que se saltó el pull y se reinició con el código actual tal cual estaba. Esto mostró "git status --porcelain":\n\n${stdout}\n\n` +
+          `Fijate de qué son esos cambios (¿algo a medio hacer, tuyo o de otra sesión de Claude?) y resolvelo — commitear, descartar, o stash — para que el próximo reinicio pueda traer lo nuevo del repo.`
+        );
+        return resolve();
+      }
+      exec('git pull', { cwd: REPO_ROOT, windowsHide: true }, (err2, stdout2, stderr2) => {
+        if (err2) {
+          console.error('[restart] git pull falló:', err2.message);
+          reportGitPullIssue(
+            `Al reiniciar el server (botón de Configuración) se intentó un "git pull" en ${REPO_ROOT} y falló:\n\n${err2.message}\n\n` +
+            (stdout2 ? `stdout:\n${stdout2}\n\n` : '') + (stderr2 ? `stderr:\n${stderr2}\n\n` : '') +
+            `Fijate si es un conflicto de merge, divergencia de historia, o un problema de red, y resolvelo (puede hacer falta "git status", "git diff", o "git merge --abort" si quedó un merge a mitad de camino) — el server se reinició igual con el código que ya tenía.`
+          );
+        } else {
+          console.log('[restart] git pull:', (stdout2 || stderr2 || '').trim() || '(sin cambios)');
+        }
+        resolve();
+      });
+    });
+  });
+}
+
 app.post('/api/restart', (req, res) => {
   res.json({ ok: true, restarting: true });
   // Esperar a que la respuesta ya haya salido por el socket antes de matar el
   // proceso que la está sirviendo (si no, el cliente puede quedarse sin
   // confirmación aunque el restart haya salido bien). El pequeño delay extra
   // le da margen a proxies de por medio (el túnel de Cloudflare).
-  res.on('finish', () => setTimeout(doRestart, 300));
+  res.on('finish', () => setTimeout(async () => {
+    await gitPull();
+    doRestart();
+  }, 300));
 });
 
 // index.html y manifest.json tienen placeholders {{APP_NAME}}/{{APP_COLOR}} —

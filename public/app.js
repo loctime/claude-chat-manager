@@ -3355,7 +3355,7 @@ $('cfg-font-size').onchange = e => { settings.fontSize = e.target.value; applySe
 // conexión puede leerse como error de red aunque el restart haya salido bien
 // — por eso el catch de abajo no muestra error, solo el then es best-effort.
 $('cfg-restart-btn').onclick = async () => {
-  if (!confirm('Reiniciar el server?\n\nAplica cambios de código nuevos (después de un git pull). Se corta la conexión unos segundos y después hay que recargar la página a mano.')) return;
+  if (!confirm('Reiniciar el server?\n\nHace git pull y reinicia con el código nuevo. Si el pull no se puede (cambios sin commitear o falla), reinicia igual con el código actual y te deja una conversación nueva contándote qué pasó. Se corta la conexión unos segundos y después hay que recargar la página a mano.')) return;
   toast('Reiniciando server…', 'info', 6000);
   try {
     await fetch('/api/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
