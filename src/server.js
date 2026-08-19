@@ -431,27 +431,24 @@ const REPO_ROOT = path.join(__dirname, '..');
 
 // Cuando el git pull automático del restart no se puede resolver solo
 // (working tree sucio, o el pull mismo falla — típicamente un merge
-// conflict), en vez de dejarlo solo en un log que nadie mira se crea una
-// conversación nueva en Jarvis con lo que pasó y se le manda a Claude de
-// entrada, así aparece lista (con "no leído") la próxima vez que se abre la
-// PWA, en vez de tener que ir a buscar por qué el código no se actualizó.
-// Mismo patrón que POST /api/conversations + POST /api/conversations/:id/message,
-// pero disparado desde el propio server en vez de una request de un cliente.
-async function reportGitPullIssue(text) {
+// conflict), antes se le mandaba el aviso a Claude como mensaje de una
+// conversación nueva — pero esa conversación se creaba en meta.json y el
+// restart mataba el proceso (process.exit) tres líneas después sin esperar
+// a que runner.send() terminara, así que el aviso real nunca se escribía:
+// quedaba una conversación vacía, con currentSessionId null, sin mensajes.
+// Ahora en vez de eso se deja un aviso liviano en disco (un solo pendiente,
+// se pisa si hay uno sin leer) y el cliente lo levanta como toast al abrir
+// la PWA — sin abrir conversación ni depender de que un `claude -p` llegue
+// a correr antes de que el proceso se mate a sí mismo.
+const RESTART_NOTICE_FILE = path.join(HOME_DIR, '.claude', 'session-manager', 'restart-notice.json');
+function writeRestartNotice(text, kind = 'info') {
   try {
-    const acc = activeAccount;
-    const projectDir = process.env.CCM_DEFAULT_PROJECT_DIR || accountHomeDir(acc);
-    const metaFile = accountMetaFile(acc);
-    const convId = crypto.randomUUID();
-    const data = meta.load(metaFile);
-    data.conversations[convId] = { currentSessionId: null, projectDir, name: 'git pull tras reinicio' };
-    meta.save(data, metaFile);
-    runner.send({ convId, sessionId: null, cwd: projectDir, text, account: acc });
-    console.error('[restart] git pull con problemas — se creó la conversación', convId, 'para resolverlo');
+    fs.mkdirSync(path.dirname(RESTART_NOTICE_FILE), { recursive: true });
+    fs.writeFileSync(RESTART_NOTICE_FILE, JSON.stringify({ text, kind, ts: new Date().toISOString() }));
   } catch (err) {
     // Best-effort sobre best-effort: si esto falla, ya quedó el console.error
     // de gitPull() de todos modos — no es la única forma de enterarse.
-    console.error('[restart] git pull con problemas, y además falló crear la conversación de aviso:', err.message);
+    console.error('[restart] no se pudo guardar el aviso de restart-notice:', err.message);
   }
 }
 
@@ -469,20 +466,19 @@ function gitPull() {
       }
       if (stdout.trim()) {
         console.warn('[restart] hay cambios sin commitear en el repo, se saltea el git pull (reinicia con el código actual):\n' + stdout);
-        reportGitPullIssue(
-          `Al reiniciar el server (botón de Configuración) se intentó un "git pull" en ${REPO_ROOT}, ` +
-          `pero el working tree tenía cambios sin commitear, así que se saltó el pull y se reinició con el código actual tal cual estaba. Esto mostró "git status --porcelain":\n\n${stdout}\n\n` +
-          `Fijate de qué son esos cambios (¿algo a medio hacer, tuyo o de otra sesión de Claude?) y resolvelo — commitear, descartar, o stash — para que el próximo reinicio pueda traer lo nuevo del repo.`
+        const files = stdout.trim().split('\n').map(l => l.replace(/^.{0,3}/, '').trim()).join(', ');
+        writeRestartNotice(
+          `Reinicio: se saltó "git pull" porque había cambios sin commitear (${files}). Reinició igual con el código que ya tenía en disco.`,
+          'info'
         );
         return resolve();
       }
       exec('git pull', { cwd: REPO_ROOT, windowsHide: true }, (err2, stdout2, stderr2) => {
         if (err2) {
           console.error('[restart] git pull falló:', err2.message);
-          reportGitPullIssue(
-            `Al reiniciar el server (botón de Configuración) se intentó un "git pull" en ${REPO_ROOT} y falló:\n\n${err2.message}\n\n` +
-            (stdout2 ? `stdout:\n${stdout2}\n\n` : '') + (stderr2 ? `stderr:\n${stderr2}\n\n` : '') +
-            `Fijate si es un conflicto de merge, divergencia de historia, o un problema de red, y resolvelo (puede hacer falta "git status", "git diff", o "git merge --abort" si quedó un merge a mitad de camino) — el server se reinició igual con el código que ya tenía.`
+          writeRestartNotice(
+            `Reinicio: "git pull" falló (${err2.message.split('\n')[0]}). Reinició igual con el código que ya tenía en disco — mirá la consola del server para el detalle.`,
+            'error'
           );
         } else {
           console.log('[restart] git pull:', (stdout2 || stderr2 || '').trim() || '(sin cambios)');
@@ -503,6 +499,19 @@ app.post('/api/restart', (req, res) => {
     await gitPull();
     doRestart();
   }, 300));
+});
+
+// Read-once: el cliente lo pregunta al abrir la PWA y, si hay algo, lo
+// muestra como toast y se borra acá mismo — así no vuelve a aparecer en el
+// próximo refresh ni queda pisando la lista de conversaciones.
+app.get('/api/restart-notice', (req, res) => {
+  try {
+    const raw = fs.readFileSync(RESTART_NOTICE_FILE, 'utf8');
+    fs.unlinkSync(RESTART_NOTICE_FILE);
+    res.json(JSON.parse(raw));
+  } catch {
+    res.json({ text: null });
+  }
 });
 
 // index.html y manifest.json tienen placeholders {{APP_NAME}}/{{APP_COLOR}} —

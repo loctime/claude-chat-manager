@@ -606,12 +606,19 @@ function speak(text, btn, kind = 'assistant') {
 }
 
 function cleanForTTS(text) {
-  let plain = text;
+  // Sacar bloques de código y código inline ANTES de pasar por marked: adentro
+  // de un ``` ``` el contenido es código literal (=>, {}, ===, ;), marked no lo
+  // toca porque es preformatted, así que si no se saca acá el TTS lo lee tal cual.
+  let raw = text
+    .replace(/```[a-zA-Z0-9_+-]*\n?[\s\S]*?```/g, ' ')
+    .replace(/`[^`\n]+`/g, ' ');
+
+  let plain = raw;
   // Pasar por el mismo parser Markdown que usa el render visual y quedarnos
   // solo con el texto: así el TTS nunca ve *, `, #, [](), etc. y no los lee
   // como si fueran palabras ("asterisco", "numeral", "comillas").
   if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
-    const html = DOMPurify.sanitize(marked.parse(text, { breaks: true, gfm: true }));
+    const html = DOMPurify.sanitize(marked.parse(raw, { breaks: true, gfm: true }));
     const tpl = document.createElement('template');
     tpl.innerHTML = html;
     plain = tpl.content.textContent || '';
@@ -619,6 +626,9 @@ function cleanForTTS(text) {
   return plain
     .replace(/\[Archivo adjunto:[^\]]+\]/g, '')
     .replace(/`?\/(?:home|tmp|root|var|opt|usr)[^\s`'"]+`?/g, '')
+    .replace(/`?[A-Za-z]:\\[^\s`'"]+`?/g, '') // rutas Windows C:\...
+    .replace(/`?\\\\[^\s`'"]+`?/g, '') // rutas UNC \\server\share
+    .replace(/https?:\/\/\S+/g, '') // URLs pegadas sin formato markdown
     .replace(/["""«»'']/g, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
@@ -3242,6 +3252,18 @@ function pollTrees() {
 }
 loadAccounts().then(() => safeLoadTree());
 setInterval(pollTrees, 15000);
+
+// Aviso pendiente de un reinicio anterior (ej. "se saltó git pull porque
+// había cambios sin commitear") — el server lo guarda una sola vez y lo
+// borra al leerlo, así que esto no vuelve a mostrar nada en el próximo
+// refresh. No abre conversación, solo un toast.
+(async function checkRestartNotice() {
+  try {
+    const r = await fetch('/api/restart-notice');
+    const data = await r.json();
+    if (data && data.text) toast(data.text, data.kind || 'info', 10000);
+  } catch { /* silencioso: no es crítico perderse este aviso */ }
+})();
 loadUsage();
 setInterval(loadUsage, 10 * 60 * 1000);
 
