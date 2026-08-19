@@ -13,6 +13,7 @@ const config = require('./config');
 const icon = require('./icon');
 const { Runner } = require('./runner');
 const { CLAUDE_CMD } = require('./claude-cmd');
+const searchIndex = require('./search-index');
 
 const IS_WIN = process.platform === 'win32';
 // WSL: Linux corriendo dentro de Windows (kernel expone "microsoft" en
@@ -147,6 +148,54 @@ function accountMetaFile(acc) {
 const UPLOAD_DIR = path.join(HOME_DIR, '.ccm-uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
+// ── Índice de búsqueda ──
+// Se abre acá y se sincroniza en background: el backfill de la primera vez
+// recorre todo el historial, así que arrancar el server no puede depender de
+// que termine. Si el Node de esta máquina no trae node:sqlite, `index` queda
+// null y /api/search cae al scan lineal de scanner.js.
+const SEARCH_DB = process.env.CCM_SEARCH_DB || path.join(HOME_DIR, '.ccm-search.db');
+let index = null;
+try {
+  index = searchIndex.openIndex(SEARCH_DB);
+} catch (e) {
+  console.error('[search] índice no disponible, se usa el scan lineal:', e.message);
+}
+
+// Las libretas viven en el HOME del proceso (~/.ccm-notes), no dentro de cada
+// cuenta de Claude como los chats — o sea que son las mismas se mire la cuenta
+// que se mire. Van con su propio scope: indexarlas una vez por cuenta las haría
+// rebotar de dueño en cada sync (el path es único en el índice).
+const NOTES_ACCOUNT = '__local__';
+
+// Un sync a la vez por cuenta: el timer y el sync disparado al terminar un
+// turno pueden pisarse, y dos backfills en paralelo sobre la misma base solo
+// duplican trabajo.
+const syncing = new Set();
+
+async function syncSearchIndex(acc, { reason = 'timer' } = {}) {
+  if (!index || syncing.has(acc)) return;
+  syncing.add(acc);
+  const t0 = Date.now();
+  try {
+    const chats = await index.syncChats(accountProjectsDir(acc), acc);
+    const notebooks = notes.listNotebooks().map(nb => ({
+      id: nb.id, name: nb.name, file: notes.notebookNotesFile(nb.id),
+    }));
+    const notas = await index.syncNotes(notebooks, NOTES_ACCOUNT);
+    // Solo logueamos cuando hubo trabajo real — si no, cada tick del timer
+    // ensuciaría el log con "0 indexados".
+    if (chats.indexed || chats.removed || notas.indexed || notas.removed) {
+      console.log(`[search] sync ${acc} (${reason}): ${chats.indexed} chats, ${notas.indexed} notas, ${chats.removed + notas.removed} bajas, ${Date.now() - t0}ms`);
+    }
+  } catch (e) {
+    console.error('[search] sync falló:', e.message);
+  } finally {
+    syncing.delete(acc);
+  }
+}
+
+const SEARCH_SYNC_MS = 60_000;
+
 const upload = multer({ dest: UPLOAD_DIR, limits: { fileSize: 50 * 1024 * 1024 } });
 
 const app = express();
@@ -195,6 +244,110 @@ app.post('/api/accounts/switch', (req, res) => {
   res.json({ ok: true, active: activeAccount });
 });
 
+// ── Uso de cuenta Claude (email + límites 5h/semanal) ──
+// GET /api/oauth/usage es el mismo endpoint que usa la CLI oficial para
+// pintar el statusLine ("rate_limits.five_hour/seven_day"), autenticado con
+// el mismo access token OAuth que ya vive en ~/.claude/.credentials.json —
+// no hace falta login aparte. Está MUY rate-limiteado del lado de Anthropic
+// (~1 request/hora, responde 429 + Retry-After si te pasás), así que
+// cacheamos agresivo acá y respetamos ese Retry-After en vez de reintentar
+// por nuestra cuenta. El polling del frontend es liviano porque siempre pega
+// contra este cache, nunca directo a la API externa.
+const USAGE_MIN_INTERVAL_MS = 55 * 60 * 1000; // piso propio aunque Anthropic no nos frene
+const usageCache = new Map(); // account → { data, email, fetchedAt, nextAt, error }
+
+// La línea final ("type": "result") de cada job normal (claude -p ...) ya
+// trae este mismo rate_limits de regalo — es la misma cuenta que usa la CLI
+// para su statusLine, pero llega gratis con cada mensaje real que se manda
+// por acá (la sesión ya recibió los headers anthropic-ratelimit-unified-* de
+// Anthropic al responder), sin gastar el request tan limitado de arriba.
+// Se usa para refrescar usageCache "en vivo" — mientras estés chateando el
+// % se actualiza con cada turno en vez de esperar hasta 55 min.
+function ingestStreamRateLimits(acc, rl) {
+  if (!rl || (!rl.five_hour && !rl.seven_day)) return;
+  const now = Date.now();
+  const prev = usageCache.get(acc);
+  const entry = {
+    data: {
+      five_hour: rl.five_hour ? { utilization: rl.five_hour.used_percentage / 100, resets_at: rl.five_hour.resets_at } : (prev?.data?.five_hour ?? null),
+      seven_day: rl.seven_day ? { utilization: rl.seven_day.used_percentage / 100, resets_at: rl.seven_day.resets_at } : (prev?.data?.seven_day ?? null),
+    },
+    email: (prev && prev.email) || '',
+    fetchedAt: now,
+    nextAt: now + USAGE_MIN_INTERVAL_MS,
+    error: null,
+  };
+  usageCache.set(acc, entry);
+}
+
+function accountCredentialsFile(acc) {
+  return path.join(accountHomeDir(acc), '.claude', '.credentials.json');
+}
+function accountClaudeJsonFile(acc) {
+  return path.join(accountHomeDir(acc), '.claude.json');
+}
+function readAccountAuth(acc) {
+  let email = '';
+  let accessToken = '';
+  try {
+    const creds = JSON.parse(fs.readFileSync(accountCredentialsFile(acc), 'utf8'));
+    accessToken = (creds.claudeAiOauth && creds.claudeAiOauth.accessToken) || '';
+  } catch {}
+  try {
+    // .claude.json a veces trae BOM
+    const raw = fs.readFileSync(accountClaudeJsonFile(acc), 'utf8').replace(/^﻿/, '');
+    const cj = JSON.parse(raw);
+    email = (cj.oauthAccount && cj.oauthAccount.emailAddress) || '';
+  } catch {}
+  return { email, accessToken };
+}
+
+async function fetchAccountUsage(acc) {
+  const now = Date.now();
+  const cached = usageCache.get(acc);
+  if (cached && now < cached.nextAt) return cached;
+
+  const { email, accessToken } = readAccountAuth(acc);
+  if (!accessToken) {
+    const entry = { data: null, email, fetchedAt: now, nextAt: now + 5 * 60 * 1000, error: 'sin credenciales' };
+    usageCache.set(acc, entry);
+    return entry;
+  }
+  try {
+    const res = await fetch('https://api.anthropic.com/api/oauth/usage', {
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.status === 429) {
+      const retryAfter = Number(res.headers.get('retry-after')) || 3600;
+      const entry = { data: cached ? cached.data : null, email, fetchedAt: now, nextAt: now + retryAfter * 1000, error: 'rate limited' };
+      usageCache.set(acc, entry);
+      return entry;
+    }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const entry = { data, email, fetchedAt: now, nextAt: now + USAGE_MIN_INTERVAL_MS, error: null };
+    usageCache.set(acc, entry);
+    return entry;
+  } catch (err) {
+    const entry = { data: cached ? cached.data : null, email, fetchedAt: now, nextAt: now + 5 * 60 * 1000, error: err.message };
+    usageCache.set(acc, entry);
+    return entry;
+  }
+}
+
+app.get('/api/usage', async (req, res) => {
+  const acc = req.query.account || activeAccount;
+  const entry = await fetchAccountUsage(acc);
+  const d = entry.data;
+  res.json({
+    email: entry.email || '',
+    fiveHour: d && d.five_hour ? { pct: d.five_hour.utilization, resetsAt: d.five_hour.resets_at } : null,
+    sevenDay: d && d.seven_day ? { pct: d.seven_day.utilization, resetsAt: d.seven_day.resets_at } : null,
+    fetchedAt: entry.fetchedAt,
+  });
+});
+
 // ── Config de instancia (nombre + color de identidad) — pantalla de Configuración ──
 app.patch('/api/config', (req, res) => {
   const cfg = config.load();
@@ -227,6 +380,13 @@ app.patch('/api/config', (req, res) => {
 // de ESTE mismo server, su propia conexión se corta durante el restart, es
 // inevitable (el proceso que la sirve muere). Por eso se responde `ok` ANTES
 // de matar nada, y recién con la respuesta ya en vuelo se dispara el restart.
+//
+// Antes de reiniciar se intenta un `git pull` (gitPull() abajo) — es lo que
+// el botón dice que hace ("aplica cambios de código nuevos") pero hasta acá
+// nunca hacía de verdad, solo relanzaba el mismo código que ya estaba en
+// disco. Best-effort: si el pull falla (sin red, conflicto, etc.) o hay
+// cambios sin commitear en el working tree, se loguea y se reinicia igual
+// con el código que hay — nunca se bloquea el restart por el pull.
 //
 // Dos modos, elegidos por si hay o no un supervisor externo:
 //  - RESTART_CMD seteado (env var): se ejecuta ese comando y se deja que ÉL
@@ -266,13 +426,83 @@ function doRestart() {
   process.exit(0);
 }
 
+// Repo root: el mismo cwd que ya usa el relanzamiento de arriba.
+const REPO_ROOT = path.join(__dirname, '..');
+
+// Cuando el git pull automático del restart no se puede resolver solo
+// (working tree sucio, o el pull mismo falla — típicamente un merge
+// conflict), en vez de dejarlo solo en un log que nadie mira se crea una
+// conversación nueva en Jarvis con lo que pasó y se le manda a Claude de
+// entrada, así aparece lista (con "no leído") la próxima vez que se abre la
+// PWA, en vez de tener que ir a buscar por qué el código no se actualizó.
+// Mismo patrón que POST /api/conversations + POST /api/conversations/:id/message,
+// pero disparado desde el propio server en vez de una request de un cliente.
+async function reportGitPullIssue(text) {
+  try {
+    const acc = activeAccount;
+    const projectDir = process.env.CCM_DEFAULT_PROJECT_DIR || accountHomeDir(acc);
+    const metaFile = accountMetaFile(acc);
+    const convId = crypto.randomUUID();
+    const data = meta.load(metaFile);
+    data.conversations[convId] = { currentSessionId: null, projectDir, name: 'git pull tras reinicio' };
+    meta.save(data, metaFile);
+    runner.send({ convId, sessionId: null, cwd: projectDir, text, account: acc });
+    console.error('[restart] git pull con problemas — se creó la conversación', convId, 'para resolverlo');
+  } catch (err) {
+    // Best-effort sobre best-effort: si esto falla, ya quedó el console.error
+    // de gitPull() de todos modos — no es la única forma de enterarse.
+    console.error('[restart] git pull con problemas, y además falló crear la conversación de aviso:', err.message);
+  }
+}
+
+// git pull best-effort. Se salta (sin tocar nada) si hay cambios sin
+// commitear — un pull sobre un working tree sucio puede fallar a mitad de
+// camino o traer un merge conflict, y este server no tiene forma de
+// resolverlo solo. En ese caso el restart sigue de largo con el código
+// actual, tal cual se comportaba antes de agregar esto.
+function gitPull() {
+  return new Promise(resolve => {
+    exec('git status --porcelain', { cwd: REPO_ROOT, windowsHide: true }, (err, stdout) => {
+      if (err) {
+        console.error('[restart] git status falló, se saltea el pull:', err.message);
+        return resolve();
+      }
+      if (stdout.trim()) {
+        console.warn('[restart] hay cambios sin commitear en el repo, se saltea el git pull (reinicia con el código actual):\n' + stdout);
+        reportGitPullIssue(
+          `Al reiniciar el server (botón de Configuración) se intentó un "git pull" en ${REPO_ROOT}, ` +
+          `pero el working tree tenía cambios sin commitear, así que se saltó el pull y se reinició con el código actual tal cual estaba. Esto mostró "git status --porcelain":\n\n${stdout}\n\n` +
+          `Fijate de qué son esos cambios (¿algo a medio hacer, tuyo o de otra sesión de Claude?) y resolvelo — commitear, descartar, o stash — para que el próximo reinicio pueda traer lo nuevo del repo.`
+        );
+        return resolve();
+      }
+      exec('git pull', { cwd: REPO_ROOT, windowsHide: true }, (err2, stdout2, stderr2) => {
+        if (err2) {
+          console.error('[restart] git pull falló:', err2.message);
+          reportGitPullIssue(
+            `Al reiniciar el server (botón de Configuración) se intentó un "git pull" en ${REPO_ROOT} y falló:\n\n${err2.message}\n\n` +
+            (stdout2 ? `stdout:\n${stdout2}\n\n` : '') + (stderr2 ? `stderr:\n${stderr2}\n\n` : '') +
+            `Fijate si es un conflicto de merge, divergencia de historia, o un problema de red, y resolvelo (puede hacer falta "git status", "git diff", o "git merge --abort" si quedó un merge a mitad de camino) — el server se reinició igual con el código que ya tenía.`
+          );
+        } else {
+          console.log('[restart] git pull:', (stdout2 || stderr2 || '').trim() || '(sin cambios)');
+        }
+        resolve();
+      });
+    });
+  });
+}
+
 app.post('/api/restart', (req, res) => {
   res.json({ ok: true, restarting: true });
   // Esperar a que la respuesta ya haya salido por el socket antes de matar el
   // proceso que la está sirviendo (si no, el cliente puede quedarse sin
   // confirmación aunque el restart haya salido bien). El pequeño delay extra
   // le da margen a proxies de por medio (el túnel de Cloudflare).
-  res.on('finish', () => setTimeout(doRestart, 300));
+  res.on('finish', () => setTimeout(async () => {
+    await gitPull();
+    doRestart();
+  }, 300));
 });
 
 // index.html y manifest.json tienen placeholders {{APP_NAME}}/{{APP_COLOR}} —
@@ -409,6 +639,14 @@ runner.on('event', ({ convId, event, account }) => {
       meta.save(data, metaFile);
     }
   }
+  // Línea final del job — a veces trae rate_limits de regalo (ver
+  // ingestStreamRateLimits). No todos los "result" lo traen (recién
+  // disponible después de la primera respuesta real de la API en la
+  // sesión), por eso sigue existiendo el fetch a /api/oauth/usage como
+  // respaldo para cuando todavía no chateaste nada.
+  if (event.type === 'result' && event.rate_limits) {
+    ingestStreamRateLimits(account || activeAccount, event.rate_limits);
+  }
   broadcast(convId, { kind: 'claude', event });
 });
 
@@ -416,6 +654,9 @@ runner.on('status', s => {
   broadcast(s.convId, { kind: 'status', ...s });
   if (s.status === 'idle' && s.code === 0) {
     maybeGenerateTitle(s.convId, s.account || activeAccount).catch(() => {});
+    // Indexar el turno recién escrito ahora y no en el próximo tick del timer:
+    // buscar algo que acabás de hablar es justo el caso más frecuente.
+    syncSearchIndex(s.account || activeAccount, { reason: 'turno' });
   }
   // Un turno terminó sin que nadie lo estuviera mirando (ni en este dispositivo
   // ni en otro): marcarla "no leída". "Nadie mirando" = sin conexión SSE abierta
@@ -865,6 +1106,7 @@ app.post('/api/notebooks/:id/notes', (req, res) => {
   const file = notes.notebookNotesFile(req.params.id);
   const entry = { id: crypto.randomUUID(), ts: Date.now(), type: 'text', text };
   notes.append(entry, file);
+  syncSearchIndex(activeAccount, { reason: 'nota' });
 
   // Auto-nombre: si esta es la primera nota de texto y la libreta todavía
   // tiene el nombre default ("Nueva libreta"/"Nueva libreta N"), la renombra
@@ -899,6 +1141,7 @@ app.post('/api/notebooks/:id/notes/upload', notesUpload.single('file'), (req, re
     size: req.file.size,
   };
   notes.append(entry, notes.notebookNotesFile(req.params.id));
+  syncSearchIndex(activeAccount, { reason: 'nota' });
   res.status(201).json({ entry, notebook: nb });
 });
 
@@ -999,6 +1242,7 @@ app.post('/api/scan/:id/keep', (req, res) => {
     size: fs.statSync(destPath).size,
   };
   notes.append(entry, notes.notebookNotesFile(notebook.id));
+  syncSearchIndex(activeAccount, { reason: 'nota' });
   res.status(201).json({ entry, notebook });
 });
 
@@ -1094,7 +1338,22 @@ app.get('/api/search', (req, res) => {
   const q = (req.query.q || '').toString().trim();
   if (!q) return res.json({ results: [] });
   const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
-  const results = scanner.searchSessions(q, { limit, projectsDir: accountProjectsDir(acc) });
+  // Scope: parado en chats busca chats, parado en libretas busca notas.
+  const kind = req.query.kind === 'note' ? 'note' : 'chat';
+  const includeTools = req.query.tools === '1';
+
+  if (kind === 'note') {
+    if (!index) return res.json({ results: [], degraded: true });
+    const results = index.search(q, { kind: 'note', account: NOTES_ACCOUNT, limit });
+    return res.json({ results });
+  }
+
+  // Sin índice (Node sin node:sqlite) el buscador sigue andando con el scan
+  // lineal de siempre: más lento y sin tildes, pero no deja al usuario a pie.
+  const results = index
+    ? index.search(q, { kind: 'chat', account: acc, limit, includeTools })
+    : scanner.searchSessions(q, { limit, projectsDir: accountProjectsDir(acc) });
+
   // Anotar convId real (si existe conversación con nombre custom) para poder abrirla.
   const data = meta.load(accountMetaFile(acc));
   const bySessionId = new Map();
@@ -1113,7 +1372,7 @@ app.get('/api/search', (req, res) => {
       lastModel: conv ? conv.lastModel : r.lastModel,
     };
   });
-  res.json({ results: enriched });
+  res.json({ results: enriched, degraded: !index });
 });
 
 app.get('/api/conversations/:id/usage', (req, res) => {
@@ -1326,6 +1585,13 @@ app.get('/api/conversations/:id/stream', (req, res) => {
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`Claude Chat Manager en http://${HOST}:${PORT}`);
+  // Backfill después del listen, no antes: el buscador arranca degradado
+  // (devuelve lo que ya haya indexado) pero la app responde desde el segundo cero.
+  if (index) {
+    console.log('[search] indexando historial en background…');
+    syncSearchIndex(activeAccount, { reason: 'arranque' });
+    setInterval(() => syncSearchIndex(activeAccount), SEARCH_SYNC_MS).unref();
+  }
 });
 
 // Cloudflare Tunnel mantiene conexiones al origin en su pool y las reutiliza

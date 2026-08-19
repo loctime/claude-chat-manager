@@ -13,7 +13,7 @@
 
 $ErrorActionPreference = "Stop"
 
-$projectDir = "C:\Users\locti\OneDrive\Desktop\Proyectos\claude-chat-manager"
+$projectDir = "C:\Users\locti\Proyectos\claude-chat-manager"
 $port       = 3778
 $publicUrl  = "https://jarvis-locti.controlapps.ar"
 $logFile    = "$env:TEMP\jarvis-locti-restart.log"

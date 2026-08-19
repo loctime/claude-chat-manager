@@ -307,6 +307,68 @@ async function loadAccounts() {
   } catch {}
 }
 
+// ── Estado de cuenta: email logueado + uso 5h/semanal ──
+// El server cachea /api/usage ~1h de su lado (la API de Anthropic está muy
+// rate-limiteada), así que este poll acá adentro es solo para refrescar la
+// UI cuando ese cache avanza — no pega directo contra Anthropic.
+function usageTone(pct) {
+  if (pct >= 90) return 'hot';
+  if (pct >= 70) return 'warm';
+  return '';
+}
+// "2 : 30 min" — lo que falta para el reinicio de la ventana, formato reloj.
+// Horas sin tope en 24 (la semanal puede llegar a mostrar "36 : 15 min").
+// Redondeado a favor del usuario (floor) para no mostrar "0 : 00 min" un
+// instante antes de que en realidad reinicie.
+function formatCountdown(ms) {
+  if (ms == null || ms <= 0) return '¡ya!';
+  const totalMin = Math.floor(ms / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return `${h} : ${String(m).padStart(2, '0')} min`;
+}
+// El label ("5h" / "Semana") se reemplaza por la cuenta regresiva al reinicio
+// mientras haya resetsAt guardado en el dataset — se recalcula solo (ver
+// setInterval más abajo) sin esperar al próximo loadUsage(), así el número
+// baja solo entre polls en vez de quedar pegado al valor de la última carga.
+function updateCountdownLabel(el) {
+  const label = el.querySelector('.usage-bar-label');
+  const resetsAt = el.dataset.resetsAt ? Number(el.dataset.resetsAt) : null;
+  label.textContent = resetsAt ? formatCountdown(resetsAt - Date.now()) : label.dataset.staticLabel;
+}
+function renderUsageBar(el, info) {
+  if (!info || info.pct == null) { el.hidden = true; return; }
+  el.hidden = false;
+  const pct = Math.max(0, Math.min(100, info.pct));
+  const tone = usageTone(pct);
+  const fill = el.querySelector('.usage-bar-fill');
+  fill.style.width = pct + '%';
+  if (tone) fill.dataset.tone = tone; else delete fill.dataset.tone;
+  el.querySelector('.usage-bar-pct').textContent = Math.round(pct) + '%';
+  const resets = info.resetsAt ? new Date(info.resetsAt) : null;
+  if (resets) el.dataset.resetsAt = String(resets.getTime()); else delete el.dataset.resetsAt;
+  updateCountdownLabel(el);
+  el.title = resets ? `Reinicia ${resets.toLocaleString('es-AR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : '';
+}
+// Tick liviano cada 30s para que la cuenta regresiva baje sola entre polls
+// reales (loadUsage corre cada 10min + con cada mensaje, no cada 30s).
+setInterval(() => {
+  const b5 = $('usage-5h'), b7 = $('usage-7d');
+  if (b5 && !b5.hidden) updateCountdownLabel(b5);
+  if (b7 && !b7.hidden) updateCountdownLabel(b7);
+}, 30000);
+async function loadUsage() {
+  try {
+    const d = await api(withAccount('/usage'));
+    const box = $('account-status');
+    if (!d.email && !d.fiveHour && !d.sevenDay) { box.hidden = true; return; }
+    box.hidden = false;
+    $('account-status-email').textContent = d.email || '';
+    renderUsageBar($('usage-5h'), d.fiveHour);
+    renderUsageBar($('usage-7d'), d.sevenDay);
+  } catch {}
+}
+
 // ── Toast ──
 // ttl = 0 → toast persistente, no se autodescarta (usalo para operaciones
 // largas como compactar: mostrás "en curso…" y vos mismo lo cerrás cuando
@@ -1527,9 +1589,9 @@ async function downloadFolderZip(folderPath) {
 function makeZipDownloadBtn(folderPath) {
   const btn = document.createElement('button');
   btn.type = 'button';
-  btn.className = 'reveal-btn';
+  btn.className = 'file-card-dl file-card-dl-btn';
   btn.title = 'Descargar carpeta (.zip, hasta 200MB)';
-  btn.textContent = '⬇️';
+  btn.textContent = '⬇️ Descargar';
   btn.onclick = e => {
     e.preventDefault();
     e.stopPropagation();
@@ -1557,9 +1619,49 @@ function makeCopyBtn(text, title) {
   return btn;
 }
 
+// Fila de "ruta completa" reusada por file/folder/image cards: la ruta se
+// ve truncada con ellipsis (title con la ruta entera si no entra) y clickear
+// el texto la copia directo — antes solo copiaba el botón ⧉ chiquito al
+// lado, que en el celu es un blanco de click incómodo. El botón se deja
+// igual como affordance visual explícita de "esto se copia".
+function makePathRow(fullPath) {
+  const pathRow = document.createElement('div');
+  pathRow.className = 'file-card-path-row';
+  const pathEl = document.createElement('span');
+  pathEl.className = 'file-card-path';
+  pathEl.textContent = fullPath;
+  pathEl.title = 'Click para copiar la ruta';
+  pathEl.onclick = e => {
+    e.preventDefault();
+    e.stopPropagation();
+    copyToClipboard(fullPath);
+  };
+  pathRow.appendChild(pathEl);
+  pathRow.appendChild(makeCopyBtn(fullPath, 'Copiar ruta'));
+  return pathRow;
+}
+
+// Mención chica de una ruta que ya se mostró completa (thumbnail/ícono +
+// acciones) antes en el mismo mensaje — un chip con marco, toda la ruta es
+// el blanco de click, para no repetir la card entera en medio de una frase.
+function makePathChip(fullPath) {
+  const chip = document.createElement('span');
+  chip.className = 'path-chip';
+  chip.textContent = fullPath;
+  chip.title = 'Click para copiar la ruta';
+  chip.onclick = e => {
+    e.preventDefault();
+    e.stopPropagation();
+    copyToClipboard(fullPath);
+  };
+  return chip;
+}
+
 // Crea una card de archivo inline (para PDFs y otros no-imagen)
 function makeFileCard(filePath) {
-  const name = filePath.split('/').pop();
+  // split('/') solo no alcanza: en rutas de Windows el separador es '\' y
+  // "name" terminaba siendo la ruta completa disfrazada de nombre de archivo.
+  const name = filePath.split(/[\\/]/).pop();
   const ext = name.split('.').pop().toLowerCase();
   const downloadHref = '/api/files?path=' + encodeURIComponent(filePath);
   const isPdf = ext === 'pdf';
@@ -1592,14 +1694,20 @@ function makeFileCard(filePath) {
   nameEl.className = 'file-card-name';
   nameEl.textContent = name;
   nameEl.title = filePath;
+  info.appendChild(nameEl);
+
+  info.appendChild(makePathRow(filePath));
+
+  const actions = document.createElement('div');
+  actions.className = 'file-card-actions';
   const dl = document.createElement('a');
   dl.className = 'file-card-dl';
   dl.href = downloadHref;
   dl.download = name;
   dl.textContent = 'Descargar';
-  info.appendChild(nameEl);
-  info.appendChild(dl);
-  info.appendChild(makeRevealBtn(filePath));
+  actions.appendChild(dl);
+  actions.appendChild(makeRevealBtn(filePath));
+  info.appendChild(actions);
   card.appendChild(info);
   return card;
 }
@@ -1626,18 +1734,7 @@ function makeFolderCard(folderPath) {
   nameEl.title = folderPath;
   info.appendChild(nameEl);
 
-  // Ruta completa, visible (truncada con ellipsis + title si no entra) +
-  // botón de copiarla — antes solo vivía en el title del nombre, invisible
-  // hasta hacer hover (que en el celu no existe).
-  const pathRow = document.createElement('div');
-  pathRow.className = 'file-card-path-row';
-  const pathEl = document.createElement('span');
-  pathEl.className = 'file-card-path';
-  pathEl.textContent = folderPath;
-  pathEl.title = folderPath;
-  pathRow.appendChild(pathEl);
-  pathRow.appendChild(makeCopyBtn(folderPath, 'Copiar ruta'));
-  info.appendChild(pathRow);
+  info.appendChild(makePathRow(folderPath));
 
   const actions = document.createElement('div');
   actions.className = 'file-card-actions';
@@ -1649,8 +1746,58 @@ function makeFolderCard(folderPath) {
   return card;
 }
 
-// Detecta paths absolutos en texto y los convierte en links/previews
-function renderTextWithPaths(container, text) {
+// Preview de imagen inline: thumbnail + ruta completa (con botón copiar) +
+// acciones (descargar / mostrar en carpeta). Reusado tanto para
+// "[Archivo adjunto: PATH]" como para paths sueltos detectados en el texto —
+// antes cada rama armaba su propio <div> a mano y ninguna mostraba la ruta.
+function makeImagePreview(filePath) {
+  const name = filePath.split(/[\\/]/).pop();
+  const downloadHref = '/api/files?path=' + encodeURIComponent(filePath);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'inline-img-wrap';
+
+  const img = document.createElement('img');
+  img.className = 'inline-thumb';
+  img.alt = name;
+  img.src = '/api/thumbnail?path=' + encodeURIComponent(filePath);
+  img.onclick = () => openLightbox(downloadHref, downloadHref, name);
+  img.onerror = () => {
+    img.replaceWith((() => {
+      const a = document.createElement('a');
+      a.href = downloadHref;
+      a.download = name;
+      a.textContent = filePath;
+      a.className = 'path-link';
+      return a;
+    })());
+  };
+  wrap.appendChild(img);
+  wrap.appendChild(makePathRow(filePath));
+
+  const actions = document.createElement('div');
+  actions.className = 'file-card-actions';
+  const dl = document.createElement('a');
+  dl.className = 'file-card-dl';
+  dl.href = downloadHref;
+  dl.download = name;
+  dl.textContent = 'Descargar';
+  actions.appendChild(dl);
+  actions.appendChild(makeRevealBtn(filePath));
+  wrap.appendChild(actions);
+
+  return wrap;
+}
+
+// Detecta paths absolutos en texto y los convierte en links/previews.
+// `seen` viaja por todas las llamadas recursivas de un mismo mensaje (ver
+// renderAssistantText/enrichPlainTextNodes) — la primera vez que aparece una
+// ruta se arma la card completa (thumbnail/ícono + acciones); si la misma
+// ruta vuelve a aparecer más adelante en el mismo mensaje (típico: se manda
+// como adjunto y después se la nombra de nuevo en una oración) ya no se
+// duplica la card entera — queda un chip chico con marco, clickeable para
+// copiar, que no rompe el flujo del párrafo.
+function renderTextWithPaths(container, text, seen = new Set()) {
   // Primero reemplazar [Archivo adjunto: PATH] con preview directo (Unix y Windows)
   const ATTACH_RE = /\[Archivo adjunto:\s*([^\]]+)\]/g;
   let processed = text;
@@ -1661,27 +1808,22 @@ function renderTextWithPaths(container, text) {
   if (attachMatches.length > 0) {
     let pos = 0;
     for (const att of attachMatches) {
-      if (att.index > pos) renderTextWithPaths(container, text.slice(pos, att.index));
-      const ext = att.path.split('.').pop().toLowerCase();
-      if (IMAGE_EXTS.has(ext)) {
-        const wrap = document.createElement('div');
-        wrap.className = 'inline-img-wrap';
-        const img = document.createElement('img');
-        img.className = 'inline-thumb';
-        img.src = '/api/thumbnail?path=' + encodeURIComponent(att.path);
-        img.alt = att.path.split('/').pop();
-        const dlHref = '/api/files?path=' + encodeURIComponent(att.path);
-        img.onclick = () => openLightbox(dlHref, dlHref, img.alt);
-        img.onerror = () => { wrap.innerHTML = ''; wrap.appendChild(document.createTextNode(att.path)); };
-        wrap.appendChild(img);
-        wrap.appendChild(makeRevealBtn(att.path));
-        container.appendChild(wrap);
+      if (att.index > pos) renderTextWithPaths(container, text.slice(pos, att.index), seen);
+      const key = att.path.toLowerCase();
+      if (seen.has(key)) {
+        container.appendChild(makePathChip(att.path));
       } else {
-        container.appendChild(makeFileCard(att.path));
+        seen.add(key);
+        const ext = att.path.split('.').pop().toLowerCase();
+        if (IMAGE_EXTS.has(ext)) {
+          container.appendChild(makeImagePreview(att.path));
+        } else {
+          container.appendChild(makeFileCard(att.path));
+        }
       }
       pos = att.index + att.full.length;
     }
-    if (pos < text.length) renderTextWithPaths(container, text.slice(pos));
+    if (pos < text.length) renderTextWithPaths(container, text.slice(pos), seen);
     return;
   }
 
@@ -1724,7 +1866,13 @@ function renderTextWithPaths(container, text) {
       container.appendChild(document.createTextNode(text.slice(last, match.index)));
     }
     const filePath = match[2];
-    const name = filePath.split('/').pop();
+    const key = filePath.toLowerCase();
+    if (seen.has(key)) {
+      container.appendChild(makePathChip(filePath));
+      last = match.index + match[0].length;
+      continue;
+    }
+    seen.add(key);
     // Heurística file vs. carpeta: si el último segmento no termina en
     // ".ext" lo tratamos como carpeta (mismo criterio que ya usa el resto
     // del regex para exigir extensión en paths con espacios).
@@ -1733,38 +1881,7 @@ function renderTextWithPaths(container, text) {
     const isImage = hasExt && IMAGE_EXTS.has(ext);
 
     if (isImage) {
-      // Mostrar thumbnail clicable + link de descarga
-      const wrap = document.createElement('span');
-      wrap.className = 'inline-img-wrap';
-      const img = document.createElement('img');
-      img.className = 'inline-thumb';
-      img.alt = name;
-      img.src = '/api/thumbnail?path=' + encodeURIComponent(filePath);
-      img.title = filePath;
-      const downloadHref = '/api/files?path=' + encodeURIComponent(filePath);
-      img.onclick = () => openLightbox(img.src.replace('/api/thumbnail', '/api/files').replace('?path=', '?path=') /* usa full src */, downloadHref, name);
-      // Para abrir imagen completa en lightbox usar la src original (thumbnail puede ser suficiente visualmente, pero abrimos el archivo real)
-      img.onclick = () => openLightbox(downloadHref, downloadHref, name);
-      img.onerror = () => {
-        // Fallback a link
-        img.remove();
-        const a = document.createElement('a');
-        a.href = downloadHref;
-        a.download = name;
-        a.textContent = filePath;
-        a.className = 'path-link';
-        wrap.appendChild(a);
-      };
-      const dl = document.createElement('a');
-      dl.href = downloadHref;
-      dl.download = name;
-      dl.textContent = name;
-      dl.className = 'path-link';
-      wrap.appendChild(img);
-      wrap.appendChild(document.createElement('br'));
-      wrap.appendChild(dl);
-      wrap.appendChild(makeRevealBtn(filePath));
-      container.appendChild(wrap);
+      container.appendChild(makeImagePreview(filePath));
     } else if (hasExt) {
       // Cualquier otra extensión (pdf/audio/video con preview especial,
       // y cualquier tipo de archivo — html, docx, csv, zip, etc. — con
@@ -1784,7 +1901,10 @@ function renderTextWithPaths(container, text) {
 // Detecta adjuntos/paths sueltos que quedaron como texto plano dentro del HTML
 // ya parseado por marked, sin tocar lo que esté dentro de <code>/<pre>/<a>
 // (ahí un path es código o ya es un link, no queremos "enriquecerlo" de nuevo).
-function enrichPlainTextNodes(root) {
+// `seen` se comparte con renderAssistantText: markdown separa el mensaje en
+// varios nodos de texto (uno por párrafo) y sin pasarlo de largo cada
+// párrafo dedupearía solo contra sí mismo, no contra el resto del mensaje.
+function enrichPlainTextNodes(root, seen) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       let p = node.parentElement;
@@ -1802,7 +1922,7 @@ function enrichPlainTextNodes(root) {
     const t = node.textContent;
     if (!t || !/\[Archivo adjunto:|[A-Za-z]:[\\/]|\/(?:home|tmp|root|var|opt|usr|mnt)\S/.test(t)) continue;
     const frag = document.createDocumentFragment();
-    renderTextWithPaths(frag, t);
+    renderTextWithPaths(frag, t, seen);
     node.replaceWith(frag);
   }
 }
@@ -1810,8 +1930,10 @@ function enrichPlainTextNodes(root) {
 // Mensajes del asistente: markdown real (negrita, listas, tablas, código) +
 // sanitizado, con el auto-linkeo de paths/adjuntos aplicado encima.
 function renderAssistantText(container, text) {
+  // Una sola ruta "vista" por mensaje — ver comentario en renderTextWithPaths.
+  const seen = new Set();
   if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
-    renderTextWithPaths(container, text);
+    renderTextWithPaths(container, text, seen);
     return;
   }
   const html = DOMPurify.sanitize(marked.parse(text, { breaks: true, gfm: true }));
@@ -1821,7 +1943,7 @@ function renderAssistantText(container, text) {
     a.target = '_blank';
     a.rel = 'noopener noreferrer';
   });
-  enrichPlainTextNodes(tpl.content);
+  enrichPlainTextNodes(tpl.content, seen);
   container.appendChild(tpl.content);
 }
 
@@ -2071,12 +2193,67 @@ function setStatus(text) {
   $('conv-status').textContent = text;
 }
 
-function setBusy(busy) {
-  $('input').disabled = busy || !currentConv;
-  $('send').disabled = busy || !currentConv;
-  $('attach-btn').disabled = busy || !currentConv;
-  $('mic-btn').disabled = busy || !currentConv;
+// ── Cola de un mensaje adicional ──
+// Con el turno en curso el composer ya NO se bloquea entero: podés escribir
+// (y adjuntar) un mensaje más, que queda "en cola" —tope de uno por
+// conversación— y se dispara solo apenas termina el turno actual. Si ese
+// turno lo cancelaste vos, o si terminó en error, el mensaje en cola se
+// descarta sin perderlo: vuelve al cuadro de texto para que decidas.
+const queuedMessages = new Map(); // convId -> { text, attachments }
+let busy = false;
+
+function queueMessage(convId, text, attachments) {
+  queuedMessages.set(convId, { text, attachments });
+}
+
+function dequeueMessage(convId) {
+  const q = queuedMessages.get(convId);
+  queuedMessages.delete(convId);
+  return q;
+}
+
+function renderQueuedBar() {
+  const bar = $('queued-bar');
+  const q = currentConv && queuedMessages.get(currentConv);
+  bar.innerHTML = '';
+  bar.hidden = !q;
+  if (!q) return;
+  const label = document.createElement('span');
+  label.className = 'queued-bar-text';
+  const preview = q.text ? (q.text.length > 90 ? q.text.slice(0, 90) + '…' : q.text) : '';
+  const attCount = q.attachments.length;
+  label.textContent = '⏳ En cola: ' + (preview || `${attCount} adjunto${attCount === 1 ? '' : 's'}`);
+  label.title = q.text || '';
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'queued-bar-remove';
+  removeBtn.setAttribute('aria-label', 'Sacar mensaje de la cola');
+  removeBtn.textContent = '✕';
+  removeBtn.onclick = () => {
+    const removed = dequeueMessage(currentConv);
+    renderQueuedBar();
+    updateComposerLock();
+    if (removed) restoreComposer(removed.text, removed.attachments);
+  };
+  bar.appendChild(label);
+  bar.appendChild(removeBtn);
+}
+
+function updateComposerLock() {
+  // Solo se bloquea si no hay conversación abierta, o si ya hay un mensaje
+  // en cola (tope de uno) — con el turno corriendo pero la cola vacía, se
+  // puede seguir escribiendo/adjuntando normalmente.
+  const locked = !currentConv || (busy && queuedMessages.has(currentConv));
+  $('input').disabled = locked;
+  $('send').disabled = locked;
+  $('attach-btn').disabled = locked;
+  $('mic-btn').disabled = locked;
   $('cancel-btn').hidden = !busy || !currentConv;
+}
+
+function setBusy(b) {
+  busy = b;
+  updateComposerLock();
   setStatus(busy ? 'escribiendo…' : '');
 }
 
@@ -2100,11 +2277,31 @@ function openStream(convId) {
         setBusy(false);
         // Recargar ANTES de mostrar el error: loadMessages() reemplaza todo
         // messagesEl.innerHTML, así que si el addMsg('error', ...) va primero
-        // queda tapado al instante por el reload.
+        // queda tapado al instante por el reload. El disparo del mensaje en
+        // cola también espera a este reload, por la misma razón: si lo
+        // mandáramos antes, la burbuja optimista que agrega quedaría tapada
+        // (o directamente borrada) apenas termine de recargar.
         loadMessages(convId).then(() => {
           if (payload.code !== 0 && payload.stderr) addMsg('error', 'Error: ' + payload.stderr);
           // Turno terminado: si estás leyendo más arriba, el botón pasa a verde.
           flagJumpBtn('done');
+          if (convId !== currentConv) return; // te fuiste a otra conversación mientras recargaba
+          // Mensaje en cola esperando este turno: se dispara solo, salvo que
+          // el turno anterior lo hayas cancelado o haya terminado en error
+          // — ahí se descarta el envío pero se devuelve al composer, no se pierde.
+          const queued = dequeueMessage(convId);
+          if (queued) {
+            renderQueuedBar();
+            if (payload.cancelled) {
+              restoreComposer(queued.text, queued.attachments);
+              toast('Cancelaste el turno — también se descartó el mensaje en cola', 'info', 5000);
+            } else if (payload.code !== 0) {
+              restoreComposer(queued.text, queued.attachments);
+              toast('El turno anterior terminó con error — no se mandó el mensaje en cola', 'info', 5000);
+            } else {
+              performSend(convId, queued.text, queued.attachments);
+            }
+          }
         });
         refreshVisibleTrees();
         refreshCostBadge(convId);
@@ -2214,6 +2411,24 @@ async function selectConv(convId, name, model, lastModel, projectDir) {
   folderEl.hidden = !dirName;
   setBusy(false);
   clearAttachments();
+  renderQueuedBar();
+  // Si esta conversación tenía un mensaje en cola y el turno terminó mientras
+  // no la mirabas, el reconnect de abajo (dentro de openChat→openStream) solo
+  // avisa si SIGUE ocupada — si ya terminó, el server no manda ningún evento
+  // y la cola quedaría "colgada" sin que nadie la dispare nunca. A los 1.5s
+  // sin señal de que está ocupada, asumimos que ya terminó y devolvemos el
+  // mensaje al composer en vez de dejarlo esperando para siempre.
+  if (queuedMessages.has(convId)) {
+    setTimeout(() => {
+      if (currentConv !== convId || busy) return;
+      const queued = dequeueMessage(convId);
+      if (queued) {
+        restoreComposer(queued.text, queued.attachments);
+        renderQueuedBar();
+        toast('Ese turno ya había terminado mientras no mirabas — te devolvimos el mensaje en cola al cuadro de texto', 'info', 6000);
+      }
+    }, 1500);
+  }
   showNotebookView(false);
   openChat();
   // Al abrir otra conversación siempre arrancamos abajo, sin heredar la
@@ -2651,27 +2866,19 @@ function restoreComposer(text, attachments) {
   }
 }
 
-$('composer').onsubmit = async e => {
-  e.preventDefault();
-  const rawText = $('input').value.trim();
-  if ((!rawText && pendingAttachments.length === 0) || !currentConv) return;
-
-  const attachments = [...pendingAttachments];
+// Arma el texto final (con los prefijos [Archivo adjunto: ...]), muestra la
+// burbuja optimista y postea al server. Lo usan tanto un submit normal como
+// el disparo automático de un mensaje que estaba en cola.
+async function performSend(convId, rawText, attachments) {
   let text = rawText;
   if (attachments.length > 0) {
     const paths = attachments.map(a => `[Archivo adjunto: ${a.path}]`).join('\n');
     text = paths + (rawText ? '\n\n' + rawText : '');
   }
-
-  // Mostrar mensaje con previews de archivos adjuntos
   const bubble = addUserMsgWithFiles(rawText, attachments);
-  $('input').value = '';
-  autoResize($('input'));
-  drafts.delete(currentConv);
-  clearAttachments();
   setBusy(true);
   try {
-    await sendMessage(currentConv, text);
+    await sendMessage(convId, text);
   } catch (err) {
     setBusy(false);
     if (err.isNetwork) {
@@ -2683,6 +2890,29 @@ $('composer').onsubmit = async e => {
       addMsg('error', err.message);
     }
   }
+}
+
+$('composer').onsubmit = async e => {
+  e.preventDefault();
+  const rawText = $('input').value.trim();
+  if ((!rawText && pendingAttachments.length === 0) || !currentConv) return;
+
+  const convId = currentConv;
+  const attachments = [...pendingAttachments];
+  $('input').value = '';
+  autoResize($('input'));
+  drafts.delete(convId);
+  clearAttachments();
+
+  if (busy) {
+    // Ya hay un turno corriendo: no pega al server, lo deja en cola (tope 1)
+    // y se dispara solo cuando ese turno termine (ver el handler de 'idle').
+    queueMessage(convId, rawText, attachments);
+    renderQueuedBar();
+    updateComposerLock();
+    return;
+  }
+  await performSend(convId, rawText, attachments);
 };
 
 // ── Model change ──
@@ -2755,18 +2985,46 @@ let searchDebounce = null;
 let searchLastQuery = '';
 let searchResults = [];
 
-function highlightSnippet(snippet, query) {
+// El servidor delimita el término encontrado con estos caracteres de control.
+// Las marcas las pone el índice (FTS5), que es el único que sabe qué matcheó
+// de verdad: buscando "facil" el snippet trae "fácil", y "deplo" trae "deploy".
+const HL_START = '\u0001';
+const HL_END = '\u0002';
+
+// Fallback para cuando el snippet viene sin marcas (buscador degradado, sin
+// índice): resaltar buscando la query cruda, como se hacía antes.
+function highlightByQuery(snippet, query) {
   const q = query.trim();
-  if (!q) return snippet;
-  const idx = snippet.toLowerCase().indexOf(q.toLowerCase());
-  if (idx < 0) return snippet;
-  const before = document.createTextNode(snippet.slice(0, idx));
+  const frag = document.createDocumentFragment();
+  const idx = q ? snippet.toLowerCase().indexOf(q.toLowerCase()) : -1;
+  if (idx < 0) { frag.appendChild(document.createTextNode(snippet)); return frag; }
   const hit = document.createElement('mark');
   hit.textContent = snippet.slice(idx, idx + q.length);
-  const after = document.createTextNode(snippet.slice(idx + q.length));
-  const frag = document.createDocumentFragment();
-  frag.appendChild(before); frag.appendChild(hit); frag.appendChild(after);
+  frag.appendChild(document.createTextNode(snippet.slice(0, idx)));
+  frag.appendChild(hit);
+  frag.appendChild(document.createTextNode(snippet.slice(idx + q.length)));
   return frag;
+}
+
+function highlightSnippet(snippet, query) {
+  if (!snippet.includes(HL_START)) return highlightByQuery(snippet, query);
+  const frag = document.createDocumentFragment();
+  for (const part of snippet.split(HL_START)) {
+    const end = part.indexOf(HL_END);
+    // El primer tramo es el texto anterior a la primera marca: no lleva cierre.
+    if (end < 0) { frag.appendChild(document.createTextNode(part)); continue; }
+    const hit = document.createElement('mark');
+    hit.textContent = part.slice(0, end);
+    frag.appendChild(hit);
+    frag.appendChild(document.createTextNode(part.slice(end + 1)));
+  }
+  return frag;
+}
+
+// Dónde busca: parado en la pestaña Notas (o con una libreta abierta) busca
+// notas; en cualquier otro lado, chats.
+function searchScope() {
+  return (activePane === 2 || currentNotebook) ? 'note' : 'chat';
 }
 
 async function runSearch(q) {
@@ -2774,7 +3032,10 @@ async function runSearch(q) {
   if (!q.trim()) { box.innerHTML = ''; searchResults = []; return; }
   box.innerHTML = '<div class="search-loading">Buscando…</div>';
   try {
-    const { results } = await api(withAccount('/search?limit=50&q=' + encodeURIComponent(q)));
+    const kind = searchScope();
+    const tools = $('search-tools').checked ? '1' : '0';
+    const { results } = await api(withAccount(
+      `/search?limit=50&kind=${kind}&tools=${tools}&q=` + encodeURIComponent(q)));
     searchResults = results;
     searchLastQuery = q;
     box.innerHTML = '';
@@ -2796,7 +3057,11 @@ async function runSearch(q) {
       snip.appendChild(highlightSnippet(r.snippet || '', q));
       const meta = document.createElement('div');
       meta.className = 'search-meta';
-      meta.textContent = r.role + ' · ' + (r.cwd || '').split('/').pop() + ' · ' + (r.lastActivity || '').slice(0, 16).replace('T', ' ');
+      // Una nota no tiene cwd ni rol que valga la pena mostrar: alcanza libreta + fecha.
+      const fecha = (r.lastActivity || '').slice(0, 16).replace('T', ' ');
+      meta.textContent = r.kind === 'note'
+        ? ['nota', fecha].filter(Boolean).join(' · ')
+        : [r.role, (r.cwd || '').split(/[\\/]/).pop(), fecha].filter(Boolean).join(' · ');
       row.appendChild(name); row.appendChild(snip); row.appendChild(meta);
       row.onclick = () => openSearchResult(r);
       box.appendChild(row);
@@ -2809,6 +3074,7 @@ async function runSearch(q) {
 
 async function openSearchResult(r) {
   $('search-dialog').close();
+  if (r.kind === 'note') return openNoteResult(r);
   await selectConv(r.convId, r.displayName || r.name, r.model, r.lastModel, r.cwd);
   // Scroll al match — buscamos por índice de mensaje
   requestAnimationFrame(() => {
@@ -2822,10 +3088,28 @@ async function openSearchResult(r) {
   });
 }
 
+// Abre la libreta del resultado y resalta la nota encontrada. Las notas se
+// renderizan en orden cronológico, que es el mismo orden del archivo del que
+// salió matchIndex.
+async function openNoteResult(r) {
+  await openNotebook(r.notebookId, r.name);
+  requestAnimationFrame(() => {
+    const target = $('notes-messages').querySelectorAll('.note-bubble')[r.matchIndex];
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.classList.add('search-hit');
+    setTimeout(() => target.classList.remove('search-hit'), 2000);
+  });
+}
+
 function openSearchDialog() {
   const dlg = $('search-dialog');
   const input = $('search-input');
+  const enNotas = searchScope() === 'note';
   input.value = '';
+  input.placeholder = enNotas ? 'Buscar en todas las notas…' : 'Buscar en todas las conversaciones… (Ctrl+K)';
+  // El filtro de herramientas solo aplica a chats; en notas no hay nada que filtrar.
+  $('search-tools-label').hidden = enNotas;
   $('search-results').innerHTML = '';
   dlg.showModal();
   input.focus();
@@ -2837,6 +3121,8 @@ $('search-input').addEventListener('input', () => {
   const v = $('search-input').value;
   searchDebounce = setTimeout(() => runSearch(v), 250);
 });
+// Cambiar el filtro re-consulta con lo que ya está tipeado, sin esperar otra tecla.
+$('search-tools').addEventListener('change', () => runSearch($('search-input').value));
 $('search-form').onsubmit = e => {
   e.preventDefault();
   if (searchResults[0]) openSearchResult(searchResults[0]);
@@ -2956,6 +3242,8 @@ function pollTrees() {
 }
 loadAccounts().then(() => safeLoadTree());
 setInterval(pollTrees, 15000);
+loadUsage();
+setInterval(loadUsage, 10 * 60 * 1000);
 
 // ── Configuración ──
 const SETTINGS_KEY = 'ccm.settings';
@@ -3204,7 +3492,7 @@ $('cfg-font-size').onchange = e => { settings.fontSize = e.target.value; applySe
 // conexión puede leerse como error de red aunque el restart haya salido bien
 // — por eso el catch de abajo no muestra error, solo el then es best-effort.
 $('cfg-restart-btn').onclick = async () => {
-  if (!confirm('Reiniciar el server?\n\nAplica cambios de código nuevos (después de un git pull). Se corta la conexión unos segundos y después hay que recargar la página a mano.')) return;
+  if (!confirm('Reiniciar el server?\n\nHace git pull y reinicia con el código nuevo. Si el pull no se puede (cambios sin commitear o falla), reinicia igual con el código actual y te deja una conversación nueva contándote qué pasó. Se corta la conexión unos segundos y después hay que recargar la página a mano.')) return;
   toast('Reiniciando server…', 'info', 6000);
   try {
     await fetch('/api/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' } });

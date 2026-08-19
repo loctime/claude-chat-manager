@@ -17,8 +17,13 @@ if (-not $isAdmin) {
 }
 
 $taskName   = "JarvisLocti"
-$projectDir = "C:\Users\locti\OneDrive\Desktop\Proyectos\claude-chat-manager"
-$batPath    = Join-Path $projectDir "start-jarvis.bat"
+$projectDir = "C:\Users\locti\Proyectos\claude-chat-manager"
+# NB: "start-jarvis-locti.bat", no "start-jarvis.bat" -- este ultimo es el
+# generico (puerto 3777, sin el PORT=3778 fijado a mano). La tarea ya
+# registrada apuntaba al -locti correcto; este script tenia el nombre
+# viejo/equivocado y lo hubiera roto si se volvia a correr. Corregido de paso
+# al migrar fuera de OneDrive (2026-08-17).
+$batPath    = Join-Path $projectDir "start-jarvis-locti.bat"
 
 $action    = New-ScheduledTaskAction -Execute $batPath -WorkingDirectory $projectDir
 $trigger   = New-ScheduledTaskTrigger -AtStartup
