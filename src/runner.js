@@ -85,8 +85,15 @@ class Runner extends EventEmitter {
     const account = job.account || CURRENT_USER;
     // Multi-cuenta via sudo solo existe en Linux/Mac; en Windows siempre corre el usuario actual
     const usesudo = !IS_WIN && account !== CURRENT_USER;
-    const spawnCmd = usesudo ? 'sudo' : this.command;
-    const spawnArgs = usesudo ? ['-u', account, this.command, ...args] : args;
+    // CLAUDE_CMD apuntando a un .js (p.ej. un stub de test/e2e/fixtures/fake-claude.js
+    // que hace de doble del CLI real): en Windows, spawn() sin shell:true no puede
+    // ejecutar un .js directo (mismo motivo que el shim .cmd de npm, ver claude-cmd.js) —
+    // se lo pasa como argumento a node.exe en vez de intentar "ejecutarlo" él mismo.
+    const isNodeScript = /\.[cm]?js$/i.test(this.command);
+    const spawnCmd = usesudo ? 'sudo' : isNodeScript ? process.execPath : this.command;
+    const spawnArgs = usesudo ? ['-u', account, this.command, ...args]
+      : isNodeScript ? [this.command, ...args]
+      : args;
     const homeDir = usesudo ? `/home/${account}` : os.homedir();
     // windowsHide: Jarvis corre sin consola (lanzado por el .vbs de autostart,
     // sin ventana) — sin esta opción, Windows le abre una consola nueva a

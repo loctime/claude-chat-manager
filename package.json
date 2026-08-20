@@ -1,10 +1,11 @@
 {
   "name": "claude-chat-manager",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "private": true,
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test \"test/**/*.test.js\""
+    "test": "node --test \"test/**/*.test.js\"",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "archiver": "^7.0.1",
@@ -12,5 +13,8 @@
     "express": "^5.2.1",
     "marked": "^18.0.7",
     "multer": "^2.2.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
   }
 }
