@@ -1449,8 +1449,15 @@ app.post('/api/conversations/:id/message', (req, res) => {
   const { data, conv, metaFile } = resolveConv(convId, acc);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
   let outgoing = text;
+  // Read-once: si el turno anterior rebobinó ignorando acciones con efecto real,
+  // esta nota va antepuesta al primer mensaje que se manda después — así entra
+  // al contexto real de Claude en vez de quedar en una notificación que nadie lee.
+  if (conv.pendingRewindNotice) {
+    outgoing = `${conv.pendingRewindNotice}\n\n[Mensaje actual del usuario]\n${outgoing}`;
+    delete conv.pendingRewindNotice;
+  }
   if (conv.compactedSummary && !conv.currentSessionId) {
-    outgoing = `[Resumen del contexto previo — la conversación fue compactada]\n${conv.compactedSummary}\n\n[Mensaje actual del usuario]\n${text}`;
+    outgoing = `[Resumen del contexto previo — la conversación fue compactada]\n${conv.compactedSummary}\n\n[Mensaje actual del usuario]\n${outgoing}`;
     delete conv.compactedSummary;
     delete conv.compactedAt;
   }
@@ -1505,6 +1512,33 @@ app.post('/api/conversations/:id/compact', (req, res) => {
   res.status(202).json({ queued: true });
 });
 
+// Da el mismo texto que rewindSessionFile dejaría como aviso pendiente — lo usan
+// tanto el preview (antes de confirmar) como el rewind real (para guardarlo).
+function formatRewindNotice(effects) {
+  const lines = effects.map(e => {
+    const tag = e.reversible === true ? ' [reversible]' : e.reversible === false ? ' [IRREVERSIBLE]' : '';
+    return `- ${e.summary}${tag}${e.hint ? ' — ' + e.hint : ''}`;
+  });
+  return `[Aviso: se rebobinó la charla]\nEntre el punto al que se volvió y el estado anterior se habían ejecutado estas acciones fuera de la charla. Rebobinar NO las deshace — si siguen aplicadas en el sistema, tenelo en cuenta antes de asumir el estado actual:\n${lines.join('\n')}`;
+}
+
+// Preview de qué se perdería al rebobinar hasta `uuid`, sin tocar el archivo.
+// Pensado para mostrar la advertencia ANTES de que el usuario confirme.
+app.get('/api/conversations/:id/rewind-preview', (req, res) => {
+  const convId = req.params.id;
+  const uuid = (req.query.uuid || '').trim();
+  if (!uuid) return res.status(400).json({ error: 'falta uuid del mensaje' });
+  const acc = req.query.account || activeAccount;
+  const { conv } = resolveConv(convId, acc);
+  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  if (!conv.currentSessionId) return res.status(400).json({ error: 'la conversación no tiene sesión activa' });
+  const file = scanner.findSessionFile(conv.currentSessionId, accountProjectsDir(acc));
+  if (!file) return res.status(404).json({ error: 'archivo de sesión no encontrado' });
+  const preview = scanner.previewRewindEffects(file, uuid);
+  if (!preview) return res.status(400).json({ error: 'no se puede rebobinar ahí (mensaje no encontrado en la sesión actual, o dejaría la conversación vacía)' });
+  res.json(preview);
+});
+
 // Rebobinar: elimina un turno user y todo lo posterior del jsonl de la sesión.
 // Ver scanner.rewindSessionFile para el porqué de que esto es seguro (cadena
 // parentUuid estilo git, cortada en borde de turno). Es rápido (reescritura
@@ -1517,7 +1551,7 @@ app.post('/api/conversations/:id/rewind', (req, res) => {
   if (runner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación está procesando un mensaje' });
   if (compacting.has(convId)) return res.status(409).json({ error: 'esa conversación se está compactando' });
   const acc = req.body.account || activeAccount;
-  const { conv } = resolveConv(convId, acc);
+  const { data, conv, metaFile } = resolveConv(convId, acc);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
   if (!conv.currentSessionId) return res.status(400).json({ error: 'la conversación no tiene sesión activa' });
   const file = scanner.findSessionFile(conv.currentSessionId, accountProjectsDir(acc));
@@ -1526,8 +1560,17 @@ app.post('/api/conversations/:id/rewind', (req, res) => {
   try { result = scanner.rewindSessionFile(file, uuid); }
   catch (err) { return res.status(500).json({ error: 'no se pudo rebobinar: ' + err.message }); }
   if (!result) return res.status(400).json({ error: 'no se puede rebobinar ahí (mensaje no encontrado en la sesión actual, o dejaría la conversación vacía)' });
+  // Si se perdieron acciones con efecto real, dejamos una nota que se antepone
+  // sola al próximo mensaje que se mande — así Claude la ve en su contexto de
+  // verdad en vez de depender de que alguien la lea a mano en algún lado.
+  if (result.effects && result.effects.length) {
+    conv.pendingRewindNotice = formatRewindNotice(result.effects);
+  } else {
+    delete conv.pendingRewindNotice;
+  }
+  meta.save(data, metaFile);
   broadcast(convId, { kind: 'status', status: 'idle', code: 0 });
-  res.json({ ok: true, removed: result.removed });
+  res.json({ ok: true, removed: result.removed, effects: result.effects || [] });
 });
 
 app.post('/api/conversations', (req, res) => {

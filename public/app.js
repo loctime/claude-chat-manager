@@ -1262,7 +1262,21 @@ function quoteIntoComposer(text) {
 }
 
 async function doRewind(ctx) {
-  const ok = confirm('Rebobinar hasta acá?\n\nElimina esta pregunta y TODO lo que vino después — Claude lo olvida de verdad, como si nunca hubiera pasado. La conversación sigue desde la respuesta anterior.\n\n(Queda un backup del archivo de sesión por las dudas.)');
+  // Antes de confirmar, nos fijamos si en el tramo que se va a olvidar hubo
+  // acciones con efecto fuera de la charla (Bash/Edit/Write/...). Rebobinar
+  // NO las deshace — solo hace que la charla "olvide" que pasaron.
+  let effects = [];
+  try {
+    const preview = await api(withAccount(`/conversations/${currentConv}/rewind-preview?uuid=${encodeURIComponent(ctx.uuid)}`));
+    effects = preview.effects || [];
+  } catch { /* si el preview falla no bloqueamos el rebobinado por eso */ }
+
+  let msg = 'Rebobinar hasta acá?\n\nElimina esta pregunta y TODO lo que vino después — Claude lo olvida de verdad, como si nunca hubiera pasado. La conversación sigue desde la respuesta anterior.\n\n(Queda un backup del archivo de sesión por las dudas.)';
+  if (effects.length) {
+    const lines = effects.map(e => `• ${e.summary}${e.reversible === false ? '  (IRREVERSIBLE)' : ''}`).join('\n');
+    msg = `⚠️ En ese tramo se ejecutaron ${effects.length} acción(es) con efecto real fuera de la charla:\n\n${lines}\n\nRebobinar NO las deshace — el archivo/comando/commit sigue aplicado tal cual, solo se olvida que pasó en la charla. Convendría revisarlo antes de seguir.\n\n¿Rebobinar igual?`;
+  }
+  const ok = confirm(msg);
   if (!ok) return;
   try {
     const r = await api(`/conversations/${currentConv}/rewind`, {

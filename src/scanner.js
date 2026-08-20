@@ -366,26 +366,90 @@ function rewindCutIndex(parsedLines, uuid) {
   return idx;
 }
 
+function _parseLinesRaw(raw) {
+  const lines = raw.split('\n').filter(l => l.trim());
+  const parsed = lines.map(l => { try { return JSON.parse(l); } catch { return null; } });
+  return { lines, parsed };
+}
+
+// ── Detección de "efectos colaterales" que rebobinar no deshace ──
+// Herramientas que tocan algo fuera de la charla (filesystem, procesos, comandos).
+// Read/Grep/Glob/WebFetch/etc. quedan afuera a propósito: no dejan rastro que
+// sobreviva al rebobinado.
+const SIDE_EFFECT_TOOLS = new Set(['Bash', 'PowerShell', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
+function _cmdShort(cmd) { return String(cmd || '').trim().replace(/\s+/g, ' ').slice(0, 160); }
+
+// reversible: true (hay forma automática de deshacerlo), false (ya es tarde /
+// salió del sistema), null (no se puede saber desde acá).
+function _describeSideEffect(name, input) {
+  input = input || {};
+  if (name === 'Bash' || name === 'PowerShell') {
+    const cmd = _cmdShort(input.command);
+    if (/^git\s+commit\b/i.test(cmd)) {
+      return { summary: `git commit — ${cmd}`, reversible: true, hint: 'revertible con `git revert` (o `git reset` si todavía no se subió a un remoto)' };
+    }
+    if (/^git\s+push\b/i.test(cmd)) {
+      return { summary: `git push — ${cmd}`, reversible: false, hint: 'puede ya estar en el remoto — rebobinar la charla no lo saca de ahí' };
+    }
+    return { summary: `${name} — ${cmd}`, reversible: null, hint: 'comando ejecutado: no se puede saber automáticamente qué tocó ni si es reversible' };
+  }
+  if (name === 'Edit' || name === 'Write' || name === 'MultiEdit') {
+    return { summary: `${name} — ${input.file_path || '(archivo desconocido)'}`, reversible: null, hint: 'el archivo puede seguir con el cambio aplicado en disco' };
+  }
+  if (name === 'NotebookEdit') {
+    return { summary: `NotebookEdit — ${input.notebook_path || '(notebook desconocido)'}`, reversible: null, hint: 'la celda puede seguir modificada en disco' };
+  }
+  return { summary: name, reversible: null, hint: '' };
+}
+
+// Recorre las entradas que un rebobinado a `fromIdx` dejaría afuera y devuelve
+// las que tuvieron un efecto real fuera de la charla. No es exhaustivo (un
+// Bash puede haber hecho cualquier cosa) — es lo que SÍ se puede detectar.
+function detectSideEffects(parsedLines, fromIdx) {
+  const out = [];
+  for (let i = fromIdx; i < parsedLines.length; i++) {
+    const e = parsedLines[i];
+    if (!e || e.type !== 'assistant' || !e.message || !Array.isArray(e.message.content)) continue;
+    for (const b of e.message.content) {
+      if (b.type !== 'tool_use' || !SIDE_EFFECT_TOOLS.has(b.name)) continue;
+      out.push({ tool: b.name, ts: e.timestamp, ...(_describeSideEffect(b.name, b.input)) });
+    }
+  }
+  return out;
+}
+
+// Igual que rewindSessionFile pero sin escribir nada — para mostrar la
+// advertencia previa antes de que el usuario confirme el rebobinado real.
+function previewRewindEffects(filePath, uuid) {
+  let raw;
+  try { raw = fs.readFileSync(filePath, 'utf8'); } catch { return null; }
+  const { lines, parsed } = _parseLinesRaw(raw);
+  const idx = rewindCutIndex(parsed, uuid);
+  if (idx < 0) return null;
+  return { removed: lines.length - idx, effects: detectSideEffects(parsed, idx) };
+}
+
 // Opera sobre las líneas crudas (no re-serializa lo que se conserva) y hace
 // backup al lado del archivo antes de escribir. El sufijo no es .jsonl, así
 // que ni el CLI ni listSessions lo levantan como sesión.
 function rewindSessionFile(filePath, uuid) {
   const raw = fs.readFileSync(filePath, 'utf8');
-  const lines = raw.split('\n').filter(l => l.trim());
-  const parsed = lines.map(l => { try { return JSON.parse(l); } catch { return null; } });
+  const { lines, parsed } = _parseLinesRaw(raw);
   const idx = rewindCutIndex(parsed, uuid);
   if (idx < 0) return null;
+  const effects = detectSideEffects(parsed, idx);
   const backup = filePath + '.bak-rewind-' + Date.now();
   fs.copyFileSync(filePath, backup);
   fs.writeFileSync(filePath, lines.slice(0, idx).join('\n') + '\n');
   _tailCache.delete(filePath);
   _sessionInfoCache.delete(filePath);
-  return { removed: lines.length - idx, backup };
+  return { removed: lines.length - idx, backup, effects };
 }
 
 module.exports = {
   parseJsonl, sessionInfo, listSessions, findSessionFile, resolveCwd, toChatMessages, contentToText,
   getMessagesIncremental, sumUsage, searchSessions, PROJECTS_DIR,
-  rewindCutIndex, rewindSessionFile,
+  rewindCutIndex, rewindSessionFile, detectSideEffects, previewRewindEffects,
   _clearSessionInfoCache, _clearTailCache,
 };
