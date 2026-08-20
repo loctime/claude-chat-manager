@@ -1536,34 +1536,10 @@ function dateLabel(ts) {
   return { text, cls };
 }
 
-// ── Lightbox ──
-(function initLightbox() {
-  const lb = document.createElement('div');
-  lb.id = 'lightbox';
-  lb.innerHTML = `
-    <div id="lightbox-backdrop"></div>
-    <div id="lightbox-inner">
-      <button id="lightbox-close" aria-label="Cerrar">✕</button>
-      <img id="lightbox-img" alt="">
-      <a id="lightbox-dl" download>⬇ Descargar</a>
-    </div>
-  `;
-  document.body.appendChild(lb);
-
-  function closeLightbox() { lb.classList.remove('open'); }
-  lb.querySelector('#lightbox-backdrop').onclick = closeLightbox;
-  lb.querySelector('#lightbox-close').onclick = closeLightbox;
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
-
-  window.openLightbox = function(src, downloadHref, filename) {
-    const img = lb.querySelector('#lightbox-img');
-    const dl = lb.querySelector('#lightbox-dl');
-    img.src = src;
-    dl.href = downloadHref;
-    dl.download = filename || 'imagen';
-    lb.classList.add('open');
-  };
-})();
+// ── Lightbox: ver lightbox.js (expone window.openLightbox) ──
+// Lo que sigue de acá para abajo (íconos de archivo, revealInFolder, cards de
+// adjuntos...) es del dominio grande de mensajes/adjuntos, no del lightbox en
+// sí — se queda en app.js para otra vuelta.
 
 const IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg']);
 const AUDIO_EXTS = new Set(['mp3','wav','ogg','m4a','webm']);
