@@ -1,6 +1,6 @@
 {
   "name": "claude-chat-manager",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "private": true,
   "scripts": {
     "start": "node src/server.js",
