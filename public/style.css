@@ -409,6 +409,23 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
   cursor: help;
 }
 
+/* ── Barra de selección múltiple de mensajes ── */
+#select-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 14px;
+  background: var(--header);
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px; color: var(--text2);
+}
+#select-bar[hidden] { display: none; }
+#select-actions { display: flex; align-items: center; gap: 6px; }
+#select-actions button {
+  background: var(--input-bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer;
+}
+#select-actions button:hover { background: var(--border); }
+#select-cancel { padding: 5px 8px; color: var(--text2); }
+
 /* ── Mensajes ── */
 /* Envuelve el scroll para poder anclarle encima el botón "ir al final" sin
    depender de la altura del composer (que crece con el textarea). */
@@ -1223,6 +1240,15 @@ body.hide-tools details.tool { display: none !important; }
 .msg.selecting {
   outline: 1px dashed var(--accent);
   outline-offset: 3px;
+  border-radius: var(--radius);
+}
+
+/* Modo selección múltiple (barra "Copiar conversación"/"Copiar simple") —
+   distinto de .selecting de arriba, que es selección nativa de texto adentro
+   de UNA burbuja. Acá se marcan burbujas enteras. */
+.msg-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
   border-radius: var(--radius);
 }
 

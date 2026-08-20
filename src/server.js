@@ -46,6 +46,14 @@ function getAppName() {
   return name || process.env.CCM_APP_NAME || 'J.A.R.V.I.S';
 }
 
+// Tu propio nombre (no el del agente) — usado para etiquetar tus mensajes
+// cuando copiás una conversación en "modo conversación" desde el chat.
+// Mismo patrón de prioridad que getAppName(): config guardada > env var > default.
+function getUserName() {
+  const name = (config.load().userName || '').trim();
+  return name || process.env.CCM_USER_NAME || 'Vos';
+}
+
 // Versión mostrada en la pantalla de Configuración. Se lee de package.json
 // (bump manual a mano en cada release) en cada request, no en una constante
 // al boot, mismo motivo que getAppName().
@@ -234,6 +242,7 @@ app.get('/api/accounts', (req, res) => {
     otherLabel: OTHER_LABEL,
     appName: getAppName(),
     appColor: getAppColor(),
+    userName: getUserName(),
   });
 });
 
@@ -366,10 +375,15 @@ app.patch('/api/config', (req, res) => {
       return res.status(400).json({ error: 'color inválido, esperado formato #rrggbb' });
     }
   }
+  if ('userName' in req.body) {
+    const name = (req.body.userName || '').trim();
+    if (name) cfg.userName = name;
+    else delete cfg.userName; // vacío = volver al env var / default
+  }
   config.save(cfg);
   const appColor = getAppColor();
   const iconOk = ('appColor' in req.body) ? regenerateIconsSafe(appColor) : true;
-  res.json({ ok: true, appName: getAppName(), appColor, iconOk });
+  res.json({ ok: true, appName: getAppName(), appColor, iconOk, userName: getUserName() });
 });
 
 // ── Reinicio del server desde la pantalla de Configuración ──

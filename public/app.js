@@ -262,6 +262,9 @@ let APP_NAME = 'J.A.R.V.I.S';
 // precargar el input de Configuración; el pintado real ya viene hecho por el
 // <style> inline server-rendered de index.html.
 let APP_COLOR = '#25d366';
+// Tu propio nombre (ídem APP_NAME, mismo origen server-side) — se usa como
+// etiqueta de tus mensajes al copiar una conversación en "modo conversación".
+let USER_NAME = 'Vos';
 
 const $ = id => document.getElementById(id);
 const messagesEl = $('messages');
@@ -270,10 +273,11 @@ const messagesEl = $('messages');
 async function loadAccounts() {
   try {
     const r = await fetch('/api/accounts');
-    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName, appColor } = await r.json();
+    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName, appColor, userName } = await r.json();
     activeAccount = active;
     if (appName) { APP_NAME = appName; updateGlobalBusyIndicator(); }
     if (appColor) APP_COLOR = appColor;
+    if (userName) USER_NAME = userName;
     // Botón "ir a la otra instancia": elige URL local si estamos en 127.0.0.1/localhost,
     // pública en cualquier otro caso (celu vía Cloudflare tunnel).
     const sw = $('account-switch');
@@ -1364,6 +1368,7 @@ function showMsgMenu(x, y, ctx) {
   menu.innerHTML = `
     <button data-action="copy">📋 Copiar</button>
     <button data-action="select">🔤 Seleccionar texto</button>
+    <button data-action="multiselect">☑️ Seleccionar mensajes</button>
     <button data-action="quote">↩️ Citar</button>
     ${canRewind ? '<button data-action="rewind" class="ctx-danger">⏪ Rebobinar hasta acá</button>' : ''}
   `;
@@ -1378,6 +1383,7 @@ function showMsgMenu(x, y, ctx) {
     document.removeEventListener('touchstart', dismiss, true);
     if (action === 'copy') copyToClipboard(ctx.text);
     else if (action === 'select') enterSelectionMode(ctx.el);
+    else if (action === 'multiselect') enterMultiSelectMode(ctx.el);
     else if (action === 'quote') quoteIntoComposer(ctx.text);
     else if (action === 'rewind') doRewind(ctx);
   };
@@ -1402,22 +1408,103 @@ function showMsgMenu(x, y, ctx) {
   }, 350);
 }
 
+// ── Selección múltiple de mensajes (marcar varias burbujas y copiarlas
+// juntas) — separado del modo enterSelectionMode de arriba, que es selección
+// nativa de texto DENTRO de una sola burbuja. msgCtxByEl guarda el {role,
+// text} de cada burbuja para poder armar la copia sin volver a tocar el DOM.
+const msgCtxByEl = new WeakMap();
+let selectMode = false;
+const selectedMsgs = new Set(); // elementos .msg marcados, en el orden en que se tocaron (no importa: se copian en orden de DOM)
+
+function updateSelectBar() {
+  const count = selectedMsgs.size;
+  $('select-count').textContent = count === 1 ? '1 seleccionado' : `${count} seleccionados`;
+  $('select-bar').hidden = !selectMode;
+}
+
+function toggleMsgSelection(el) {
+  if (selectedMsgs.has(el)) {
+    selectedMsgs.delete(el);
+    el.classList.remove('msg-selected');
+  } else {
+    selectedMsgs.add(el);
+    el.classList.add('msg-selected');
+  }
+  updateSelectBar();
+}
+
+function enterMultiSelectMode(startEl) {
+  if (_endSelectionMode) _endSelectionMode(); // no mezclar con el modo de selección de texto nativo
+  selectMode = true;
+  if (startEl) toggleMsgSelection(startEl);
+  else updateSelectBar();
+}
+
+function exitMultiSelectMode() {
+  selectMode = false;
+  selectedMsgs.forEach(el => el.classList.remove('msg-selected'));
+  selectedMsgs.clear();
+  const bar = $('select-bar');
+  if (bar) bar.hidden = true;
+}
+
+// Los mensajes marcados en orden real de aparición en el chat (no en el orden
+// en que los tocaste) — así "Copiar" siempre da una transcripción cronológica.
+function orderedSelection() {
+  return Array.from(messagesEl.children)
+    .filter(el => selectedMsgs.has(el))
+    .map(el => msgCtxByEl.get(el))
+    .filter(Boolean);
+}
+
+function copySelectionAsConversation() {
+  const items = orderedSelection();
+  if (!items.length) return;
+  const text = items
+    .map(m => `${m.role === 'user' ? USER_NAME : APP_NAME}:\n${m.text}`)
+    .join('\n\n');
+  copyToClipboard(text);
+}
+
+function copySelectionAsSimple() {
+  const items = orderedSelection();
+  if (!items.length) return;
+  copyToClipboard(items.map(m => m.text).join('\n\n'));
+}
+
+$('select-cancel').onclick = exitMultiSelectMode;
+$('select-copy-conv').onclick = copySelectionAsConversation;
+$('select-copy-simple').onclick = copySelectionAsSimple;
+
 function attachMsgGestures(el, ctx) {
   ctx.el = el; // referencia para poder habilitar la selección de texto desde el menú
+  msgCtxByEl.set(el, ctx); // referencia inversa: de la burbuja al {role, text} para el modo selección múltiple
   let touchTimer = null;
   let longPressed = false;
   let startX = 0, startY = 0;
 
+  // Modo selección múltiple activo: un click en cualquier parte de la burbuja
+  // (incluidos los botones de copiar/tts de adentro) la marca/desmarca en vez
+  // de disparar su acción normal. Capture-phase para ganarle a esos botones.
+  el.addEventListener('click', e => {
+    if (!selectMode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    toggleMsgSelection(el);
+  }, { capture: true });
+
   el.addEventListener('contextmenu', e => {
     if (el.classList.contains('selecting')) return; // dejamos el nativo (copiar/etc) mandar
+    if (selectMode) { e.preventDefault(); toggleMsgSelection(el); return; }
     e.preventDefault();
     showMsgMenu(e.clientX, e.clientY, ctx);
   });
 
   el.addEventListener('touchstart', e => {
-    // En modo selección no reabrimos el menú: dejamos que el usuario arrastre
-    // los handles nativos tranquilo (ver enterSelectionMode).
-    if (el.classList.contains('selecting')) return;
+    // En modo selección de texto no reabrimos el menú: dejamos que el usuario
+    // arrastre los handles nativos tranquilo (ver enterSelectionMode). En modo
+    // selección múltiple tampoco: el tap normal (click) ya marca/desmarca.
+    if (el.classList.contains('selecting') || selectMode) return;
     longPressed = false;
     const t = e.touches[0];
     startX = t.clientX; startY = t.clientY;
@@ -2408,6 +2495,7 @@ $('cost-badge').onclick = () => toast($('cost-badge').title, 'info', 5000);
 
 // ── Select conversation ──
 async function selectConv(convId, name, model, lastModel, projectDir) {
+  exitMultiSelectMode(); // los elementos marcados quedan del chat anterior, no tiene sentido arrastrarlos
   if (currentConv) drafts.set(currentConv, $('input').value);
   currentConv = convId;
   $('input').value = drafts.get(convId) || '';
@@ -3433,6 +3521,7 @@ function readComputedColor(varName) {
 
 function openSettings() {
   $('cfg-app-name').value = APP_NAME;
+  $('cfg-user-name').value = USER_NAME;
   $('cfg-app-color').value = APP_COLOR;
   $('cfg-show-tools').checked = settings.showTools;
   $('cfg-voice-assistant').value = settings.voiceAssistant;
@@ -3465,6 +3554,24 @@ $('cfg-app-name').onchange = async e => {
     toast('Nombre guardado — recargá para verlo en el título de la pestaña y reinstalá la PWA para el ícono/nombre de app instalada', 'info', 5000);
   } catch (err) {
     toast('No se pudo guardar el nombre: ' + err.message);
+  }
+};
+
+// Tu nombre: mismo patrón que cfg-app-name (server-side, guarda al perder
+// foco). Se usa como etiqueta de tus mensajes en "Copiar conversación".
+$('cfg-user-name').onchange = async e => {
+  const name = e.target.value.trim();
+  try {
+    const { userName } = await api('/config', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userName: name }),
+    });
+    USER_NAME = userName;
+    e.target.value = userName;
+    toast('Nombre guardado', 'info', 2000);
+  } catch (err) {
+    toast('No se pudo guardar tu nombre: ' + err.message);
   }
 };
 
