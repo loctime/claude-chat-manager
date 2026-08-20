@@ -669,19 +669,18 @@ function makeCopyMsgBtn(text) {
   return btn;
 }
 
-// ── Refresh manual ──
-async function refreshAll() {
-  const btn = $('refresh-btn');
-  btn.classList.add('spinning');
-  try {
-    await loadTree();
-    if (archivedPaneLoaded) await loadArchivedTree();
-    if (currentConv) await loadMessages(currentConv);
-  } finally {
-    btn.classList.remove('spinning');
-  }
-}
-$('refresh-btn').onclick = refreshAll;
+// ── Refresh manual: recarga dura, no solo re-pedir los datos por API ──
+// Antes esto era un refreshAll() que solo volvía a pedir /tree y los mensajes
+// del chat abierto — no bajaba index.html/app.js/style.css de cero, así que
+// no servía para forzar una versión nueva (para eso había que ir a buscar
+// Ctrl+Shift+R a mano). Navegar a una URL con querystring nuevo no puede
+// venir de la caché del navegador (es una URL distinta), así que fuerza
+// exactamente eso: baja todo de nuevo, mismo efecto que un hard refresh.
+// Trade-off asumido: perdés el chat abierto (volvés a la lista) y un mensaje
+// sin enviar en el composer — las conversaciones guardadas no se tocan.
+$('refresh-btn').onclick = () => {
+  location.href = location.pathname + '?_r=' + Date.now();
+};
 
 // ── Pull-to-refresh en el panel lista ──
 function initPTR(navEl, loadFn) {

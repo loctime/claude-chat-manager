@@ -141,7 +141,6 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
   touch-action: manipulation; -webkit-tap-highlight-color: transparent;
 }
 #search-btn:hover, #new-conv:hover, #refresh-btn:hover, #settings-btn:hover, #header-scan-btn:hover { background: var(--border); color: var(--text); }
-#refresh-btn.spinning svg { animation: spin .6s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 #ptr-indicator {
