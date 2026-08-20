@@ -304,6 +304,17 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
 .conv:hover { background: var(--header); }
 .conv.active { background: #182229; }
 
+/* Flash momentáneo al volver de un chat en mobile (swipe o botón atrás) — la
+   lista queda tapada por #panel-chat mientras estás adentro del chat, así que
+   .active (pensado para desktop, donde lista y chat se ven juntos) no alcanza
+   como pista de "esta era la conversación que tenías abierta". Ver
+   flashConvRow() en app.js. */
+@keyframes conv-flash {
+  0% { box-shadow: 0 0 0 2px var(--accent), 0 0 14px 3px var(--accent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.conv.flash { animation: conv-flash 900ms ease-out; }
+
 .conv-avatar {
   width: 42px; height: 42px; border-radius: 50%;
   background: var(--accent);
@@ -1159,6 +1170,12 @@ body.hide-tools details.tool { display: none !important; }
     z-index: 20;
     transform: translateX(100%);
     transition: transform .25s ease;
+    /* pan-y: el scroll vertical de #messages sigue andando nativo, pero el
+       navegador nos deja manejar el arrastre horizontal a mano (swipe hacia
+       la derecha → volver a la lista, ver initChatSwipe en app.js) sin pelear
+       con un gesto nativo (edge-swipe, overscroll) — mismo patrón que
+       #tree-viewport-inner de la lista. */
+    touch-action: pan-y;
   }
   #panel-chat.open { transform: translateX(0); }
   #back-btn, #notebook-back-btn { display: flex; }
