@@ -373,96 +373,8 @@ async function loadUsage() {
   } catch {}
 }
 
-// ── Toast ──
-// ttl = 0 → toast persistente, no se autodescarta (usalo para operaciones
-// largas como compactar: mostrás "en curso…" y vos mismo lo cerrás cuando
-// llega el resultado). Devuelve { remove } para eso.
-function toast(msg, kind = 'error', ttl = 4000, action = null) {
-  let container = document.getElementById('toast-container');
-  if (!container) {
-    container = document.createElement('div');
-    container.id = 'toast-container';
-    document.body.appendChild(container);
-  }
-  const t = document.createElement('div');
-  t.className = 'toast ' + kind;
-  const text = document.createElement('span');
-  text.textContent = msg;
-  t.appendChild(text);
-
-  let removed = false;
-  const remove = () => {
-    if (removed) return;
-    removed = true;
-    t.style.opacity = '0';
-    t.style.transition = 'opacity .2s';
-    setTimeout(() => t.remove(), 220);
-  };
-
-  if (action) {
-    const btn = document.createElement('button');
-    btn.className = 'toast-action';
-    btn.type = 'button';
-    btn.textContent = action.label;
-    btn.onclick = () => { remove(); action.onClick(); };
-    t.appendChild(btn);
-  }
-
-  container.appendChild(t);
-  if (ttl > 0) setTimeout(remove, ttl);
-  return { remove };
-}
-
-// ── PWA service worker + install ──
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js').catch(() => {});
-}
-
-(function initPWA() {
-  const isStandalone = window.matchMedia('(display-mode: standalone)').matches
-    || window.navigator.standalone === true;
-  if (isStandalone) return;
-
-  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-
-  window.addEventListener('appinstalled', () => {
-    $('install-bar').hidden = true;
-    $('ios-tip').hidden = true;
-  });
-
-  if (isIOS) {
-    $('ios-tip').hidden = false;
-    $('ios-tip-close').onclick = () => { $('ios-tip').hidden = true; };
-    return;
-  }
-
-  // Android/Chrome: mostrar el botón solo cuando el browser esté listo
-  let deferredPrompt = null;
-  window.addEventListener('beforeinstallprompt', e => {
-    e.preventDefault();
-    deferredPrompt = e;
-    $('install-bar').hidden = false;
-  });
-
-  $('install-btn').onclick = async () => {
-    if (!deferredPrompt) return;
-    deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    deferredPrompt = null;
-    $('install-bar').hidden = true;
-  };
-  $('install-dismiss').onclick = () => { $('install-bar').hidden = true; };
-})();
-
-// ── Forzar actualización del service worker ──
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.ready.then(reg => {
-    reg.update(); // fuerza chequeo de nueva versión en cada carga
-    navigator.serviceWorker.addEventListener('controllerchange', () => {
-      window.location.reload(); // nuevo SW activado → recarga automática
-    });
-  });
-}
+// ── Toast: ver toast.js ──
+// ── PWA (service worker + install): ver pwa.js ──
 
 // ── Mobile nav + back button del celu ──
 function isMobile() { return window.matchMedia('(max-width: 768px)').matches; }
@@ -687,69 +599,7 @@ function withAccountBody(body) {
   return activeAccount ? { ...body, account: activeAccount } : body;
 }
 
-// ── TTS (Web Speech API) ──
-let ttsUtterance = null;
-function speak(text, btn, kind = 'assistant') {
-  if (!('speechSynthesis' in window)) return;
-  if (ttsUtterance) {
-    speechSynthesis.cancel();
-    document.querySelectorAll('.msg-tts.playing').forEach(b => b.classList.remove('playing'));
-    if (ttsUtterance._btn === btn) { ttsUtterance = null; return; }
-  }
-  const u = new SpeechSynthesisUtterance(text);
-  const voiceName = kind === 'user' ? settings.voiceUser : settings.voiceAssistant;
-  const voice = voiceName ? speechSynthesis.getVoices().find(v => v.name === voiceName) : null;
-  if (voice) { u.voice = voice; u.lang = voice.lang; }
-  else u.lang = 'es-AR';
-  u._btn = btn;
-  ttsUtterance = u;
-  btn.classList.add('playing');
-  u.onend = u.onerror = () => {
-    btn.classList.remove('playing');
-    if (ttsUtterance === u) ttsUtterance = null;
-  };
-  speechSynthesis.speak(u);
-}
-
-function cleanForTTS(text) {
-  // Sacar bloques de código y código inline ANTES de pasar por marked: adentro
-  // de un ``` ``` el contenido es código literal (=>, {}, ===, ;), marked no lo
-  // toca porque es preformatted, así que si no se saca acá el TTS lo lee tal cual.
-  let raw = text
-    .replace(/```[a-zA-Z0-9_+-]*\n?[\s\S]*?```/g, ' ')
-    .replace(/`[^`\n]+`/g, ' ');
-
-  let plain = raw;
-  // Pasar por el mismo parser Markdown que usa el render visual y quedarnos
-  // solo con el texto: así el TTS nunca ve *, `, #, [](), etc. y no los lee
-  // como si fueran palabras ("asterisco", "numeral", "comillas").
-  if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
-    const html = DOMPurify.sanitize(marked.parse(raw, { breaks: true, gfm: true }));
-    const tpl = document.createElement('template');
-    tpl.innerHTML = html;
-    plain = tpl.content.textContent || '';
-  }
-  return plain
-    .replace(/\[Archivo adjunto:[^\]]+\]/g, '')
-    .replace(/`?\/(?:home|tmp|root|var|opt|usr)[^\s`'"]+`?/g, '')
-    .replace(/`?[A-Za-z]:\\[^\s`'"]+`?/g, '') // rutas Windows C:\...
-    .replace(/`?\\\\[^\s`'"]+`?/g, '') // rutas UNC \\server\share
-    .replace(/https?:\/\/\S+/g, '') // URLs pegadas sin formato markdown
-    .replace(/["""«»'']/g, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-}
-
-function makeTtsBtn(text, kind = 'assistant') {
-  const clean = cleanForTTS(text);
-  const btn = document.createElement('button');
-  btn.className = 'msg-tts';
-  btn.title = 'Reproducir';
-  btn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>';
-  if (!clean) btn.style.display = 'none'; // no mostrar si no hay texto para leer
-  btn.onclick = () => speak(clean, btn, kind);
-  return btn;
-}
+// ── TTS (Web Speech API): speak/cleanForTTS/makeTtsBtn → ver tts.js ──
 
 // Botón de copiar mensaje, mismo tamaño/estilo que el de TTS (msg-tts) —
 // Diego lo pidió duplicado (arriba y abajo de la burbuja), a diferencia del

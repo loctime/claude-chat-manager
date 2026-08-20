@@ -271,6 +271,13 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=57"></script>
+  <script src="app.js?v=58"></script>
+  <!-- Split de app.js por dominio (sesión 2026-08-20) — scripts clásicos, no
+       ES modules: siguen compartiendo el mismo scope global que app.js, por
+       eso cargan DESPUÉS (usan $()/settings definidos ahí). Ver comentario de
+       cada archivo. -->
+  <script src="toast.js?v=58"></script>
+  <script src="pwa.js?v=58"></script>
+  <script src="tts.js?v=58"></script>
 </body>
 </html>
