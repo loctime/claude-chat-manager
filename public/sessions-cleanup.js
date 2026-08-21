@@ -56,8 +56,19 @@ function renderCleanupFolders() {
   const select = $('cleanup-folder-filter');
   const prev = select.value;
   const folders = [...new Set(cleanupSessions.map(s => s.cwd))].sort();
-  select.innerHTML = '<option value="">Todas las carpetas</option>' +
-    folders.map(f => `<option value="${f.replace(/"/g, '&quot;')}">${cleanupFolderName(f)}</option>`).join('');
+  // Construcción por DOM, no innerHTML con template string: cwd viene del filesystem
+  // (no confiable) y cleanupFolderName lo devuelve como texto plano — nunca como HTML.
+  select.innerHTML = '';
+  const allOpt = document.createElement('option');
+  allOpt.value = '';
+  allOpt.textContent = 'Todas las carpetas';
+  select.appendChild(allOpt);
+  for (const f of folders) {
+    const opt = document.createElement('option');
+    opt.value = f;
+    opt.textContent = cleanupFolderName(f);
+    select.appendChild(opt);
+  }
   select.value = folders.includes(prev) ? prev : '';
   cleanupFolder = select.value;
 }
