@@ -1,6 +1,6 @@
 # Escáner de documentos (tipo CamScanner) — diseño y estado actual
 
-**Fecha**: 2026-08-17 (última actualización: 2026-08-21 — script vendorizado adentro del repo)
+**Fecha**: 2026-08-17 (última actualización: 2026-08-21 — script vendorizado + documento multi-página)
 **Estado**: implementado y activo (no está gateado detrás de ningún flag)
 
 ## Contexto
@@ -37,11 +37,10 @@ no gasta tokens.**
    `~/.ccm-notes/scans/<uuid>/original.<ext>` (multer con `diskStorage`, el `uuid` se genera en el
    momento y queda colgado del `req` para el resto del handler) y corre:
    ```
-   python(3) mejora-imagen/mejorar_imagen.py <original> <scanDir> --json
+   python(3) scripts/mejora-imagen/mejorar_imagen.py <original> <scanDir> --json
    ```
-   La ruta al script se arma con `CCM_DEFAULT_PROJECT_DIR` (o `../..` desde `src/` si no está
-   seteada) + `mejora-imagen/mejorar_imagen.py` — asume que esa carpeta vive al lado de
-   `claude-chat-manager/` en el vault, igual que hoy.
+   El script vive adentro del repo (`scripts/mejora-imagen/`, vendorizado desde 2026-08-21 — ver
+   más abajo), así que no depende de ninguna carpeta fuera de `claude-chat-manager/`.
 4. El script devuelve JSON (`--json`) con `detectado` (bool) y las rutas de las 3 variantes que ya
    generaba para el caso de remitos: recortada (color, enderezada), `1x` (blanco y negro limpia) y
    `2x` (blanco y negro ampliada, pensada para OCR — hoy no se usa en la UI pero el server la deja
@@ -71,6 +70,47 @@ no gasta tokens.**
 Los originales y variantes intermedias quedan en `~/.ccm-notes/scans/<id>/` sin limpiarse — no hay
 todavía un job de purga para escaneos viejos que el usuario decidió no guardar (queda como pendiente
 si el directorio crece mucho con el tiempo).
+
+## Documento de varias páginas + descartar (agregado 2026-08-21)
+
+Pedido de Fernando: poder escanear varias hojas seguidas y juntarlas en un solo PDF, más un botón
+para descartar una página puntual que salió mal sin perder las demás ya escaneadas.
+
+**Estado del cliente (`public/doc-scanner.js`):** array en memoria `scanPages` — cada `processScan`
+exitoso sigue mostrando el mismo panel de siempre (2 variantes + Guardar/Descargar), pero ahora con
+dos botones más: **"🗑 Descartar"** (limpia el panel sin guardar nada, equivalente a lo que antes
+hacía "Escanear otra") y **"+ Agregar a documento"** (empuja `{id, recortada, limpia}` a
+`scanPages` y limpia el panel). Apenas `scanPages.length > 0` aparece una cola nueva debajo
+(`#scan-queue` / `renderScanQueue()`): una tira de miniaturas (variante `recortada` de cada página)
+con número de página y **su propio botón ✕** para sacar esa página puntual del array — literalmente
+"los botones descartar" que pidió Fernando, uno por página en cola. Desde la cola: "+ Escanear otra
+página" (dispara el mismo file input de siempre) y dos botones para terminar: **"✅ Terminar
+(color)"** / **"✅ Terminar (blanco y negro)"** — la variante se elige una sola vez para todo el
+documento, no por página, para no mezclar color y blanco y negro en un mismo PDF.
+
+**Server — `POST /api/scan/pdf`:** recibe `{ pages: [{id, variant}] }` (variant: `recortada` |
+`limpia`, máx. 50 páginas), resuelve cada página a su archivo real en `SCANS_DIR` (mismo lookup por
+sufijo que ya usaba `/api/scan/:id/keep` — valida **todas** las páginas antes de tocar el PDF, para
+no generar un documento a medio armar si una sola página tiene un id inválido) y arma un PDF con
+**pdf-lib** (`PDFDocument.create()` + `embedJpg` + una página del tamaño exacto de cada imagen en
+píxeles — evita deformar o dejar márgenes). El PDF resultante queda en
+`~/.ccm-notes/scan-pdfs/<uuid>.pdf` (mismo patrón sin purga que `SCANS_DIR`) y la respuesta
+(`{id, path, pageCount}`) alimenta un panel igual al de una página suelta: **"Guardar en Notas"**
+(`POST /api/scan/pdf/:id/keep`, mismo patrón que el `keep` de una imagen pero con `mime:
+application/pdf`) o **"Descargar"** directo.
+
+Probado end-to-end (curl contra una instancia de prueba en otro puerto, con fotos reales de
+escaneos previos): PDF de 2 y de 3 páginas, tamaños de página correctos, variante mezclada y
+uniforme, y el caso de error (id inexistente → 404 claro, sin generar nada).
+
+## Vendorizado del script (2026-08-21)
+
+`scripts/mejora-imagen/` — copia de `mejorar_imagen.py` + `setup.sh` adentro de este repo (con su
+propio `README.md`). Antes el server llamaba a una carpeta hermana fuera de git
+(`../../mejora-imagen/`) que solo existía en la PC de Fernando — el feature entero se habría roto en
+cualquier otro checkout (Diego incluido). La carpeta original sigue existiendo aparte, para uso
+suelto fuera del escáner (remitos, facturas sueltas por chat) — son dos copias sin symlink ni
+submódulo, hay que replicar a mano un fix de detección si aplica a ambas.
 
 ## Acceso directo desde el header (mobile)
 

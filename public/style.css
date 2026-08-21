@@ -274,6 +274,46 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
 .scan-keep-btn:hover:not(:disabled), .scan-dl-btn:hover, .scan-again-btn:hover { background: var(--header); }
 .scan-keep-btn:disabled { opacity: .6; cursor: default; }
 .scan-again-btn { align-self: flex-start; }
+.scan-discard-btn {
+  background: none; border: 1px solid var(--border); color: var(--text2);
+  border-radius: var(--radius); padding: 6px 10px; font-size: 12px; cursor: pointer;
+}
+.scan-discard-btn:hover { background: var(--header); color: #e5484d; border-color: #e5484d; }
+.scan-add-page-btn {
+  background: none; border: 1px solid var(--accent); color: var(--accent);
+  border-radius: var(--radius); padding: 6px 10px; font-size: 12px; cursor: pointer; font-weight: 600;
+}
+.scan-add-page-btn:hover { background: var(--accent); color: #05341f; }
+
+/* ── Escáner: documento de varias páginas ── */
+.scan-queue {
+  display: flex; flex-direction: column; gap: 10px; padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.scan-queue-title { font-size: 12px; font-weight: 600; color: var(--text2); }
+.scan-queue-pages { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+.scan-queue-page { position: relative; flex: none; width: 64px; }
+.scan-queue-page img {
+  width: 64px; height: 84px; object-fit: cover; border-radius: 6px;
+  border: 1px solid var(--border); display: block;
+}
+.scan-queue-page-num {
+  position: absolute; bottom: 2px; left: 2px; background: rgba(0,0,0,.6); color: #fff;
+  font-size: 10px; border-radius: 3px; padding: 0 4px; line-height: 1.4;
+}
+.scan-queue-discard {
+  position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; border-radius: 50%;
+  background: #e5484d; color: #fff; border: 2px solid var(--bg); font-size: 12px; line-height: 1;
+  cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0;
+}
+.scan-queue-discard:hover { filter: brightness(1.15); }
+.scan-queue-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.scan-finish-btn {
+  background: var(--accent); color: #05341f; border: none; border-radius: var(--radius);
+  padding: 8px 12px; font-size: 12px; font-weight: 700; cursor: pointer;
+}
+.scan-finish-btn:hover:not(:disabled) { filter: brightness(1.08); }
+.scan-finish-btn:disabled { opacity: .5; cursor: default; }
 
 .project > summary {
   padding: 6px 16px;
