@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=71">
+  <link rel="stylesheet" href="style.css?v=72">
   <!-- Color de identidad server-side (Configuración → Color de identidad). Va
        después de style.css para pisar el --accent default de ahí; el ajuste
        personal por-dispositivo ("Acento" en Colores, más abajo) sigue
@@ -314,6 +314,16 @@
         </section>
 
         <section class="settings-section">
+          <h3 class="settings-section-label">Respuestas sugeridas</h3>
+          <div class="settings-grid">
+            <label>API key de Groq
+              <input type="password" id="cfg-groq-key" placeholder="gsk_..." maxlength="200" autocomplete="off">
+            </label>
+          </div>
+          <span class="settings-hint">Gratis en console.groq.com — sin key, esta función queda apagada. Con key configurada, debajo del último mensaje de Claude aparecen botones con respuestas rápidas cuando el mensaje pide una confirmación.</span>
+        </section>
+
+        <section class="settings-section">
           <h3 class="settings-section-label">Servidor</h3>
           <div class="settings-server">
             <button type="button" id="cfg-restart-btn">Reiniciar server</button>
@@ -347,7 +357,7 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=73"></script>
+  <script src="app.js?v=75"></script>
   <!-- Split de app.js por dominio (sesión 2026-08-20) — scripts clásicos, no
        ES modules: siguen compartiendo el mismo scope global que app.js, por
        eso cargan DESPUÉS (usan $()/settings/selectConv/etc. definidos ahí).

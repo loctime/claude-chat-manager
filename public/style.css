@@ -1231,6 +1231,26 @@ body.hide-tools details.tool { display: none !important; }
 }
 .path-chip:hover { border-color: var(--accent); color: var(--text); }
 
+/* Respuestas sugeridas por IA (Groq) debajo del último mensaje de Claude —
+   un toque manda la respuesta directo, no rellena el composer. */
+.reply-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.reply-suggestion {
+  background: var(--header);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+.reply-suggestion:hover { border-color: var(--accent); }
+.reply-suggestion:active { background: var(--accent); color: #fff; }
+
 /* ── File card (PDF, audio, video, otros) ── */
 .file-card {
   display: inline-flex;

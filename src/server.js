@@ -15,6 +15,7 @@ const icon = require('./icon');
 const { Runner } = require('./runner');
 const { CLAUDE_CMD } = require('./claude-cmd');
 const searchIndex = require('./search-index');
+const { getReplySuggestions } = require('./groq-suggest');
 
 const IS_WIN = process.platform === 'win32';
 // WSL: Linux corriendo dentro de Windows (kernel expone "microsoft" en
@@ -53,6 +54,15 @@ function getAppName() {
 function getUserName() {
   const name = (config.load().userName || '').trim();
   return name || process.env.CCM_USER_NAME || 'Vos';
+}
+
+// API key de Groq para las respuestas sugeridas debajo del último mensaje de
+// Claude (ver /api/suggest-replies más abajo). Mismo patrón de prioridad que
+// getAppName()/getUserName(): config guardada > env var > sin key (la
+// feature queda apagada en silencio, getReplySuggestions ya contempla eso).
+function getGroqApiKey() {
+  const key = (config.load().groqApiKey || '').trim();
+  return key || process.env.GROQ_API_KEY || '';
 }
 
 // Versión mostrada en la pantalla de Configuración. Se lee de package.json
@@ -244,6 +254,7 @@ app.get('/api/accounts', (req, res) => {
     appName: getAppName(),
     appColor: getAppColor(),
     userName: getUserName(),
+    groqApiKeySet: !!getGroqApiKey(),
   });
 });
 
@@ -381,10 +392,32 @@ app.patch('/api/config', (req, res) => {
     if (name) cfg.userName = name;
     else delete cfg.userName; // vacío = volver al env var / default
   }
+  if ('groqApiKey' in req.body) {
+    const key = (req.body.groqApiKey || '').trim();
+    if (key) cfg.groqApiKey = key;
+    else delete cfg.groqApiKey; // vacío = apagar la feature de sugerencias
+  }
   config.save(cfg);
   const appColor = getAppColor();
   const iconOk = ('appColor' in req.body) ? regenerateIconsSafe(appColor) : true;
-  res.json({ ok: true, appName: getAppName(), appColor, iconOk, userName: getUserName() });
+  res.json({
+    ok: true,
+    appName: getAppName(),
+    appColor,
+    iconOk,
+    userName: getUserName(),
+    groqApiKeySet: !!getGroqApiKey(),
+  });
+});
+
+// ── Respuestas sugeridas por IA (Groq) debajo del último mensaje de Claude ──
+// Nunca falla el chat: sin key configurada, o si Groq no responde a tiempo,
+// devuelve suggestions: [] y el cliente simplemente no muestra botones.
+app.post('/api/suggest-replies', async (req, res) => {
+  const text = (req.body && req.body.text) || '';
+  const apiKey = getGroqApiKey();
+  const suggestions = await getReplySuggestions(text, { apiKey });
+  res.json({ suggestions });
 });
 
 // ── Reinicio del server desde la pantalla de Configuración ──

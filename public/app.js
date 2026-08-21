@@ -265,6 +265,9 @@ let APP_COLOR = '#25d366';
 // Tu propio nombre (ídem APP_NAME, mismo origen server-side) — se usa como
 // etiqueta de tus mensajes al copiar una conversación en "modo conversación".
 let USER_NAME = 'Vos';
+// Si hay una API key de Groq guardada en el server (nunca se manda la key en
+// sí al cliente, solo este booleano — ver /api/accounts y /api/config).
+let GROQ_KEY_SET = false;
 
 const $ = id => document.getElementById(id);
 const messagesEl = $('messages');
@@ -273,11 +276,12 @@ const messagesEl = $('messages');
 async function loadAccounts() {
   try {
     const r = await fetch('/api/accounts');
-    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName, appColor, userName } = await r.json();
+    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName, appColor, userName, groqApiKeySet } = await r.json();
     activeAccount = active;
     if (appName) { APP_NAME = appName; updateGlobalBusyIndicator(); }
     if (appColor) APP_COLOR = appColor;
     if (userName) USER_NAME = userName;
+    GROQ_KEY_SET = !!groqApiKeySet;
     // Botón "ir a la otra instancia": elige URL local si estamos en 127.0.0.1/localhost,
     // pública en cualquier otro caso (celu vía Cloudflare tunnel).
     const sw = $('account-switch');
@@ -2100,12 +2104,21 @@ function updateLastUserPin() {
   // arriba del scroll, mismo criterio que un header sticky. Al fondo del
   // todo (el caso de siempre) esto da el mismo resultado que "el último
   // mensaje", porque ese es el último en pasar ese borde.
-  const wrapTop = messagesEl.getBoundingClientRect().top;
+  const msgsRect = messagesEl.getBoundingClientRect();
   let current = userMsgs[0];
   for (const el of userMsgs) {
-    if (el.getBoundingClientRect().top - wrapTop <= 4) current = el;
+    if (el.getBoundingClientRect().top - msgsRect.top <= 4) current = el;
     else break; // están en orden cronológico, no hace falta seguir mirando
   }
+
+  // Si ese mensaje ya está completo a la vista (ej: recién abriste la
+  // conversación y estás viendo el primer mensaje), el pin no suma nada —
+  // sería un atajo para volver a algo que ya estás mirando. Se esconde en
+  // vez de mostrarse redundante.
+  const elRect = current.getBoundingClientRect();
+  const fullyVisible = elRect.top >= msgsRect.top - 2 && elRect.bottom <= msgsRect.bottom + 2;
+  if (fullyVisible) { wrap.hidden = true; return; }
+
   const idx = userMsgs.indexOf(current);
   const isLast = idx === userMsgs.length - 1;
 
@@ -2303,6 +2316,11 @@ async function loadMessages(convId) {
     }
     let inCompacted = false;
     let dividerPlaced = false;
+    // Se van pisando en cada vuelta; al salir del for solo quedan con algo
+    // si el ÚLTIMO mensaje de la conversación es de Claude (cualquier tool/
+    // user/error después los vuelve a null) — ver maybeShowReplySuggestions.
+    let lastAssistantDiv = null;
+    let lastAssistantMsg = null;
     for (const m of msgs) {
       if (m.compacted && !inCompacted) inCompacted = true;
       if (!m.compacted && inCompacted && !dividerPlaced) {
@@ -2310,12 +2328,21 @@ async function loadMessages(convId) {
         dividerPlaced = true;
         inCompacted = false;
       }
-      if (m.role === 'system-compact') { addCompactBoundary(m); continue; }
+      if (m.role === 'system-compact') { addCompactBoundary(m); lastAssistantDiv = null; continue; }
       const opts = { compacted: !!m.compacted, uuid: m.uuid, ts: m.ts };
-      if (m.role === 'tool') addTool(m.name, m.input, m.output, opts);
-      else addMsg(m.role, m.text, opts);
+      if (m.role === 'tool') {
+        addTool(m.name, m.input, m.output, opts);
+        lastAssistantDiv = null;
+      } else {
+        const div = addMsg(m.role, m.text, opts);
+        if (m.role === 'assistant') { lastAssistantDiv = div; lastAssistantMsg = m; }
+        else lastAssistantDiv = null;
+      }
     }
     if (inCompacted && !dividerPlaced) addCompactDivider();
+    if (lastAssistantDiv && !busy) {
+      maybeShowReplySuggestions(convId, lastAssistantDiv, lastAssistantMsg.text, lastAssistantMsg.uuid);
+    }
   } finally {
     suppressAutoScroll = false;
     if (pendingScrollToLastStart) {
@@ -2325,6 +2352,67 @@ async function loadMessages(convId) {
     else messagesEl.scrollTop = prevTop;
     updateLastUserPin();
   }
+}
+
+// ── Respuestas sugeridas por IA (Groq) ──
+// Se dispara solo para el ÚLTIMO mensaje de la conversación, cuando es de
+// Claude y el turno no sigue en curso (ver el llamado en loadMessages más
+// arriba). El server decide si corresponde sugerir algo — puede devolver []
+// (mensaje informativo, nada que confirmar) y ahí no se pinta nada. Sin
+// GROQ_KEY_SET ni siquiera pega al server.
+const suggestionCache = new Map(); // uuid -> string[] — vive mientras dure la pestaña, no se persiste
+
+async function maybeShowReplySuggestions(convId, div, text, uuid) {
+  if (!GROQ_KEY_SET || !text || !text.trim()) return;
+  let suggestions = suggestionCache.get(uuid);
+  if (suggestions === undefined) {
+    try {
+      const r = await api('/suggest-replies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      suggestions = r.suggestions || [];
+    } catch {
+      suggestions = []; // nunca rompe el chat por esto
+    }
+    suggestionCache.set(uuid, suggestions);
+  }
+  // Puede haber pasado tiempo real esperando a Groq: si te fuiste de la
+  // conversación, o ese mensaje ya no es el último (llegó una respuesta
+  // nueva, por ejemplo el disparo automático de un mensaje en cola),
+  // no pintamos botones desactualizados.
+  if (convId !== currentConv || div !== messagesEl.lastElementChild || !suggestions.length) return;
+  renderReplySuggestions(div, suggestions);
+}
+
+function renderReplySuggestions(div, suggestions) {
+  const bar = document.createElement('div');
+  bar.className = 'reply-suggestions';
+  suggestions.forEach(text => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'reply-suggestion';
+    btn.textContent = text;
+    btn.addEventListener('click', () => sendSuggestedReply(text, bar));
+    bar.appendChild(btn);
+  });
+  div.appendChild(bar);
+}
+
+// Un toque = mandado directo (no rellena el composer) — mismo camino que un
+// submit normal, respetando la cola si justo hay otro turno en curso.
+async function sendSuggestedReply(text, bar) {
+  if (!currentConv) return;
+  const convId = currentConv;
+  bar.remove();
+  if (busy) {
+    queueMessage(convId, text, []);
+    renderQueuedBar();
+    updateComposerLock();
+    return;
+  }
+  await performSend(convId, text, []);
 }
 
 // ── Status ──
@@ -3511,6 +3599,11 @@ function openSettings() {
   $('cfg-font-family').value = settings.fontFamily;
   updateFontTrigger();
   $('cfg-font-size').value = settings.fontSize;
+  // La key en sí nunca vuelve del server (solo el booleano groqApiKeySet) —
+  // el placeholder avisa que ya hay una guardada sin exponerla ni pisarla
+  // por accidente si el campo queda vacío al abrir.
+  $('cfg-groq-key').value = '';
+  $('cfg-groq-key').placeholder = GROQ_KEY_SET ? '•••••••• (guardada)' : 'gsk_...';
   $('settings-dialog').showModal();
 }
 
@@ -3562,6 +3655,26 @@ $('cfg-user-name').onchange = async e => {
     toast('Nombre guardado', 'info', 2000);
   } catch (err) {
     toast('No se pudo guardar tu nombre: ' + err.message);
+  }
+};
+
+// API key de Groq (respuestas sugeridas): mismo patrón server-side que los
+// dos de arriba. Vacío = apaga la feature (config.js borra el campo). No
+// hace falta reiniciar el server — se lee del archivo en cada request.
+$('cfg-groq-key').onchange = async e => {
+  const key = e.target.value.trim();
+  try {
+    const { groqApiKeySet } = await api('/config', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ groqApiKey: key }),
+    });
+    GROQ_KEY_SET = !!groqApiKeySet;
+    e.target.value = '';
+    e.target.placeholder = GROQ_KEY_SET ? '•••••••• (guardada)' : 'gsk_...';
+    toast(GROQ_KEY_SET ? 'Key guardada' : 'Key borrada — respuestas sugeridas apagadas', 'info', 2500);
+  } catch (err) {
+    toast('No se pudo guardar la key de Groq: ' + err.message);
   }
 };
 
