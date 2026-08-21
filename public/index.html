@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=65">
+  <link rel="stylesheet" href="style.css?v=66">
   <!-- Color de identidad server-side (Configuración → Color de identidad). Va
        después de style.css para pisar el --accent default de ahí; el ajuste
        personal por-dispositivo ("Acento" en Colores, más abajo) sigue
@@ -132,7 +132,7 @@
           <span class="last-user-pin-label">Antes</span>
           <span class="last-user-pin-text"></span>
         </button>
-        <button type="button" class="last-user-pin-row last-user-pin-row-last" id="last-user-pin-last" aria-label="Ir a tu último mensaje">
+        <button type="button" class="last-user-pin-row last-user-pin-row-last" id="last-user-pin-last" aria-label="Ir a este mensaje">
           <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M12 8l-6 6 1.41 1.41L12 10.83l4.59 4.58L18 14z"/></svg>
           <span class="last-user-pin-label">Tu mensaje</span>
           <span class="last-user-pin-text"></span>
@@ -301,7 +301,7 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=69"></script>
+  <script src="app.js?v=70"></script>
   <!-- Split de app.js por dominio (sesión 2026-08-20) — scripts clásicos, no
        ES modules: siguen compartiendo el mismo scope global que app.js, por
        eso cargan DESPUÉS (usan $()/settings/selectConv/etc. definidos ahí).

@@ -2027,10 +2027,17 @@ function autoScroll() {
   if (stickToBottom) scrollToBottom();
   else flagJumpBtn('new');
 }
+let pinRafScheduled = false;
 messagesEl.addEventListener('scroll', () => {
   if (suppressAutoScroll) return;
   stickToBottom = isNearBottom();
   syncJumpBtn();
+  // rAF-throttled: updateLastUserPin() lee getBoundingClientRect de cada
+  // burbuja propia, no hace falta correrlo en cada tick de scroll.
+  if (!pinRafScheduled) {
+    pinRafScheduled = true;
+    requestAnimationFrame(() => { pinRafScheduled = false; updateLastUserPin(); });
+  }
 });
 
 // Barra fija arriba de #messages con una vista previa de TU último mensaje
@@ -2062,19 +2069,36 @@ function setPinRow(btn, el, text, limit) {
 
 function updateLastUserPin() {
   const wrap = $('last-user-pin');
-  const userMsgs = messagesEl.querySelectorAll('.msg.user');
-  const last = userMsgs[userMsgs.length - 1];
-  if (!last) { wrap.hidden = true; return; }
+  const userMsgs = Array.from(messagesEl.querySelectorAll('.msg.user'));
+  if (!userMsgs.length) { wrap.hidden = true; return; }
 
-  const lastText = msgText(last);
-  setPinRow($('last-user-pin-last'), last, lastText, 200);
+  // El mensaje que se muestra no es siempre el último: si estás scrolleado
+  // más arriba mirando una parte vieja de la conversación, mostramos el
+  // tuyo más cercano a esa parte — el último que ya "pasó" el borde de
+  // arriba del scroll, mismo criterio que un header sticky. Al fondo del
+  // todo (el caso de siempre) esto da el mismo resultado que "el último
+  // mensaje", porque ese es el último en pasar ese borde.
+  const wrapTop = messagesEl.getBoundingClientRect().top;
+  let current = userMsgs[0];
+  for (const el of userMsgs) {
+    if (el.getBoundingClientRect().top - wrapTop <= 4) current = el;
+    else break; // están en orden cronológico, no hace falta seguir mirando
+  }
+  const idx = userMsgs.indexOf(current);
+  const isLast = idx === userMsgs.length - 1;
 
-  // Un último mensaje muy corto ("si", "dale", "ok"...) no alcanza para
-  // acordarse de qué se estaba hablando — sumamos arriba, más chico, el
-  // mensaje propio anterior como contexto.
-  const isShort = lastText.length <= 20 || lastText.split(/\s+/).filter(Boolean).length <= 3;
+  const currentText = msgText(current);
+  const lastBtn = $('last-user-pin-last');
+  lastBtn.querySelector('.last-user-pin-label').textContent = isLast ? 'Tu mensaje' : 'Este mensaje';
+  setPinRow(lastBtn, current, currentText, 200);
+
+  // Un mensaje muy corto ("si", "dale", "ok"...) no alcanza para acordarse
+  // de qué se estaba hablando — sumamos arriba, más chico, el mensaje
+  // propio anterior a ese como contexto (o más arriba si scrolleaste hasta
+  // ahí, no siempre el último).
+  const isShort = currentText.length <= 20 || currentText.split(/\s+/).filter(Boolean).length <= 3;
   const prevRow = $('last-user-pin-prev');
-  const prev = isShort ? userMsgs[userMsgs.length - 2] : null;
+  const prev = isShort && idx > 0 ? userMsgs[idx - 1] : null;
   if (prev) {
     setPinRow(prevRow, prev, msgText(prev), 70);
     prevRow.hidden = false;

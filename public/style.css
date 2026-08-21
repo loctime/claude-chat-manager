@@ -442,9 +442,17 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
    scroll de mensajes. Cada fila es su propio botón — click reusa el mismo
    scrollIntoView+highlight que el buscador (.search-hit, ver
    updateLastUserPin en app.js), cada uno apuntando a SU mensaje. */
+/* Recuadro con el color de "Burbuja tuya" (--bubble-me, configurable en
+   Configuración → Apariencia de los mensajes) — así se nota a simple vista
+   que es tu propio mensaje, mismo color con el que ya se pintan tus
+   burbujas en el chat. */
 #last-user-pin {
   display: flex; flex-direction: column;
-  background: var(--header); border-bottom: 1px solid var(--border);
+  margin: 8px 4% 0;
+  background: var(--header);
+  border: 1.5px solid var(--bubble-me);
+  border-radius: var(--radius);
+  overflow: hidden; /* recorta las filas de adentro a las esquinas redondeadas */
   flex: none;
 }
 #last-user-pin[hidden] { display: none; }
