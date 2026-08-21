@@ -447,9 +447,194 @@ function rewindSessionFile(filePath, uuid) {
   return { removed: lines.length - idx, backup, effects };
 }
 
+// ── Limpieza de sesiones ──
+// Funciones puras y testeables aparte de listSessions()/sessionInfo(): esas dos
+// las usa el chat en vivo (con su cache por mtime) y descartan sesiones de canal
+// y vacías a propósito — acá necesitamos justo lo contrario, verlas todas, así
+// que se reimplementa un recorrido chico en vez de meterle un flag "includeAll"
+// al camino cacheado (evita arriesgar ese cache por una pantalla de mantenimiento).
+
+const RECENT_PROTECTION_MS = 5 * 24 * 60 * 60 * 1000; // 5 días
+
+// Cache por mtime, mismo patrón que _sessionInfoCache — pero SEPARADA de esa (no la
+// comparte ni la toca): esa cache es del camino del chat en vivo, esta es solo de la
+// pantalla de limpieza. Clave = filePath; valor = { mtimeMs, entry }.
+const _cleanupListCache = new Map();
+
+function _computeCleanupEntry(filePath, stat) {
+  const entries = parseJsonl(filePath);
+  const isChannel = isChannelSession(entries);
+  const msgs = entries.filter(e => (e.type === 'user' || e.type === 'assistant') && e.message && !e.isMeta);
+  const firstUser = msgs.find(e => e.type === 'user' && contentToText(e.message.content).trim());
+  const snippet = firstUser ? contentToText(firstUser.message.content).trim().slice(0, 60) : '(sin mensajes)';
+  const last = entries[entries.length - 1];
+  let lastActivity = last && last.timestamp;
+  if (!lastActivity) lastActivity = stat.mtime.toISOString();
+  return {
+    sessionId: path.basename(filePath, '.jsonl'),
+    filePath,
+    sizeBytes: stat.size,
+    cwd: _sessionCwd(filePath, entries),
+    messageCount: msgs.length,
+    lastActivity,
+    isChannel,
+    snippet,
+  };
+}
+
+function _cleanupEntryFor(filePath) {
+  let stat;
+  try { stat = fs.statSync(filePath); } catch { _cleanupListCache.delete(filePath); return null; }
+  const cached = _cleanupListCache.get(filePath);
+  if (cached && cached.mtimeMs === stat.mtimeMs) return cached.entry;
+  const entry = _computeCleanupEntry(filePath, stat);
+  _cleanupListCache.set(filePath, { mtimeMs: stat.mtimeMs, entry });
+  return entry;
+}
+
+// Solo para tests / operaciones excepcionales.
+function _clearCleanupListCache() { _cleanupListCache.clear(); }
+
+function listForCleanup(projectsDir = PROJECTS_DIR) {
+  let dirs;
+  try { dirs = fs.readdirSync(projectsDir); } catch { return []; }
+  const out = [];
+  for (const d of dirs) {
+    const dirPath = path.join(projectsDir, d);
+    let files;
+    try { files = fs.readdirSync(dirPath); } catch { continue; }
+    for (const f of files) {
+      if (!f.endsWith('.jsonl')) continue;
+      const entry = _cleanupEntryFor(path.join(dirPath, f));
+      if (entry) out.push(entry);
+    }
+  }
+  return out;
+}
+
+function classifySession(s, { referencedAsApp }) {
+  if (s.isChannel) return 'channel';
+  if (referencedAsApp) return 'app';
+  if (s.messageCount <= 2) return 'trivial';
+  return 'orphan';
+}
+
+function isProtectedSession(s, { conv, running, now = Date.now() } = {}) {
+  if (conv && conv.archived) return { protected: true, reason: 'archived' };
+  if (conv && conv.pinned) return { protected: true, reason: 'pinned' };
+  if (running) return { protected: true, reason: 'running' };
+  const activityMs = s.lastActivity ? new Date(s.lastActivity).getTime() : NaN;
+  if (!Number.isNaN(activityMs) && (now - activityMs) < RECENT_PROTECTION_MS) {
+    return { protected: true, reason: 'recent' };
+  }
+  return { protected: false, reason: null };
+}
+
+// `superseded` (data.superseded en meta.json) trae sessionIds que ya no son el
+// currentSessionId de ninguna conv pero pueden seguir siendo parte del historial
+// visible de una conversación pineada/archivada (ver advanceSession en meta.js).
+// `conv.compactedFromSession` es más preciso todavía: apunta al .jsonl de ANTES
+// de compactar, que /api/conversations/:id/messages sigue leyendo para mostrar el
+// historial completo — si se borra, esa conversación pierde su historial pre-compact
+// para siempre aunque esté pineada/archivada. Registramos ambos acá para que
+// classifySession/isProtectedSession los traten igual que el currentSessionId.
+function _cleanupConvBySession(conversations, superseded) {
+  const map = new Map();
+  for (const [convId, c] of Object.entries(conversations || {})) {
+    if (c.currentSessionId) map.set(c.currentSessionId, { convId, ...c });
+    if (c.compactedFromSession && !map.has(c.compactedFromSession)) {
+      map.set(c.compactedFromSession, { convId, ...c });
+    }
+  }
+  // superseded no dice a qué conv pertenecía cada id — no podemos heredar
+  // pinned/archived de una conv específica. Igual lo marcamos como referenciado
+  // (conv "genérico", sin pinned/archived) para que clasifique 'app' en vez de
+  // 'orphan'/'trivial': es el mínimo que evita un falso "está huérfano".
+  for (const sid of (superseded || [])) {
+    if (!map.has(sid)) map.set(sid, { convId: null });
+  }
+  return map;
+}
+
+function buildCleanupReport(projectsDir, conversations, isRunningFn = () => false, superseded = []) {
+  const bySession = _cleanupConvBySession(conversations, superseded);
+  const raw = listForCleanup(projectsDir);
+  const now = Date.now();
+  let totalBytes = 0;
+  const byClassification = {};
+  const sessions = raw.map(s => {
+    const conv = bySession.get(s.sessionId) || null;
+    const classification = classifySession(s, { referencedAsApp: !!conv });
+    const running = conv ? isRunningFn(conv.convId) : false;
+    const prot = isProtectedSession(s, { conv, running, now });
+    totalBytes += s.sizeBytes;
+    byClassification[classification] = (byClassification[classification] || 0) + 1;
+    return {
+      sessionId: s.sessionId,
+      cwd: s.cwd || '(desconocido)',
+      snippet: s.snippet,
+      sizeBytes: s.sizeBytes,
+      messageCount: s.messageCount,
+      lastActivity: s.lastActivity,
+      classification,
+      convId: conv ? conv.convId : null,
+      name: conv ? (conv.name || s.snippet) : s.snippet,
+      pinned: !!(conv && conv.pinned),
+      archived: !!(conv && conv.archived),
+      protected: prot.protected,
+      protectedReason: prot.reason,
+    };
+  });
+  return { sessions, totalBytes, byClassification };
+}
+
+// Claude Code session ids son UUIDs — solo letras, dígitos, punto, guión y guión
+// bajo. Cualquier otra cosa (separadores de path, "..", etc.) se rechaza antes de
+// tocar el filesystem: sessionId viaja crudo desde el body de la request HTTP y
+// findSessionFile lo mete directo en un path.join, así que sin este chequeo un id
+// tipo "../../secret" puede escapar projectsDir y borrar un archivo fuera de él.
+const SAFE_SESSION_ID_RE = /^[A-Za-z0-9._-]+$/;
+
+function deleteCleanupSessions(projectsDir, conversations, sessionIds, isRunningFn = () => false, superseded = []) {
+  const bySession = _cleanupConvBySession(conversations, superseded);
+  const deleted = [];
+  const skipped = [];
+  const removedConvIds = [];
+  let freedBytes = 0;
+  const now = Date.now();
+  for (const sessionId of sessionIds) {
+    if (typeof sessionId !== 'string' || !SAFE_SESSION_ID_RE.test(sessionId)) {
+      skipped.push({ id: sessionId, reason: 'id-invalido' });
+      continue;
+    }
+    const filePath = findSessionFile(sessionId, projectsDir);
+    if (!filePath) { skipped.push({ id: sessionId, reason: 'no-existe' }); continue; }
+    let stat;
+    try { stat = fs.statSync(filePath); } catch { skipped.push({ id: sessionId, reason: 'no-existe' }); continue; }
+    const conv = bySession.get(sessionId) || null;
+    const running = conv ? isRunningFn(conv.convId) : false;
+    const info = sessionInfo(filePath);
+    const lastActivity = (info && info.lastActivity) || stat.mtime.toISOString();
+    const prot = isProtectedSession({ lastActivity }, { conv, running, now });
+    if (prot.protected) { skipped.push({ id: sessionId, reason: prot.reason }); continue; }
+    try {
+      fs.unlinkSync(filePath);
+    } catch (err) {
+      skipped.push({ id: sessionId, reason: 'error: ' + err.message });
+      continue;
+    }
+    freedBytes += stat.size;
+    deleted.push(sessionId);
+    if (conv) removedConvIds.push(conv.convId);
+  }
+  return { deleted, skipped, freedBytes, removedConvIds };
+}
+
 module.exports = {
   parseJsonl, sessionInfo, listSessions, findSessionFile, resolveCwd, toChatMessages, contentToText,
   getMessagesIncremental, sumUsage, searchSessions, PROJECTS_DIR,
   rewindCutIndex, rewindSessionFile, detectSideEffects, previewRewindEffects,
   _clearSessionInfoCache, _clearTailCache,
+  listForCleanup, classifySession, isProtectedSession, RECENT_PROTECTION_MS,
+  buildCleanupReport, deleteCleanupSessions, _clearCleanupListCache,
 };
