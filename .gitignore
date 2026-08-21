@@ -8,3 +8,4 @@ CLAUDE.local.md
 /playwright-report/
 /test-results/
 /test/e2e/.e2e-state.json
+.worktrees/
