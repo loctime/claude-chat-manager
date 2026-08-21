@@ -3600,11 +3600,19 @@ function openSettings() {
   updateFontTrigger();
   $('cfg-font-size').value = settings.fontSize;
   // La key en sí nunca vuelve del server (solo el booleano groqApiKeySet) —
-  // el placeholder avisa que ya hay una guardada sin exponerla ni pisarla
-  // por accidente si el campo queda vacío al abrir.
+  // el campo arranca siempre vacío para no exponerla ni pisarla por
+  // accidente, y updateGroqKeyStatus() avisa si ya hay una guardada.
   $('cfg-groq-key').value = '';
-  $('cfg-groq-key').placeholder = GROQ_KEY_SET ? '•••••••• (guardada)' : 'gsk_...';
+  updateGroqKeyStatus();
   $('settings-dialog').showModal();
+}
+
+// Placeholder + badge "✓ Configurada" junto al label — dos señales para lo
+// mismo porque el placeholder solo (gris, desaparece al enfocar el campo)
+// no alcanzaba para que se notara a simple vista si ya había una key.
+function updateGroqKeyStatus() {
+  $('cfg-groq-key').placeholder = GROQ_KEY_SET ? '•••••••• (guardada)' : 'gsk_...';
+  $('cfg-groq-key-status').hidden = !GROQ_KEY_SET;
 }
 
 $('settings-btn').onclick = openSettings;
@@ -3671,7 +3679,7 @@ $('cfg-groq-key').onchange = async e => {
     });
     GROQ_KEY_SET = !!groqApiKeySet;
     e.target.value = '';
-    e.target.placeholder = GROQ_KEY_SET ? '•••••••• (guardada)' : 'gsk_...';
+    updateGroqKeyStatus();
     toast(GROQ_KEY_SET ? 'Key guardada' : 'Key borrada — respuestas sugeridas apagadas', 'info', 2500);
   } catch (err) {
     toast('No se pudo guardar la key de Groq: ' + err.message);

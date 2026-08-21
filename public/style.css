@@ -1021,6 +1021,20 @@ dialog button:hover { background: var(--border); }
    flex ya le da el mismo aire que a las secciones de al lado. */
 #settings-dialog .settings-loose { margin-bottom: 0; }
 
+/* Badge "✓ Configurada" al lado del label de un campo tipo password (ej. la
+   key de Groq) — la key en sí nunca vuelve del server, así que sin esto no
+   había forma de saber a simple vista si ya había una guardada más que el
+   placeholder (gris, poco visible, y desaparece apenas tocás el campo).
+   display:inline-block pisa a propósito la regla genérica de más arriba
+   (dialog label span { display:block }), que si no lo manda a su propia
+   línea en vez de quedar pegado al texto del label. */
+#settings-dialog .settings-key-status {
+  display: inline-block; margin-left: 6px; vertical-align: middle;
+  font-size: 11px; font-weight: 600; color: var(--accent);
+  border: 1px solid var(--accent); border-radius: 999px;
+  padding: 1px 7px;
+}
+
 /* De a pares por fila (Tu nombre/Mostrar procesos, Tipografía/Tamaño) —
    mismo ancho de dialog, la mitad de scroll. Colapsa a una columna solo en
    pantallas muy angostas (ver media query al final). */
