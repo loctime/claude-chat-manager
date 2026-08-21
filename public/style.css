@@ -207,16 +207,15 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
 #tree-viewport { flex: 1; overflow: hidden; position: relative; }
 #tree-viewport-inner {
   display: flex;
-  width: 500%;
+  width: 400%;
   height: 100%;
   transition: transform .25s ease;
   touch-action: pan-y;
 }
-#tree-viewport-inner[data-pane="1"] { transform: translateX(-20%); }
-#tree-viewport-inner[data-pane="2"] { transform: translateX(-40%); }
-#tree-viewport-inner[data-pane="3"] { transform: translateX(-60%); }
-#tree-viewport-inner[data-pane="4"] { transform: translateX(-80%); }
-.tree-pane { width: 20%; flex: none; height: 100%; overflow-y: auto; }
+#tree-viewport-inner[data-pane="1"] { transform: translateX(-25%); }
+#tree-viewport-inner[data-pane="2"] { transform: translateX(-50%); }
+#tree-viewport-inner[data-pane="3"] { transform: translateX(-75%); }
+.tree-pane { width: 25%; flex: none; height: 100%; overflow-y: auto; }
 .tree-pane::-webkit-scrollbar { width: 4px; }
 .tree-pane::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
@@ -1773,36 +1772,69 @@ body.hide-tools details.tool { display: none !important; }
 #notebook-list::-webkit-scrollbar { width: 4px; }
 #notebook-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
-/* ── Sesiones: limpieza de conversaciones ── */
-.sessions-pane { display: flex; flex-direction: column; overflow: hidden; }
+/* ── Sesiones: limpieza de conversaciones ──
+   Se abre como dialog aparte desde Configuración → Almacenamiento (no vive
+   en el carrusel de panes) — ver #cleanup-dialog más abajo para el tamaño
+   del modal en sí; esto es el layout interno compartido. */
+#cleanup-dialog {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--panel); color: var(--text); padding: 0;
+  width: 90vw; max-width: 720px; height: 85vh; max-height: 720px;
+}
+#cleanup-form { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.sessions-pane { display: flex; flex-direction: column; overflow: hidden; height: 100%; }
 .cleanup-header {
   display: flex; align-items: center; gap: 8px;
   padding: 10px 12px; border-bottom: 1px solid var(--border); flex: none;
 }
-.cleanup-header .archived-back { width: auto; margin: 0; padding: 6px 8px; border: none; font-size: 13px; }
 .cleanup-header h2 { font-size: 14px; margin: 0; flex: 1; }
+.cleanup-close-btn {
+  background: none; border: none; color: var(--text2); font-size: 16px;
+  cursor: pointer; padding: 4px 8px; line-height: 1;
+}
+.cleanup-close-btn:hover { color: var(--text); }
 #cleanup-total { font-size: 12px; color: var(--text2); }
-.cleanup-filters { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex: none; }
-.cleanup-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+/* La regla genérica "dialog select/input { width:100% }" (pensada para
+   formularios angostos como Configuración/Búsqueda) se cuela acá adentro
+   y le pega ancho completo a cada <select> Y a cada checkbox — sin este
+   reset los checkboxes de las filas se estiran a todo el ancho y tapan el
+   texto (bug real reportado por Diego con captura). Los selects de acá
+   quedan en grilla de 2 columnas a propósito (4 selects en una sola
+   columna ocupaban media pantalla de alto). */
+.cleanup-filters {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px;
+  padding: 10px 12px; border-bottom: 1px solid var(--border); flex: none;
+}
+.cleanup-chips { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px; }
 .cleanup-chip {
   border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px;
   font-size: 12px; background: none; color: var(--text2); cursor: pointer;
 }
 .cleanup-chip.active { border-color: var(--accent); color: var(--accent); }
 .cleanup-filters select {
-  background: var(--input-bg); color: var(--text); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 4px 6px; font-size: 12px;
+  width: 100%; background: var(--input-bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 6px 8px; font-size: 12px; margin-top: 0;
 }
-.cleanup-select-all { display: flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 12px; color: var(--text2); flex: none; }
-.cleanup-list { flex: 1; overflow-y: auto; }
-.session-row {
+.cleanup-select-all {
   display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  font-size: 12px; color: var(--text2); flex: none; border-bottom: 1px solid var(--border);
+}
+.cleanup-select-all input[type="checkbox"] { width: 16px; height: 16px; margin: 0; flex: none; }
+.cleanup-list { flex: 1; overflow-y: auto; overflow-x: hidden; }
+.session-row {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
   border-bottom: 1px solid var(--border);
 }
-.session-row.protected { opacity: .6; }
+.session-row:hover { background: var(--input-bg); }
+.session-row input[type="checkbox"] { width: 16px; height: 16px; margin: 0; flex: none; }
+.session-row.protected { opacity: .55; }
 .session-row-body { flex: 1; min-width: 0; }
 .session-row-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.session-row-meta { font-size: 11px; color: var(--text2); display: flex; gap: 6px; flex-wrap: wrap; }
+.session-row-meta {
+  font-size: 11px; color: var(--text2); display: flex; align-items: center;
+  gap: 6px; flex-wrap: wrap; margin-top: 3px;
+}
+.session-row-size { font-weight: 600; color: var(--text); }
 .session-badge {
   font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border);
 }
