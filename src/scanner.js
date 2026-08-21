@@ -447,9 +447,73 @@ function rewindSessionFile(filePath, uuid) {
   return { removed: lines.length - idx, backup, effects };
 }
 
+// ── Limpieza de sesiones ──
+// Funciones puras y testeables aparte de listSessions()/sessionInfo(): esas dos
+// las usa el chat en vivo (con su cache por mtime) y descartan sesiones de canal
+// y vacías a propósito — acá necesitamos justo lo contrario, verlas todas, así
+// que se reimplementa un recorrido chico en vez de meterle un flag "includeAll"
+// al camino cacheado (evita arriesgar ese cache por una pantalla de mantenimiento).
+
+const RECENT_PROTECTION_MS = 5 * 24 * 60 * 60 * 1000; // 5 días
+
+function listForCleanup(projectsDir = PROJECTS_DIR) {
+  let dirs;
+  try { dirs = fs.readdirSync(projectsDir); } catch { return []; }
+  const out = [];
+  for (const d of dirs) {
+    const dirPath = path.join(projectsDir, d);
+    let files;
+    try { files = fs.readdirSync(dirPath); } catch { continue; }
+    for (const f of files) {
+      if (!f.endsWith('.jsonl')) continue;
+      const filePath = path.join(dirPath, f);
+      let stat;
+      try { stat = fs.statSync(filePath); } catch { continue; }
+      const entries = parseJsonl(filePath);
+      const isChannel = isChannelSession(entries);
+      const msgs = entries.filter(e => (e.type === 'user' || e.type === 'assistant') && e.message && !e.isMeta);
+      const firstUser = msgs.find(e => e.type === 'user' && contentToText(e.message.content).trim());
+      const snippet = firstUser ? contentToText(firstUser.message.content).trim().slice(0, 60) : '(sin mensajes)';
+      const last = entries[entries.length - 1];
+      let lastActivity = last && last.timestamp;
+      if (!lastActivity) lastActivity = stat.mtime.toISOString();
+      out.push({
+        sessionId: path.basename(f, '.jsonl'),
+        filePath,
+        sizeBytes: stat.size,
+        cwd: _sessionCwd(filePath, entries),
+        messageCount: msgs.length,
+        lastActivity,
+        isChannel,
+        snippet,
+      });
+    }
+  }
+  return out;
+}
+
+function classifySession(s, { referencedAsApp }) {
+  if (s.isChannel) return 'channel';
+  if (referencedAsApp) return 'app';
+  if (s.messageCount <= 2) return 'trivial';
+  return 'orphan';
+}
+
+function isProtectedSession(s, { conv, running, now = Date.now() } = {}) {
+  if (conv && conv.archived) return { protected: true, reason: 'archived' };
+  if (conv && conv.pinned) return { protected: true, reason: 'pinned' };
+  if (running) return { protected: true, reason: 'running' };
+  const activityMs = s.lastActivity ? new Date(s.lastActivity).getTime() : NaN;
+  if (!Number.isNaN(activityMs) && (now - activityMs) < RECENT_PROTECTION_MS) {
+    return { protected: true, reason: 'recent' };
+  }
+  return { protected: false, reason: null };
+}
+
 module.exports = {
   parseJsonl, sessionInfo, listSessions, findSessionFile, resolveCwd, toChatMessages, contentToText,
   getMessagesIncremental, sumUsage, searchSessions, PROJECTS_DIR,
   rewindCutIndex, rewindSessionFile, detectSideEffects, previewRewindEffects,
   _clearSessionInfoCache, _clearTailCache,
+  listForCleanup, classifySession, isProtectedSession, RECENT_PROTECTION_MS,
 };
