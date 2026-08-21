@@ -24,13 +24,22 @@ function cleanupFormatMB(bytes) {
 }
 
 async function loadCleanupSessions() {
+  $('cleanup-list').textContent = 'Cargando…';
   const resp = await api(withAccount('/cleanup/sessions'));
   cleanupSessions = resp.sessions;
-  cleanupSelected = new Set([...cleanupSelected].filter(id => cleanupSessions.some(s => s.sessionId === id)));
+  // No alcanza con que el sessionId siga existiendo: si se volvió protegida entre
+  // recargas (p.ej. su conv se pineó/archivó desde otro lado) hay que sacarla de
+  // la selección — si no, su fila renderiza tildada-y-deshabilitada y sus bytes
+  // siguen contados en la barra de abajo.
+  cleanupSelected = new Set([...cleanupSelected].filter(id => {
+    const s = cleanupSessions.find(x => x.sessionId === id);
+    return s && !s.protected;
+  }));
   renderCleanupChips(resp.byClassification);
   renderCleanupFolders();
   renderCleanupList();
   updateCleanupTotals(resp.totalBytes);
+  updateCleanupToolbar();
 }
 
 function renderCleanupChips(byClassification) {

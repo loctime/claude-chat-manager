@@ -841,6 +841,7 @@ document.querySelectorAll('.pane-tab').forEach(btn => {
   btn.onclick = () => goToPane(Number(btn.dataset.pane));
 });
 $('scan-back').onclick = () => goToPane(0);
+$('sessions-back').onclick = () => goToPane(0);
 // Acceso directo al Escáner desde el header — en mobile #pane-tabs está
 // oculto (solo aparece en pantallas >=768px, ver style.css) y la única forma
 // de llegar a una pestaña es haciendo swipe, poco descubrible. Este botón
