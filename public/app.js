@@ -262,6 +262,9 @@ let APP_NAME = 'J.A.R.V.I.S';
 // precargar el input de Configuración; el pintado real ya viene hecho por el
 // <style> inline server-rendered de index.html.
 let APP_COLOR = '#25d366';
+// Tu propio nombre (ídem APP_NAME, mismo origen server-side) — se usa como
+// etiqueta de tus mensajes al copiar una conversación en "modo conversación".
+let USER_NAME = 'Vos';
 
 const $ = id => document.getElementById(id);
 const messagesEl = $('messages');
@@ -270,10 +273,11 @@ const messagesEl = $('messages');
 async function loadAccounts() {
   try {
     const r = await fetch('/api/accounts');
-    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName, appColor } = await r.json();
+    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName, appColor, userName } = await r.json();
     activeAccount = active;
     if (appName) { APP_NAME = appName; updateGlobalBusyIndicator(); }
     if (appColor) APP_COLOR = appColor;
+    if (userName) USER_NAME = userName;
     // Botón "ir a la otra instancia": elige URL local si estamos en 127.0.0.1/localhost,
     // pública en cualquier otro caso (celu vía Cloudflare tunnel).
     const sw = $('account-switch');
@@ -369,96 +373,8 @@ async function loadUsage() {
   } catch {}
 }
 
-// ── Toast ──
-// ttl = 0 → toast persistente, no se autodescarta (usalo para operaciones
-// largas como compactar: mostrás "en curso…" y vos mismo lo cerrás cuando
-// llega el resultado). Devuelve { remove } para eso.
-function toast(msg, kind = 'error', ttl = 4000, action = null) {
-  let container = document.getElementById('toast-container');
-  if (!container) {
-    container = document.createElement('div');
-    container.id = 'toast-container';
-    document.body.appendChild(container);
-  }
-  const t = document.createElement('div');
-  t.className = 'toast ' + kind;
-  const text = document.createElement('span');
-  text.textContent = msg;
-  t.appendChild(text);
-
-  let removed = false;
-  const remove = () => {
-    if (removed) return;
-    removed = true;
-    t.style.opacity = '0';
-    t.style.transition = 'opacity .2s';
-    setTimeout(() => t.remove(), 220);
-  };
-
-  if (action) {
-    const btn = document.createElement('button');
-    btn.className = 'toast-action';
-    btn.type = 'button';
-    btn.textContent = action.label;
-    btn.onclick = () => { remove(); action.onClick(); };
-    t.appendChild(btn);
-  }
-
-  container.appendChild(t);
-  if (ttl > 0) setTimeout(remove, ttl);
-  return { remove };
-}
-
-// ── PWA service worker + install ──
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js').catch(() => {});
-}
-
-(function initPWA() {
-  const isStandalone = window.matchMedia('(display-mode: standalone)').matches
-    || window.navigator.standalone === true;
-  if (isStandalone) return;
-
-  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-
-  window.addEventListener('appinstalled', () => {
-    $('install-bar').hidden = true;
-    $('ios-tip').hidden = true;
-  });
-
-  if (isIOS) {
-    $('ios-tip').hidden = false;
-    $('ios-tip-close').onclick = () => { $('ios-tip').hidden = true; };
-    return;
-  }
-
-  // Android/Chrome: mostrar el botón solo cuando el browser esté listo
-  let deferredPrompt = null;
-  window.addEventListener('beforeinstallprompt', e => {
-    e.preventDefault();
-    deferredPrompt = e;
-    $('install-bar').hidden = false;
-  });
-
-  $('install-btn').onclick = async () => {
-    if (!deferredPrompt) return;
-    deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    deferredPrompt = null;
-    $('install-bar').hidden = true;
-  };
-  $('install-dismiss').onclick = () => { $('install-bar').hidden = true; };
-})();
-
-// ── Forzar actualización del service worker ──
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.ready.then(reg => {
-    reg.update(); // fuerza chequeo de nueva versión en cada carga
-    navigator.serviceWorker.addEventListener('controllerchange', () => {
-      window.location.reload(); // nuevo SW activado → recarga automática
-    });
-  });
-}
+// ── Toast: ver toast.js ──
+// ── PWA (service worker + install): ver pwa.js ──
 
 // ── Mobile nav + back button del celu ──
 function isMobile() { return window.matchMedia('(max-width: 768px)').matches; }
@@ -479,6 +395,98 @@ function closeChat() {
 }
 $('back-btn').onclick = closeChat;
 
+// Flash momentáneo en la fila de la lista al volver de un chat — en mobile la
+// lista queda tapada por #panel-chat mientras estás adentro, así que .active
+// (pensado para desktop, donde lista y chat se ven juntos) no alcanza como
+// pista de "esta era la conversación que tenías abierta". Busca en ambos
+// paneles (Chats/Archivado) porque no sabemos de cuál vino sin guardar más
+// estado del que hace falta.
+function flashConvRow(convId) {
+  if (!convId) return;
+  const row = [...document.querySelectorAll('#tree .conv, #tree-archived .conv')]
+    .find(el => el._conv && el._conv.convId === convId);
+  if (!row) return;
+  row.classList.remove('flash');
+  void row.offsetWidth; // forzar reflow: permite re-disparar la animación si ya corrió hace poco (p.ej. entrar y salir rápido)
+  row.classList.add('flash');
+  row.addEventListener('animationend', () => row.classList.remove('flash'), { once: true });
+}
+
+// ── Swipe hacia la derecha en el chat abierto (mobile): volver a la lista ──
+// Mismo patrón que initPaneSwipe de más abajo (axis-lock para no competir con
+// el scroll vertical de los mensajes, sigue el dedo en vivo, umbral al soltar)
+// pero de un solo sentido: acá no hay "página siguiente", solo cerrar.
+const CHAT_SWIPE_THRESHOLD = 80;
+let chatStartX = 0, chatStartY = 0, chatAxisLocked = null, chatDragging = false, chatCurrentTranslate = 0;
+
+function closeChatAfterSwipe() {
+  const panel = $('panel-chat');
+  // Se saca la clase y el estilo inline en el mismo tick (no en dos pasos)
+  // para que la transición CSS de .25s arranque desde donde el dedo lo soltó
+  // hacia afuera, en vez de "saltar" primero de vuelta al centro.
+  panel.classList.remove('open');
+  panel.style.transition = '';
+  panel.style.transform = '';
+  flashConvRow(currentConv);
+  // history.back() solo para mantener sincronizado el historial (mismo motivo
+  // que closeChat() de arriba) — chatClosedBySwipe le avisa al popstate que
+  // esto ya lo resolvimos acá (ver su declaración, más abajo).
+  if (isMobile() && history.state && history.state.view === 'chat') {
+    chatClosedBySwipe = true;
+    history.back();
+  }
+}
+
+function initChatSwipe() {
+  const panel = $('panel-chat');
+
+  panel.addEventListener('touchstart', e => {
+    if (!isMobile() || !panel.classList.contains('open')) return;
+    // No competir con el scroll horizontal propio de un bloque de código, ni
+    // con el modo selección múltiple de mensajes (ahí el tap ya hace otra cosa).
+    if (e.target.closest('pre') || selectMode) return;
+    const t = e.touches[0];
+    chatStartX = t.clientX; chatStartY = t.clientY;
+    chatAxisLocked = null;
+    chatDragging = true;
+    chatCurrentTranslate = 0;
+    panel.style.transition = 'none';
+  }, { passive: true });
+
+  panel.addEventListener('touchmove', e => {
+    if (!chatDragging) return;
+    const t = e.touches[0];
+    const dx = t.clientX - chatStartX;
+    const dy = t.clientY - chatStartY;
+    if (chatAxisLocked === null) {
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+      chatAxisLocked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+    }
+    if (chatAxisLocked !== 'x' || dx < 0) return; // solo se sigue el dedo hacia la derecha
+    chatCurrentTranslate = dx;
+    panel.style.transform = `translateX(${dx}px)`;
+    e.preventDefault();
+  }, { passive: false });
+
+  function chatSwipeEnd() {
+    if (!chatDragging) return;
+    chatDragging = false;
+    if (chatAxisLocked === 'x' && chatCurrentTranslate > CHAT_SWIPE_THRESHOLD) {
+      closeChatAfterSwipe();
+    } else {
+      // No llegó al umbral (o el gesto terminó siendo vertical): vuelve a su
+      // lugar con la misma transición CSS de siempre, no con un salto.
+      panel.style.transition = '';
+      panel.style.transform = '';
+    }
+    chatAxisLocked = null;
+    chatCurrentTranslate = 0;
+  }
+  panel.addEventListener('touchend', chatSwipeEnd);
+  panel.addEventListener('touchcancel', chatSwipeEnd);
+}
+initChatSwipe();
+
 // Estado inicial: 'list' + varias entries de guarda para que popstate
 // nunca dispare en el borde del historial (donde Android cierra el PWA sin dar tiempo a re-armar).
 history.replaceState({ view: 'list' }, '');
@@ -486,11 +494,21 @@ for (let i = 0; i < 3; i++) history.pushState({ view: 'list-guard' }, '');
 
 let _lastBackPress = 0;
 let _exiting = false;
+// El swipe hacia la derecha (initChatSwipe, más arriba) ya cierra el panel y
+// dispara el flash por su cuenta antes de llamar a history.back() — solo para
+// mantener sincronizado el conteo del historial (así el botón atrás de
+// Android no queda "un paso atrasado"). Sin esta bandera, el popstate que
+// dispara ese history.back() volvería a entrar al branch de abajo y, como ya
+// no encuentra la clase 'open' (la sacamos nosotros), lo tomaría como si ya
+// estuviéramos en la lista raíz — pisando el conteo de "doble atrás para salir".
+let chatClosedBySwipe = false;
 window.addEventListener('popstate', (e) => {
   if (_exiting) return; // salida en curso — dejamos que el browser cierre
+  if (chatClosedBySwipe) { chatClosedBySwipe = false; return; } // ya lo resolvimos nosotros, solo faltaba este pop
   // Si estábamos en chat: cerrar y re-armar guarda
   if ($('panel-chat').classList.contains('open')) {
     $('panel-chat').classList.remove('open');
+    flashConvRow(currentConv);
     history.pushState({ view: 'list-guard' }, '');
     return;
   }
@@ -581,59 +599,7 @@ function withAccountBody(body) {
   return activeAccount ? { ...body, account: activeAccount } : body;
 }
 
-// ── TTS (Web Speech API) ──
-let ttsUtterance = null;
-function speak(text, btn, kind = 'assistant') {
-  if (!('speechSynthesis' in window)) return;
-  if (ttsUtterance) {
-    speechSynthesis.cancel();
-    document.querySelectorAll('.msg-tts.playing').forEach(b => b.classList.remove('playing'));
-    if (ttsUtterance._btn === btn) { ttsUtterance = null; return; }
-  }
-  const u = new SpeechSynthesisUtterance(text);
-  const voiceName = kind === 'user' ? settings.voiceUser : settings.voiceAssistant;
-  const voice = voiceName ? speechSynthesis.getVoices().find(v => v.name === voiceName) : null;
-  if (voice) { u.voice = voice; u.lang = voice.lang; }
-  else u.lang = 'es-AR';
-  u._btn = btn;
-  ttsUtterance = u;
-  btn.classList.add('playing');
-  u.onend = u.onerror = () => {
-    btn.classList.remove('playing');
-    if (ttsUtterance === u) ttsUtterance = null;
-  };
-  speechSynthesis.speak(u);
-}
-
-function cleanForTTS(text) {
-  let plain = text;
-  // Pasar por el mismo parser Markdown que usa el render visual y quedarnos
-  // solo con el texto: así el TTS nunca ve *, `, #, [](), etc. y no los lee
-  // como si fueran palabras ("asterisco", "numeral", "comillas").
-  if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
-    const html = DOMPurify.sanitize(marked.parse(text, { breaks: true, gfm: true }));
-    const tpl = document.createElement('template');
-    tpl.innerHTML = html;
-    plain = tpl.content.textContent || '';
-  }
-  return plain
-    .replace(/\[Archivo adjunto:[^\]]+\]/g, '')
-    .replace(/`?\/(?:home|tmp|root|var|opt|usr)[^\s`'"]+`?/g, '')
-    .replace(/["""«»'']/g, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-}
-
-function makeTtsBtn(text, kind = 'assistant') {
-  const clean = cleanForTTS(text);
-  const btn = document.createElement('button');
-  btn.className = 'msg-tts';
-  btn.title = 'Reproducir';
-  btn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>';
-  if (!clean) btn.style.display = 'none'; // no mostrar si no hay texto para leer
-  btn.onclick = () => speak(clean, btn, kind);
-  return btn;
-}
+// ── TTS (Web Speech API): speak/cleanForTTS/makeTtsBtn → ver tts.js ──
 
 // Botón de copiar mensaje, mismo tamaño/estilo que el de TTS (msg-tts) —
 // Diego lo pidió duplicado (arriba y abajo de la burbuja), a diferencia del
@@ -655,19 +621,18 @@ function makeCopyMsgBtn(text) {
   return btn;
 }
 
-// ── Refresh manual ──
-async function refreshAll() {
-  const btn = $('refresh-btn');
-  btn.classList.add('spinning');
-  try {
-    await loadTree();
-    if (archivedPaneLoaded) await loadArchivedTree();
-    if (currentConv) await loadMessages(currentConv);
-  } finally {
-    btn.classList.remove('spinning');
-  }
-}
-$('refresh-btn').onclick = refreshAll;
+// ── Refresh manual: recarga dura, no solo re-pedir los datos por API ──
+// Antes esto era un refreshAll() que solo volvía a pedir /tree y los mensajes
+// del chat abierto — no bajaba index.html/app.js/style.css de cero, así que
+// no servía para forzar una versión nueva (para eso había que ir a buscar
+// Ctrl+Shift+R a mano). Navegar a una URL con querystring nuevo no puede
+// venir de la caché del navegador (es una URL distinta), así que fuerza
+// exactamente eso: baja todo de nuevo, mismo efecto que un hard refresh.
+// Trade-off asumido: perdés el chat abierto (volvés a la lista) y un mensaje
+// sin enviar en el composer — las conversaciones guardadas no se tocan.
+$('refresh-btn').onclick = () => {
+  location.href = location.pathname + '?_r=' + Date.now();
+};
 
 // ── Pull-to-refresh en el panel lista ──
 function initPTR(navEl, loadFn) {
@@ -1297,7 +1262,21 @@ function quoteIntoComposer(text) {
 }
 
 async function doRewind(ctx) {
-  const ok = confirm('Rebobinar hasta acá?\n\nElimina esta pregunta y TODO lo que vino después — Claude lo olvida de verdad, como si nunca hubiera pasado. La conversación sigue desde la respuesta anterior.\n\n(Queda un backup del archivo de sesión por las dudas.)');
+  // Antes de confirmar, nos fijamos si en el tramo que se va a olvidar hubo
+  // acciones con efecto fuera de la charla (Bash/Edit/Write/...). Rebobinar
+  // NO las deshace — solo hace que la charla "olvide" que pasaron.
+  let effects = [];
+  try {
+    const preview = await api(withAccount(`/conversations/${currentConv}/rewind-preview?uuid=${encodeURIComponent(ctx.uuid)}`));
+    effects = preview.effects || [];
+  } catch { /* si el preview falla no bloqueamos el rebobinado por eso */ }
+
+  let msg = 'Rebobinar hasta acá?\n\nElimina esta pregunta y TODO lo que vino después — Claude lo olvida de verdad, como si nunca hubiera pasado. La conversación sigue desde la respuesta anterior.\n\n(Queda un backup del archivo de sesión por las dudas.)';
+  if (effects.length) {
+    const lines = effects.map(e => `• ${e.summary}${e.reversible === false ? '  (IRREVERSIBLE)' : ''}`).join('\n');
+    msg = `⚠️ En ese tramo se ejecutaron ${effects.length} acción(es) con efecto real fuera de la charla:\n\n${lines}\n\nRebobinar NO las deshace — el archivo/comando/commit sigue aplicado tal cual, solo se olvida que pasó en la charla. Convendría revisarlo antes de seguir.\n\n¿Rebobinar igual?`;
+  }
+  const ok = confirm(msg);
   if (!ok) return;
   try {
     const r = await api(`/conversations/${currentConv}/rewind`, {
@@ -1354,6 +1333,7 @@ function showMsgMenu(x, y, ctx) {
   menu.innerHTML = `
     <button data-action="copy">📋 Copiar</button>
     <button data-action="select">🔤 Seleccionar texto</button>
+    <button data-action="multiselect">☑️ Seleccionar mensajes</button>
     <button data-action="quote">↩️ Citar</button>
     ${canRewind ? '<button data-action="rewind" class="ctx-danger">⏪ Rebobinar hasta acá</button>' : ''}
   `;
@@ -1368,6 +1348,7 @@ function showMsgMenu(x, y, ctx) {
     document.removeEventListener('touchstart', dismiss, true);
     if (action === 'copy') copyToClipboard(ctx.text);
     else if (action === 'select') enterSelectionMode(ctx.el);
+    else if (action === 'multiselect') enterMultiSelectMode(ctx.el);
     else if (action === 'quote') quoteIntoComposer(ctx.text);
     else if (action === 'rewind') doRewind(ctx);
   };
@@ -1392,22 +1373,103 @@ function showMsgMenu(x, y, ctx) {
   }, 350);
 }
 
+// ── Selección múltiple de mensajes (marcar varias burbujas y copiarlas
+// juntas) — separado del modo enterSelectionMode de arriba, que es selección
+// nativa de texto DENTRO de una sola burbuja. msgCtxByEl guarda el {role,
+// text} de cada burbuja para poder armar la copia sin volver a tocar el DOM.
+const msgCtxByEl = new WeakMap();
+let selectMode = false;
+const selectedMsgs = new Set(); // elementos .msg marcados, en el orden en que se tocaron (no importa: se copian en orden de DOM)
+
+function updateSelectBar() {
+  const count = selectedMsgs.size;
+  $('select-count').textContent = count === 1 ? '1 seleccionado' : `${count} seleccionados`;
+  $('select-bar').hidden = !selectMode;
+}
+
+function toggleMsgSelection(el) {
+  if (selectedMsgs.has(el)) {
+    selectedMsgs.delete(el);
+    el.classList.remove('msg-selected');
+  } else {
+    selectedMsgs.add(el);
+    el.classList.add('msg-selected');
+  }
+  updateSelectBar();
+}
+
+function enterMultiSelectMode(startEl) {
+  if (_endSelectionMode) _endSelectionMode(); // no mezclar con el modo de selección de texto nativo
+  selectMode = true;
+  if (startEl) toggleMsgSelection(startEl);
+  else updateSelectBar();
+}
+
+function exitMultiSelectMode() {
+  selectMode = false;
+  selectedMsgs.forEach(el => el.classList.remove('msg-selected'));
+  selectedMsgs.clear();
+  const bar = $('select-bar');
+  if (bar) bar.hidden = true;
+}
+
+// Los mensajes marcados en orden real de aparición en el chat (no en el orden
+// en que los tocaste) — así "Copiar" siempre da una transcripción cronológica.
+function orderedSelection() {
+  return Array.from(messagesEl.children)
+    .filter(el => selectedMsgs.has(el))
+    .map(el => msgCtxByEl.get(el))
+    .filter(Boolean);
+}
+
+function copySelectionAsConversation() {
+  const items = orderedSelection();
+  if (!items.length) return;
+  const text = items
+    .map(m => `${m.role === 'user' ? USER_NAME : APP_NAME}:\n${m.text}`)
+    .join('\n\n');
+  copyToClipboard(text);
+}
+
+function copySelectionAsSimple() {
+  const items = orderedSelection();
+  if (!items.length) return;
+  copyToClipboard(items.map(m => m.text).join('\n\n'));
+}
+
+$('select-cancel').onclick = exitMultiSelectMode;
+$('select-copy-conv').onclick = copySelectionAsConversation;
+$('select-copy-simple').onclick = copySelectionAsSimple;
+
 function attachMsgGestures(el, ctx) {
   ctx.el = el; // referencia para poder habilitar la selección de texto desde el menú
+  msgCtxByEl.set(el, ctx); // referencia inversa: de la burbuja al {role, text} para el modo selección múltiple
   let touchTimer = null;
   let longPressed = false;
   let startX = 0, startY = 0;
 
+  // Modo selección múltiple activo: un click en cualquier parte de la burbuja
+  // (incluidos los botones de copiar/tts de adentro) la marca/desmarca en vez
+  // de disparar su acción normal. Capture-phase para ganarle a esos botones.
+  el.addEventListener('click', e => {
+    if (!selectMode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    toggleMsgSelection(el);
+  }, { capture: true });
+
   el.addEventListener('contextmenu', e => {
     if (el.classList.contains('selecting')) return; // dejamos el nativo (copiar/etc) mandar
+    if (selectMode) { e.preventDefault(); toggleMsgSelection(el); return; }
     e.preventDefault();
     showMsgMenu(e.clientX, e.clientY, ctx);
   });
 
   el.addEventListener('touchstart', e => {
-    // En modo selección no reabrimos el menú: dejamos que el usuario arrastre
-    // los handles nativos tranquilo (ver enterSelectionMode).
-    if (el.classList.contains('selecting')) return;
+    // En modo selección de texto no reabrimos el menú: dejamos que el usuario
+    // arrastre los handles nativos tranquilo (ver enterSelectionMode). En modo
+    // selección múltiple tampoco: el tap normal (click) ya marca/desmarca.
+    if (el.classList.contains('selecting') || selectMode) return;
     longPressed = false;
     const t = e.touches[0];
     startX = t.clientX; startY = t.clientY;
@@ -1488,34 +1550,10 @@ function dateLabel(ts) {
   return { text, cls };
 }
 
-// ── Lightbox ──
-(function initLightbox() {
-  const lb = document.createElement('div');
-  lb.id = 'lightbox';
-  lb.innerHTML = `
-    <div id="lightbox-backdrop"></div>
-    <div id="lightbox-inner">
-      <button id="lightbox-close" aria-label="Cerrar">✕</button>
-      <img id="lightbox-img" alt="">
-      <a id="lightbox-dl" download>⬇ Descargar</a>
-    </div>
-  `;
-  document.body.appendChild(lb);
-
-  function closeLightbox() { lb.classList.remove('open'); }
-  lb.querySelector('#lightbox-backdrop').onclick = closeLightbox;
-  lb.querySelector('#lightbox-close').onclick = closeLightbox;
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
-
-  window.openLightbox = function(src, downloadHref, filename) {
-    const img = lb.querySelector('#lightbox-img');
-    const dl = lb.querySelector('#lightbox-dl');
-    img.src = src;
-    dl.href = downloadHref;
-    dl.download = filename || 'imagen';
-    lb.classList.add('open');
-  };
-})();
+// ── Lightbox: ver lightbox.js (expone window.openLightbox) ──
+// Lo que sigue de acá para abajo (íconos de archivo, revealInFolder, cards de
+// adjuntos...) es del dominio grande de mensajes/adjuntos, no del lightbox en
+// sí — se queda en app.js para otra vuelta.
 
 const IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg']);
 const AUDIO_EXTS = new Set(['mp3','wav','ogg','m4a','webm']);
@@ -2398,6 +2436,7 @@ $('cost-badge').onclick = () => toast($('cost-badge').title, 'info', 5000);
 
 // ── Select conversation ──
 async function selectConv(convId, name, model, lastModel, projectDir) {
+  exitMultiSelectMode(); // los elementos marcados quedan del chat anterior, no tiene sentido arrastrarlos
   if (currentConv) drafts.set(currentConv, $('input').value);
   currentConv = convId;
   $('input').value = drafts.get(convId) || '';
@@ -2980,159 +3019,10 @@ $('new-conv').onclick = async () => {
   }
 };
 
-// ── Búsqueda global ──
-let searchDebounce = null;
-let searchLastQuery = '';
-let searchResults = [];
+// ── Búsqueda global: ver search.js ──
 
-// El servidor delimita el término encontrado con estos caracteres de control.
-// Las marcas las pone el índice (FTS5), que es el único que sabe qué matcheó
-// de verdad: buscando "facil" el snippet trae "fácil", y "deplo" trae "deploy".
-const HL_START = '\u0001';
-const HL_END = '\u0002';
-
-// Fallback para cuando el snippet viene sin marcas (buscador degradado, sin
-// índice): resaltar buscando la query cruda, como se hacía antes.
-function highlightByQuery(snippet, query) {
-  const q = query.trim();
-  const frag = document.createDocumentFragment();
-  const idx = q ? snippet.toLowerCase().indexOf(q.toLowerCase()) : -1;
-  if (idx < 0) { frag.appendChild(document.createTextNode(snippet)); return frag; }
-  const hit = document.createElement('mark');
-  hit.textContent = snippet.slice(idx, idx + q.length);
-  frag.appendChild(document.createTextNode(snippet.slice(0, idx)));
-  frag.appendChild(hit);
-  frag.appendChild(document.createTextNode(snippet.slice(idx + q.length)));
-  return frag;
-}
-
-function highlightSnippet(snippet, query) {
-  if (!snippet.includes(HL_START)) return highlightByQuery(snippet, query);
-  const frag = document.createDocumentFragment();
-  for (const part of snippet.split(HL_START)) {
-    const end = part.indexOf(HL_END);
-    // El primer tramo es el texto anterior a la primera marca: no lleva cierre.
-    if (end < 0) { frag.appendChild(document.createTextNode(part)); continue; }
-    const hit = document.createElement('mark');
-    hit.textContent = part.slice(0, end);
-    frag.appendChild(hit);
-    frag.appendChild(document.createTextNode(part.slice(end + 1)));
-  }
-  return frag;
-}
-
-// Dónde busca: parado en la pestaña Notas (o con una libreta abierta) busca
-// notas; en cualquier otro lado, chats.
-function searchScope() {
-  return (activePane === 2 || currentNotebook) ? 'note' : 'chat';
-}
-
-async function runSearch(q) {
-  const box = $('search-results');
-  if (!q.trim()) { box.innerHTML = ''; searchResults = []; return; }
-  box.innerHTML = '<div class="search-loading">Buscando…</div>';
-  try {
-    const kind = searchScope();
-    const tools = $('search-tools').checked ? '1' : '0';
-    const { results } = await api(withAccount(
-      `/search?limit=50&kind=${kind}&tools=${tools}&q=` + encodeURIComponent(q)));
-    searchResults = results;
-    searchLastQuery = q;
-    box.innerHTML = '';
-    if (results.length === 0) {
-      box.innerHTML = '<div class="search-empty">Sin resultados</div>';
-      return;
-    }
-    for (let i = 0; i < results.length; i++) {
-      const r = results[i];
-      const row = document.createElement('button');
-      row.type = 'button';
-      row.className = 'search-result';
-      row.dataset.idx = String(i);
-      const name = document.createElement('div');
-      name.className = 'search-name';
-      name.textContent = r.displayName || r.name || '(sin título)';
-      const snip = document.createElement('div');
-      snip.className = 'search-snippet';
-      snip.appendChild(highlightSnippet(r.snippet || '', q));
-      const meta = document.createElement('div');
-      meta.className = 'search-meta';
-      // Una nota no tiene cwd ni rol que valga la pena mostrar: alcanza libreta + fecha.
-      const fecha = (r.lastActivity || '').slice(0, 16).replace('T', ' ');
-      meta.textContent = r.kind === 'note'
-        ? ['nota', fecha].filter(Boolean).join(' · ')
-        : [r.role, (r.cwd || '').split(/[\\/]/).pop(), fecha].filter(Boolean).join(' · ');
-      row.appendChild(name); row.appendChild(snip); row.appendChild(meta);
-      row.onclick = () => openSearchResult(r);
-      box.appendChild(row);
-    }
-  } catch (err) {
-    box.innerHTML = '';
-    toast('Error buscando: ' + err.message);
-  }
-}
-
-async function openSearchResult(r) {
-  $('search-dialog').close();
-  if (r.kind === 'note') return openNoteResult(r);
-  await selectConv(r.convId, r.displayName || r.name, r.model, r.lastModel, r.cwd);
-  // Scroll al match — buscamos por índice de mensaje
-  requestAnimationFrame(() => {
-    const nodes = messagesEl.querySelectorAll('.msg, details.tool');
-    const target = nodes[r.matchIndex];
-    if (target) {
-      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      target.classList.add('search-hit');
-      setTimeout(() => target.classList.remove('search-hit'), 2000);
-    }
-  });
-}
-
-// Abre la libreta del resultado y resalta la nota encontrada. Las notas se
-// renderizan en orden cronológico, que es el mismo orden del archivo del que
-// salió matchIndex.
-async function openNoteResult(r) {
-  await openNotebook(r.notebookId, r.name);
-  requestAnimationFrame(() => {
-    const target = $('notes-messages').querySelectorAll('.note-bubble')[r.matchIndex];
-    if (!target) return;
-    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    target.classList.add('search-hit');
-    setTimeout(() => target.classList.remove('search-hit'), 2000);
-  });
-}
-
-function openSearchDialog() {
-  const dlg = $('search-dialog');
-  const input = $('search-input');
-  const enNotas = searchScope() === 'note';
-  input.value = '';
-  input.placeholder = enNotas ? 'Buscar en todas las notas…' : 'Buscar en todas las conversaciones… (Ctrl+K)';
-  // El filtro de herramientas solo aplica a chats; en notas no hay nada que filtrar.
-  $('search-tools-label').hidden = enNotas;
-  $('search-results').innerHTML = '';
-  dlg.showModal();
-  input.focus();
-}
-
-$('search-btn').onclick = openSearchDialog;
-$('search-input').addEventListener('input', () => {
-  clearTimeout(searchDebounce);
-  const v = $('search-input').value;
-  searchDebounce = setTimeout(() => runSearch(v), 250);
-});
-// Cambiar el filtro re-consulta con lo que ya está tipeado, sin esperar otra tecla.
-$('search-tools').addEventListener('change', () => runSearch($('search-input').value));
-$('search-form').onsubmit = e => {
-  e.preventDefault();
-  if (searchResults[0]) openSearchResult(searchResults[0]);
-};
-document.addEventListener('keydown', e => {
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
-    e.preventDefault();
-    openSearchDialog();
-  }
-});
+// Atajo Tab (saltar entre las 2 conversaciones de arriba) — se queda acá,
+// vivía pegado a la búsqueda en el archivo viejo pero no tiene nada que ver.
 document.addEventListener('keydown', e => {
   if (e.key !== 'Tab') return;
   if (document.querySelector('dialog[open]')) return;
@@ -3242,6 +3132,18 @@ function pollTrees() {
 }
 loadAccounts().then(() => safeLoadTree());
 setInterval(pollTrees, 15000);
+
+// Aviso pendiente de un reinicio anterior (ej. "se saltó git pull porque
+// había cambios sin commitear") — el server lo guarda una sola vez y lo
+// borra al leerlo, así que esto no vuelve a mostrar nada en el próximo
+// refresh. No abre conversación, solo un toast.
+(async function checkRestartNotice() {
+  try {
+    const r = await fetch('/api/restart-notice');
+    const data = await r.json();
+    if (data && data.text) toast(data.text, data.kind || 'info', 10000);
+  } catch { /* silencioso: no es crítico perderse este aviso */ }
+})();
 loadUsage();
 setInterval(loadUsage, 10 * 60 * 1000);
 
@@ -3411,6 +3313,7 @@ function readComputedColor(varName) {
 
 function openSettings() {
   $('cfg-app-name').value = APP_NAME;
+  $('cfg-user-name').value = USER_NAME;
   $('cfg-app-color').value = APP_COLOR;
   $('cfg-show-tools').checked = settings.showTools;
   $('cfg-voice-assistant').value = settings.voiceAssistant;
@@ -3443,6 +3346,24 @@ $('cfg-app-name').onchange = async e => {
     toast('Nombre guardado — recargá para verlo en el título de la pestaña y reinstalá la PWA para el ícono/nombre de app instalada', 'info', 5000);
   } catch (err) {
     toast('No se pudo guardar el nombre: ' + err.message);
+  }
+};
+
+// Tu nombre: mismo patrón que cfg-app-name (server-side, guarda al perder
+// foco). Se usa como etiqueta de tus mensajes en "Copiar conversación".
+$('cfg-user-name').onchange = async e => {
+  const name = e.target.value.trim();
+  try {
+    const { userName } = await api('/config', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userName: name }),
+    });
+    USER_NAME = userName;
+    e.target.value = userName;
+    toast('Nombre guardado', 'info', 2000);
+  } catch (err) {
+    toast('No se pudo guardar tu nombre: ' + err.message);
   }
 };
 
@@ -3617,102 +3538,7 @@ $('notes-file-input').onchange = async () => {
   for (const f of files) await uploadNoteFile(f);
 };
 
-// ── Escáner de documentos (tipo CamScanner) ──
-// Todo el procesamiento (detectar el documento, enderezar la perspectiva,
-// limpiar contraste) corre local con OpenCV vía mejora-imagen/mejorar_imagen.py
-// — no pasa por Claude, no gasta tokens. Ver /api/scan en server.js.
-let scanBusy = false;
-
-function renderScanIdle() {
-  const el = $('scan-result');
-  el.hidden = true;
-  el.innerHTML = '';
-}
-
-async function processScan(file) {
-  if (scanBusy) return;
-  scanBusy = true;
-  $('scan-start-btn').disabled = true;
-  const el = $('scan-result');
-  el.hidden = false;
-  el.innerHTML = `<div class="scan-loading"><span class="attach-spinner"></span> Procesando…</div>`;
-  try {
-    const { blob, name } = await prepareForUpload(file, file.name || `foto-${Date.now()}.jpg`);
-    const fd = new FormData();
-    fd.append('photo', blob, name);
-    const res = await netFetch('/api/scan', { method: 'POST', body: fd });
-    if (!res.ok) throw new Error((await res.json()).error || res.statusText);
-    renderScanResult(await res.json());
-  } catch (err) {
-    el.hidden = true;
-    toast('No se pudo procesar la foto: ' + err.message);
-  } finally {
-    scanBusy = false;
-    $('scan-start-btn').disabled = false;
-  }
-}
-
-function renderScanResult(data) {
-  const el = $('scan-result');
-  const variants = [
-    { key: 'recortada', label: 'Color (enderezado)', path: data.recortada },
-    { key: 'limpia', label: 'Blanco y negro', path: data.limpia },
-  ];
-  const badge = data.detectado
-    ? '<span class="scan-badge scan-badge-ok">✓ documento detectado y enderezado</span>'
-    : '<span class="scan-badge">no se detectó el borde del documento — se usó la foto completa</span>';
-
-  el.innerHTML = `
-    ${badge}
-    <div class="scan-variants">
-      ${variants.map(v => `
-        <div class="scan-variant">
-          <img src="/api/files?path=${encodeURIComponent(v.path)}" alt="${v.label}">
-          <div class="scan-variant-label">${v.label}</div>
-          <div class="scan-variant-actions">
-            <button type="button" class="scan-keep-btn" data-variant="${v.key}">Guardar en Notas</button>
-            <a class="scan-dl-btn" href="/api/files?path=${encodeURIComponent(v.path)}" download>Descargar</a>
-          </div>
-        </div>
-      `).join('')}
-    </div>
-    <button type="button" id="scan-again-btn" class="scan-again-btn">Escanear otra</button>
-  `;
-
-  el.querySelectorAll('.scan-variant img').forEach(img => {
-    img.onclick = () => openLightbox(img.src, img.src, img.alt);
-  });
-  el.querySelectorAll('.scan-keep-btn').forEach(btn => {
-    btn.onclick = () => keepScan(data.id, btn.dataset.variant, btn);
-  });
-  $('scan-again-btn').onclick = () => { renderScanIdle(); $('scan-file-input').value = ''; };
-}
-
-async function keepScan(id, variant, btn) {
-  btn.disabled = true;
-  const original = btn.textContent;
-  btn.textContent = 'Guardando…';
-  try {
-    await api(`/scan/${id}/keep`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ variant }),
-    });
-    btn.textContent = '✓ Guardado en Notas';
-    notebookListLoaded = false; // fuerza refresco la próxima vez que se entra a Notas
-  } catch (err) {
-    btn.disabled = false;
-    btn.textContent = original;
-    toast('No se pudo guardar en Notas: ' + err.message);
-  }
-}
-
-$('scan-start-btn').onclick = () => { $('scan-file-input').click(); };
-$('scan-file-input').onchange = () => {
-  const file = $('scan-file-input').files[0];
-  $('scan-file-input').value = '';
-  if (file) processScan(file);
-};
+// ── Escáner de documentos: ver doc-scanner.js ──
 
 // ── Notas: sincronización entre dispositivos por polling ──
 // 5s (no los 15s del árbol de chats) porque un uso central es "mandar un

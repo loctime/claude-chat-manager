@@ -46,6 +46,14 @@ function getAppName() {
   return name || process.env.CCM_APP_NAME || 'J.A.R.V.I.S';
 }
 
+// Tu propio nombre (no el del agente) — usado para etiquetar tus mensajes
+// cuando copiás una conversación en "modo conversación" desde el chat.
+// Mismo patrón de prioridad que getAppName(): config guardada > env var > default.
+function getUserName() {
+  const name = (config.load().userName || '').trim();
+  return name || process.env.CCM_USER_NAME || 'Vos';
+}
+
 // Versión mostrada en la pantalla de Configuración. Se lee de package.json
 // (bump manual a mano en cada release) en cada request, no en una constante
 // al boot, mismo motivo que getAppName().
@@ -234,6 +242,7 @@ app.get('/api/accounts', (req, res) => {
     otherLabel: OTHER_LABEL,
     appName: getAppName(),
     appColor: getAppColor(),
+    userName: getUserName(),
   });
 });
 
@@ -366,10 +375,15 @@ app.patch('/api/config', (req, res) => {
       return res.status(400).json({ error: 'color inválido, esperado formato #rrggbb' });
     }
   }
+  if ('userName' in req.body) {
+    const name = (req.body.userName || '').trim();
+    if (name) cfg.userName = name;
+    else delete cfg.userName; // vacío = volver al env var / default
+  }
   config.save(cfg);
   const appColor = getAppColor();
   const iconOk = ('appColor' in req.body) ? regenerateIconsSafe(appColor) : true;
-  res.json({ ok: true, appName: getAppName(), appColor, iconOk });
+  res.json({ ok: true, appName: getAppName(), appColor, iconOk, userName: getUserName() });
 });
 
 // ── Reinicio del server desde la pantalla de Configuración ──
@@ -431,27 +445,24 @@ const REPO_ROOT = path.join(__dirname, '..');
 
 // Cuando el git pull automático del restart no se puede resolver solo
 // (working tree sucio, o el pull mismo falla — típicamente un merge
-// conflict), en vez de dejarlo solo en un log que nadie mira se crea una
-// conversación nueva en Jarvis con lo que pasó y se le manda a Claude de
-// entrada, así aparece lista (con "no leído") la próxima vez que se abre la
-// PWA, en vez de tener que ir a buscar por qué el código no se actualizó.
-// Mismo patrón que POST /api/conversations + POST /api/conversations/:id/message,
-// pero disparado desde el propio server en vez de una request de un cliente.
-async function reportGitPullIssue(text) {
+// conflict), antes se le mandaba el aviso a Claude como mensaje de una
+// conversación nueva — pero esa conversación se creaba en meta.json y el
+// restart mataba el proceso (process.exit) tres líneas después sin esperar
+// a que runner.send() terminara, así que el aviso real nunca se escribía:
+// quedaba una conversación vacía, con currentSessionId null, sin mensajes.
+// Ahora en vez de eso se deja un aviso liviano en disco (un solo pendiente,
+// se pisa si hay uno sin leer) y el cliente lo levanta como toast al abrir
+// la PWA — sin abrir conversación ni depender de que un `claude -p` llegue
+// a correr antes de que el proceso se mate a sí mismo.
+const RESTART_NOTICE_FILE = path.join(HOME_DIR, '.claude', 'session-manager', 'restart-notice.json');
+function writeRestartNotice(text, kind = 'info') {
   try {
-    const acc = activeAccount;
-    const projectDir = process.env.CCM_DEFAULT_PROJECT_DIR || accountHomeDir(acc);
-    const metaFile = accountMetaFile(acc);
-    const convId = crypto.randomUUID();
-    const data = meta.load(metaFile);
-    data.conversations[convId] = { currentSessionId: null, projectDir, name: 'git pull tras reinicio' };
-    meta.save(data, metaFile);
-    runner.send({ convId, sessionId: null, cwd: projectDir, text, account: acc });
-    console.error('[restart] git pull con problemas — se creó la conversación', convId, 'para resolverlo');
+    fs.mkdirSync(path.dirname(RESTART_NOTICE_FILE), { recursive: true });
+    fs.writeFileSync(RESTART_NOTICE_FILE, JSON.stringify({ text, kind, ts: new Date().toISOString() }));
   } catch (err) {
     // Best-effort sobre best-effort: si esto falla, ya quedó el console.error
     // de gitPull() de todos modos — no es la única forma de enterarse.
-    console.error('[restart] git pull con problemas, y además falló crear la conversación de aviso:', err.message);
+    console.error('[restart] no se pudo guardar el aviso de restart-notice:', err.message);
   }
 }
 
@@ -469,20 +480,19 @@ function gitPull() {
       }
       if (stdout.trim()) {
         console.warn('[restart] hay cambios sin commitear en el repo, se saltea el git pull (reinicia con el código actual):\n' + stdout);
-        reportGitPullIssue(
-          `Al reiniciar el server (botón de Configuración) se intentó un "git pull" en ${REPO_ROOT}, ` +
-          `pero el working tree tenía cambios sin commitear, así que se saltó el pull y se reinició con el código actual tal cual estaba. Esto mostró "git status --porcelain":\n\n${stdout}\n\n` +
-          `Fijate de qué son esos cambios (¿algo a medio hacer, tuyo o de otra sesión de Claude?) y resolvelo — commitear, descartar, o stash — para que el próximo reinicio pueda traer lo nuevo del repo.`
+        const files = stdout.trim().split('\n').map(l => l.replace(/^.{0,3}/, '').trim()).join(', ');
+        writeRestartNotice(
+          `Reinicio: se saltó "git pull" porque había cambios sin commitear (${files}). Reinició igual con el código que ya tenía en disco.`,
+          'info'
         );
         return resolve();
       }
       exec('git pull', { cwd: REPO_ROOT, windowsHide: true }, (err2, stdout2, stderr2) => {
         if (err2) {
           console.error('[restart] git pull falló:', err2.message);
-          reportGitPullIssue(
-            `Al reiniciar el server (botón de Configuración) se intentó un "git pull" en ${REPO_ROOT} y falló:\n\n${err2.message}\n\n` +
-            (stdout2 ? `stdout:\n${stdout2}\n\n` : '') + (stderr2 ? `stderr:\n${stderr2}\n\n` : '') +
-            `Fijate si es un conflicto de merge, divergencia de historia, o un problema de red, y resolvelo (puede hacer falta "git status", "git diff", o "git merge --abort" si quedó un merge a mitad de camino) — el server se reinició igual con el código que ya tenía.`
+          writeRestartNotice(
+            `Reinicio: "git pull" falló (${err2.message.split('\n')[0]}). Reinició igual con el código que ya tenía en disco — mirá la consola del server para el detalle.`,
+            'error'
           );
         } else {
           console.log('[restart] git pull:', (stdout2 || stderr2 || '').trim() || '(sin cambios)');
@@ -503,6 +513,19 @@ app.post('/api/restart', (req, res) => {
     await gitPull();
     doRestart();
   }, 300));
+});
+
+// Read-once: el cliente lo pregunta al abrir la PWA y, si hay algo, lo
+// muestra como toast y se borra acá mismo — así no vuelve a aparecer en el
+// próximo refresh ni queda pisando la lista de conversaciones.
+app.get('/api/restart-notice', (req, res) => {
+  try {
+    const raw = fs.readFileSync(RESTART_NOTICE_FILE, 'utf8');
+    fs.unlinkSync(RESTART_NOTICE_FILE);
+    res.json(JSON.parse(raw));
+  } catch {
+    res.json({ text: null });
+  }
 });
 
 // index.html y manifest.json tienen placeholders {{APP_NAME}}/{{APP_COLOR}} —
@@ -1426,8 +1449,15 @@ app.post('/api/conversations/:id/message', (req, res) => {
   const { data, conv, metaFile } = resolveConv(convId, acc);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
   let outgoing = text;
+  // Read-once: si el turno anterior rebobinó ignorando acciones con efecto real,
+  // esta nota va antepuesta al primer mensaje que se manda después — así entra
+  // al contexto real de Claude en vez de quedar en una notificación que nadie lee.
+  if (conv.pendingRewindNotice) {
+    outgoing = `${conv.pendingRewindNotice}\n\n[Mensaje actual del usuario]\n${outgoing}`;
+    delete conv.pendingRewindNotice;
+  }
   if (conv.compactedSummary && !conv.currentSessionId) {
-    outgoing = `[Resumen del contexto previo — la conversación fue compactada]\n${conv.compactedSummary}\n\n[Mensaje actual del usuario]\n${text}`;
+    outgoing = `[Resumen del contexto previo — la conversación fue compactada]\n${conv.compactedSummary}\n\n[Mensaje actual del usuario]\n${outgoing}`;
     delete conv.compactedSummary;
     delete conv.compactedAt;
   }
@@ -1482,6 +1512,33 @@ app.post('/api/conversations/:id/compact', (req, res) => {
   res.status(202).json({ queued: true });
 });
 
+// Da el mismo texto que rewindSessionFile dejaría como aviso pendiente — lo usan
+// tanto el preview (antes de confirmar) como el rewind real (para guardarlo).
+function formatRewindNotice(effects) {
+  const lines = effects.map(e => {
+    const tag = e.reversible === true ? ' [reversible]' : e.reversible === false ? ' [IRREVERSIBLE]' : '';
+    return `- ${e.summary}${tag}${e.hint ? ' — ' + e.hint : ''}`;
+  });
+  return `[Aviso: se rebobinó la charla]\nEntre el punto al que se volvió y el estado anterior se habían ejecutado estas acciones fuera de la charla. Rebobinar NO las deshace — si siguen aplicadas en el sistema, tenelo en cuenta antes de asumir el estado actual:\n${lines.join('\n')}`;
+}
+
+// Preview de qué se perdería al rebobinar hasta `uuid`, sin tocar el archivo.
+// Pensado para mostrar la advertencia ANTES de que el usuario confirme.
+app.get('/api/conversations/:id/rewind-preview', (req, res) => {
+  const convId = req.params.id;
+  const uuid = (req.query.uuid || '').trim();
+  if (!uuid) return res.status(400).json({ error: 'falta uuid del mensaje' });
+  const acc = req.query.account || activeAccount;
+  const { conv } = resolveConv(convId, acc);
+  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  if (!conv.currentSessionId) return res.status(400).json({ error: 'la conversación no tiene sesión activa' });
+  const file = scanner.findSessionFile(conv.currentSessionId, accountProjectsDir(acc));
+  if (!file) return res.status(404).json({ error: 'archivo de sesión no encontrado' });
+  const preview = scanner.previewRewindEffects(file, uuid);
+  if (!preview) return res.status(400).json({ error: 'no se puede rebobinar ahí (mensaje no encontrado en la sesión actual, o dejaría la conversación vacía)' });
+  res.json(preview);
+});
+
 // Rebobinar: elimina un turno user y todo lo posterior del jsonl de la sesión.
 // Ver scanner.rewindSessionFile para el porqué de que esto es seguro (cadena
 // parentUuid estilo git, cortada en borde de turno). Es rápido (reescritura
@@ -1494,7 +1551,7 @@ app.post('/api/conversations/:id/rewind', (req, res) => {
   if (runner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación está procesando un mensaje' });
   if (compacting.has(convId)) return res.status(409).json({ error: 'esa conversación se está compactando' });
   const acc = req.body.account || activeAccount;
-  const { conv } = resolveConv(convId, acc);
+  const { data, conv, metaFile } = resolveConv(convId, acc);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
   if (!conv.currentSessionId) return res.status(400).json({ error: 'la conversación no tiene sesión activa' });
   const file = scanner.findSessionFile(conv.currentSessionId, accountProjectsDir(acc));
@@ -1503,8 +1560,17 @@ app.post('/api/conversations/:id/rewind', (req, res) => {
   try { result = scanner.rewindSessionFile(file, uuid); }
   catch (err) { return res.status(500).json({ error: 'no se pudo rebobinar: ' + err.message }); }
   if (!result) return res.status(400).json({ error: 'no se puede rebobinar ahí (mensaje no encontrado en la sesión actual, o dejaría la conversación vacía)' });
+  // Si se perdieron acciones con efecto real, dejamos una nota que se antepone
+  // sola al próximo mensaje que se mande — así Claude la ve en su contexto de
+  // verdad en vez de depender de que alguien la lea a mano en algún lado.
+  if (result.effects && result.effects.length) {
+    conv.pendingRewindNotice = formatRewindNotice(result.effects);
+  } else {
+    delete conv.pendingRewindNotice;
+  }
+  meta.save(data, metaFile);
   broadcast(convId, { kind: 'status', status: 'idle', code: 0 });
-  res.json({ ok: true, removed: result.removed });
+  res.json({ ok: true, removed: result.removed, effects: result.effects || [] });
 });
 
 app.post('/api/conversations', (req, res) => {

@@ -3,3 +3,8 @@ node_modules/
 *.env
 CLAUDE.local.md
 .claude/worktrees/
+
+# Playwright (test/e2e) — reportes y estado de la corrida, no código
+/playwright-report/
+/test-results/
+/test/e2e/.e2e-state.json

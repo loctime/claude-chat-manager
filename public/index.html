@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=54">
+  <link rel="stylesheet" href="style.css?v=57">
   <!-- Color de identidad server-side (Configuración → Color de identidad). Va
        después de style.css para pisar el --accent default de ahí; el ajuste
        personal por-dispositivo ("Acento" en Colores, más abajo) sigue
@@ -113,6 +113,14 @@
         </select>
         <span id="cost-badge" title="Costo estimado — tocar para ver el detalle" hidden></span>
       </header>
+      <div id="select-bar" hidden>
+        <span id="select-count">0 seleccionados</span>
+        <div id="select-actions">
+          <button id="select-copy-conv" type="button">Copiar conversación</button>
+          <button id="select-copy-simple" type="button">Copiar simple</button>
+          <button id="select-cancel" type="button" aria-label="Cancelar selección" title="Cancelar">✕</button>
+        </div>
+      </div>
       <div id="messages-wrap">
         <section id="messages">
           <div id="empty-state">
@@ -190,6 +198,9 @@
         <label>Nombre
           <input type="text" id="cfg-app-name" placeholder="J.A.R.V.I.S" maxlength="40" autocomplete="off">
         </label>
+        <label>Tu nombre
+          <input type="text" id="cfg-user-name" placeholder="Vos" maxlength="40" autocomplete="off">
+        </label>
         <label>Color de identidad (ícono + tema)
           <input type="color" id="cfg-app-color">
         </label>
@@ -260,6 +271,16 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=52"></script>
+  <script src="app.js?v=62"></script>
+  <!-- Split de app.js por dominio (sesión 2026-08-20) — scripts clásicos, no
+       ES modules: siguen compartiendo el mismo scope global que app.js, por
+       eso cargan DESPUÉS (usan $()/settings/selectConv/etc. definidos ahí).
+       Ver comentario de cada archivo. -->
+  <script src="toast.js?v=61"></script>
+  <script src="pwa.js?v=61"></script>
+  <script src="tts.js?v=61"></script>
+  <script src="search.js?v=61"></script>
+  <script src="doc-scanner.js?v=61"></script>
+  <script src="lightbox.js?v=61"></script>
 </body>
 </html>

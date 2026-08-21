@@ -391,9 +391,11 @@ test('resolveCwd cae al projectDir guardado cuando la conversación todavía no 
 });
 
 // ── Rewind ──
-const { rewindCutIndex, rewindSessionFile } = require('../src/scanner');
+const { rewindCutIndex, rewindSessionFile, detectSideEffects, previewRewindEffects } = require('../src/scanner');
 
 // Cadena estilo lab 2026-08-09: user T1 → assistant T1 → plomería → user T2 → assistant T2
+// El T2 incluye un tool_use de Bash (git commit) y uno de Edit, para poder probar
+// la detección de efectos colaterales sobre el mismo fixture.
 function rewindFixtureLines() {
   const mk = o => JSON.stringify(o);
   return [
@@ -406,7 +408,19 @@ function rewindFixtureLines() {
     mk({ type: 'queue-operation', operation: 'enqueue' }),
     mk({ type: 'attachment', parentUuid: 'a1', attachment: { type: 'hook_success' } }),
     mk({ type: 'user', uuid: 'u2', parentUuid: 'a1', sessionId: 's1', message: { role: 'user', content: 'pregunta fuera de tema' } }),
-    mk({ type: 'assistant', uuid: 'a2', parentUuid: 'u2', sessionId: 's1', message: { role: 'assistant', content: [{ type: 'text', text: 'respuesta fuera de tema' }] } }),
+    mk({
+      type: 'assistant', uuid: 'a2', parentUuid: 'u2', sessionId: 's1',
+      timestamp: '2026-08-09T10:00:00.000Z',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'respuesta fuera de tema' },
+          { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'git commit -m "wip"' } },
+          { type: 'tool_use', id: 't2', name: 'Edit', input: { file_path: '/tmp/config.json' } },
+          { type: 'tool_use', id: 't3', name: 'Read', input: { file_path: '/tmp/otro.js' } },
+        ],
+      },
+    }),
     mk({ type: 'last-prompt', leafUuid: 'a2', lastPrompt: 'pregunta fuera de tema', sessionId: 's1' }),
   ];
 }
@@ -445,6 +459,41 @@ test('rewindSessionFile devuelve null si el uuid no está', () => {
   assert.equal(rewindSessionFile(file, 'nope'), null);
   // y no dejó backup huérfano
   assert.ok(!fs.readdirSync(path.dirname(file)).some(f => f.includes('bak-rewind')));
+});
+
+test('detectSideEffects encuentra Bash/Edit pero no Read, con la descripción esperada', () => {
+  const parsed = rewindFixtureLines().map(l => JSON.parse(l));
+  const idx = rewindCutIndex(parsed, 'u2');
+  const effects = detectSideEffects(parsed, idx);
+  assert.equal(effects.length, 2);
+  const bash = effects.find(e => e.tool === 'Bash');
+  assert.ok(bash.summary.includes('git commit'));
+  assert.equal(bash.reversible, true);
+  const edit = effects.find(e => e.tool === 'Edit');
+  assert.ok(edit.summary.includes('/tmp/config.json'));
+  assert.equal(edit.reversible, null);
+});
+
+test('previewRewindEffects no toca el archivo y devuelve lo mismo que rewindSessionFile calcularía', () => {
+  const { file } = tmpFile(rewindFixtureLines());
+  const before = fs.readFileSync(file, 'utf8');
+  const preview = previewRewindEffects(file, 'u2');
+  assert.equal(preview.removed, 6);
+  assert.equal(preview.effects.length, 2);
+  // no escribió nada
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
+  assert.ok(!fs.readdirSync(path.dirname(file)).some(f => f.includes('bak-rewind')));
+});
+
+test('previewRewindEffects devuelve null para uuid inexistente', () => {
+  const { file } = tmpFile(rewindFixtureLines());
+  assert.equal(previewRewindEffects(file, 'nope'), null);
+});
+
+test('rewindSessionFile incluye los effects en el resultado', () => {
+  const { file } = tmpFile(rewindFixtureLines());
+  const result = rewindSessionFile(file, 'u2');
+  assert.equal(result.effects.length, 2);
 });
 
 test('toChatMessages expone uuid en los mensajes user', () => {
