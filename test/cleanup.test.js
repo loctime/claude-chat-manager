@@ -5,6 +5,7 @@ const path = require('path');
 const os = require('os');
 const {
   listForCleanup, classifySession, isProtectedSession, RECENT_PROTECTION_MS,
+  buildCleanupReport, deleteCleanupSessions,
 } = require('../src/scanner');
 
 function tmpProjectsDir() {
@@ -80,4 +81,52 @@ test('isProtectedSession: frontera exacta de 5 días', () => {
 test('isProtectedSession: sin conv, sin running, vieja -> no protegida', () => {
   const r = isProtectedSession({ lastActivity: '2020-01-01T00:00:00.000Z' }, { conv: null, running: false, now: Date.parse('2026-08-20') });
   assert.deepEqual(r, { protected: false, reason: null });
+});
+
+function projectsRoot(dir) { return path.dirname(dir); }
+
+test('buildCleanupReport clasifica, protege y suma bytes', () => {
+  const dir = tmpProjectsDir();
+  writeSession(dir, 'app-1', [userMsg('hola'), assistantMsg('dale')]);
+  writeSession(dir, 'suelta-1', [userMsg('a'), assistantMsg('b'), userMsg('c'), assistantMsg('d')]);
+  const conversations = { 'conv-1': { currentSessionId: 'app-1', name: 'Mi charla', pinned: false, archived: false } };
+  const report = buildCleanupReport(projectsRoot(dir), conversations, () => false);
+  assert.equal(report.sessions.length, 2);
+  const app = report.sessions.find(s => s.sessionId === 'app-1');
+  assert.equal(app.classification, 'app');
+  assert.equal(app.convId, 'conv-1');
+  assert.equal(app.name, 'Mi charla');
+  const suelta = report.sessions.find(s => s.sessionId === 'suelta-1');
+  assert.equal(suelta.classification, 'orphan');
+  assert.equal(suelta.convId, null);
+  assert.equal(report.totalBytes, app.sizeBytes + suelta.sizeBytes);
+  assert.equal(report.byClassification.app, 1);
+  assert.equal(report.byClassification.orphan, 1);
+});
+
+test('deleteCleanupSessions borra lo permitido, saltea lo protegido y lo inexistente', () => {
+  const dir = tmpProjectsDir();
+  writeSession(dir, 'borrable-1', [userMsg('a'), assistantMsg('b'), userMsg('c'), assistantMsg('d')]);
+  writeSession(dir, 'pineada-1', [userMsg('a'), assistantMsg('b'), userMsg('c'), assistantMsg('d')]);
+  const conversations = { 'conv-p': { currentSessionId: 'pineada-1', pinned: true } };
+  const root = projectsRoot(dir);
+  const result = deleteCleanupSessions(root, conversations, ['borrable-1', 'pineada-1', 'no-existe'], () => false);
+  assert.deepEqual(result.deleted, ['borrable-1']);
+  assert.equal(result.skipped.length, 2);
+  assert.deepEqual(result.skipped.find(s => s.id === 'pineada-1'), { id: 'pineada-1', reason: 'pinned' });
+  assert.deepEqual(result.skipped.find(s => s.id === 'no-existe'), { id: 'no-existe', reason: 'no-existe' });
+  assert.deepEqual(result.removedConvIds, []); // pineada-1 no se borró -> no se remueve su conv
+  assert.ok(result.freedBytes > 0);
+  assert.equal(fs.existsSync(path.join(dir, 'borrable-1.jsonl')), false);
+  assert.equal(fs.existsSync(path.join(dir, 'pineada-1.jsonl')), true);
+});
+
+test('deleteCleanupSessions devuelve el convId a borrar cuando la sesión sí era app', () => {
+  const dir = tmpProjectsDir();
+  writeSession(dir, 'app-vieja', [userMsg('a'), assistantMsg('b'), userMsg('c'), assistantMsg('d')]);
+  const conversations = { 'conv-x': { currentSessionId: 'app-vieja', pinned: false, archived: false } };
+  const root = projectsRoot(dir);
+  const result = deleteCleanupSessions(root, conversations, ['app-vieja'], () => false);
+  assert.deepEqual(result.deleted, ['app-vieja']);
+  assert.deepEqual(result.removedConvIds, ['conv-x']);
 });

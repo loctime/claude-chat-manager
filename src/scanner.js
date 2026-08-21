@@ -510,10 +510,82 @@ function isProtectedSession(s, { conv, running, now = Date.now() } = {}) {
   return { protected: false, reason: null };
 }
 
+function _cleanupConvBySession(conversations) {
+  const map = new Map();
+  for (const [convId, c] of Object.entries(conversations || {})) {
+    if (c.currentSessionId) map.set(c.currentSessionId, { convId, ...c });
+  }
+  return map;
+}
+
+function buildCleanupReport(projectsDir, conversations, isRunningFn = () => false) {
+  const bySession = _cleanupConvBySession(conversations);
+  const raw = listForCleanup(projectsDir);
+  const now = Date.now();
+  let totalBytes = 0;
+  const byClassification = {};
+  const sessions = raw.map(s => {
+    const conv = bySession.get(s.sessionId) || null;
+    const classification = classifySession(s, { referencedAsApp: !!conv });
+    const running = conv ? isRunningFn(conv.convId) : false;
+    const prot = isProtectedSession(s, { conv, running, now });
+    totalBytes += s.sizeBytes;
+    byClassification[classification] = (byClassification[classification] || 0) + 1;
+    return {
+      sessionId: s.sessionId,
+      cwd: s.cwd || '(desconocido)',
+      snippet: s.snippet,
+      sizeBytes: s.sizeBytes,
+      messageCount: s.messageCount,
+      lastActivity: s.lastActivity,
+      classification,
+      convId: conv ? conv.convId : null,
+      name: conv ? (conv.name || s.snippet) : s.snippet,
+      pinned: !!(conv && conv.pinned),
+      archived: !!(conv && conv.archived),
+      protected: prot.protected,
+      protectedReason: prot.reason,
+    };
+  });
+  return { sessions, totalBytes, byClassification };
+}
+
+function deleteCleanupSessions(projectsDir, conversations, sessionIds, isRunningFn = () => false) {
+  const bySession = _cleanupConvBySession(conversations);
+  const deleted = [];
+  const skipped = [];
+  const removedConvIds = [];
+  let freedBytes = 0;
+  const now = Date.now();
+  for (const sessionId of sessionIds) {
+    const filePath = findSessionFile(sessionId, projectsDir);
+    if (!filePath) { skipped.push({ id: sessionId, reason: 'no-existe' }); continue; }
+    let stat;
+    try { stat = fs.statSync(filePath); } catch { skipped.push({ id: sessionId, reason: 'no-existe' }); continue; }
+    const conv = bySession.get(sessionId) || null;
+    const running = conv ? isRunningFn(conv.convId) : false;
+    const info = sessionInfo(filePath);
+    const lastActivity = (info && info.lastActivity) || stat.mtime.toISOString();
+    const prot = isProtectedSession({ lastActivity }, { conv, running, now });
+    if (prot.protected) { skipped.push({ id: sessionId, reason: prot.reason }); continue; }
+    try {
+      fs.unlinkSync(filePath);
+    } catch (err) {
+      skipped.push({ id: sessionId, reason: 'error: ' + err.message });
+      continue;
+    }
+    freedBytes += stat.size;
+    deleted.push(sessionId);
+    if (conv) removedConvIds.push(conv.convId);
+  }
+  return { deleted, skipped, freedBytes, removedConvIds };
+}
+
 module.exports = {
   parseJsonl, sessionInfo, listSessions, findSessionFile, resolveCwd, toChatMessages, contentToText,
   getMessagesIncremental, sumUsage, searchSessions, PROJECTS_DIR,
   rewindCutIndex, rewindSessionFile, detectSideEffects, previewRewindEffects,
   _clearSessionInfoCache, _clearTailCache,
   listForCleanup, classifySession, isProtectedSession, RECENT_PROTECTION_MS,
+  buildCleanupReport, deleteCleanupSessions,
 };
