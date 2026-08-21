@@ -15,9 +15,13 @@ PWA local para chatear con Claude Code desde el celular o el browser. Sidebar de
 - **Cola FIFO** — máximo 2 procesos `claude` concurrentes
 - **Compactar** — dispara el `/compact` nativo de Claude Code sobre la sesión (mantiene el mismo `session_id`, corre en background y avisa por streaming)
 - **Archivadas** — pantalla aparte para conversaciones archivadas, con swipe en mobile o botón en desktop, y deshacer
-- **Menú de mensaje** — click derecho / long-press en una burbuja: copiar texto, seleccionar texto (para copiar solo una parte), citar (prefill en el composer) y, en tus propios mensajes, rebobinar la sesión hasta ahí (Claude olvida ese turno y todo lo posterior)
+- **Menú de mensaje** — click derecho / long-press en una burbuja: copiar texto, seleccionar texto (para copiar solo una parte), citar (prefill en el composer) y, en tus propios mensajes, rebobinar la sesión hasta ahí (Claude olvida ese turno y todo lo posterior). Si rebobinar corta un tramo con acciones de efecto real (comandos corridos, archivos editados, commits hechos), avisa el detalle antes de confirmar y deja un aviso post-rebobinado en el próximo mensaje
+- **Selección múltiple** — elegí varias burbujas y copiá la conversación entera (`Nombre: texto` por mensaje, en orden) o solo los textos, sin bloques de herramienta ni errores
+- **Tu último mensaje siempre visible** — barra fija arriba del chat con preview de tu último mensaje (y, si es muy corto, del anterior como contexto); click para saltar a él — en una tanda larga con varios tool calls se pierde de vista scrolleando
 - **Copiar código y comandos** — chip ⧉ en cada bloque de código de las respuestas y en las tool cards con comando (copia el comando entero aunque el resumen esté truncado)
 - **Escáner de documentos** — pestaña aparte (o botón directo en el header en mobile): sacás/subís una foto de un documento, se detecta el borde, se endereza la perspectiva y se limpia el contraste con OpenCV local (no pasa por Claude, no gasta tokens); guardás el resultado en Notas o lo descargás directo. Ver `docs/superpowers/specs/2026-08-17-escaner-documentos-design.md`
+- **Buscador con índice FTS5** — busca en chats y notas con tolerancia a tildes, resaltado del término encontrado y salto directo al mensaje; toggle aparte para incluir herramientas
+- **Mensaje en cola** — si mandás algo mientras Claude sigue respondiendo, se guarda (tope 1 por conversación) y se envía solo al terminar el turno, sin perderlo
 
 ## Requisitos
 

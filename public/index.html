@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=57">
+  <link rel="stylesheet" href="style.css?v=65">
   <!-- Color de identidad server-side (Configuración → Color de identidad). Va
        después de style.css para pisar el --accent default de ahí; el ajuste
        personal por-dispositivo ("Acento" en Colores, más abajo) sigue
@@ -121,6 +121,23 @@
           <button id="select-cancel" type="button" aria-label="Cancelar selección" title="Cancelar">✕</button>
         </div>
       </div>
+      <!-- Vista previa fija de tu último mensaje — en una tanda larga (varios
+           tool calls + respuesta larga) tu mensaje queda muy arriba del
+           scroll; esto lo deja siempre visible arriba de todo, con click
+           para volver a él (ver updateLastUserPin en app.js). Si el último
+           mensaje es muy corto ("si", "dale"...) suma una fila arriba, más
+           chica, con el mensaje propio anterior — solo, "si" no dice nada. -->
+      <div id="last-user-pin" hidden>
+        <button type="button" class="last-user-pin-row last-user-pin-row-prev" id="last-user-pin-prev" hidden aria-label="Ir a tu mensaje anterior">
+          <span class="last-user-pin-label">Antes</span>
+          <span class="last-user-pin-text"></span>
+        </button>
+        <button type="button" class="last-user-pin-row last-user-pin-row-last" id="last-user-pin-last" aria-label="Ir a tu último mensaje">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M12 8l-6 6 1.41 1.41L12 10.83l4.59 4.58L18 14z"/></svg>
+          <span class="last-user-pin-label">Tu mensaje</span>
+          <span class="last-user-pin-text"></span>
+        </button>
+      </div>
       <div id="messages-wrap">
         <section id="messages">
           <div id="empty-state">
@@ -192,67 +209,80 @@
   <!-- Modal configuración -->
   <dialog id="settings-dialog">
     <form method="dialog" id="settings-form">
-      <h2>Configuración</h2>
-
-      <div class="settings-grid">
-        <label>Nombre
-          <input type="text" id="cfg-app-name" placeholder="J.A.R.V.I.S" maxlength="40" autocomplete="off">
-        </label>
-        <label>Tu nombre
-          <input type="text" id="cfg-user-name" placeholder="Vos" maxlength="40" autocomplete="off">
-        </label>
-        <label>Color de identidad (ícono + tema)
-          <input type="color" id="cfg-app-color">
-        </label>
-        <label class="settings-toggle">
-          <input type="checkbox" id="cfg-show-tools">
-          <span>Mostrar procesos del agente (Read, Bash, Edit…)</span>
-        </label>
-
-        <label>Voz del agente
-          <select id="cfg-voice-assistant"><option value="">Default del sistema</option></select>
-        </label>
-        <label>Voz propia
-          <select id="cfg-voice-user"><option value="">Default del sistema</option></select>
-        </label>
-
-        <label>Tipografía de los mensajes
-          <select id="cfg-font-family"></select>
-        </label>
-        <label>Tamaño de letra
-          <select id="cfg-font-size">
-            <option value="sm">Chico</option>
-            <option value="">Normal</option>
-            <option value="lg">Grande</option>
-            <option value="xl">Muy grande</option>
-          </select>
-        </label>
+      <div class="settings-header">
+        <h2>Configuración</h2>
+        <div class="settings-header-actions">
+          <input type="text" id="cfg-app-name" class="settings-header-name" placeholder="J.A.R.V.I.S" maxlength="40" autocomplete="off" aria-label="Nombre">
+          <span class="settings-name-preview" id="cfg-name-preview" title="Vista previa — el cambio real en el ícono/tema pide reiniciar el server">
+            <span class="settings-name-preview-dot" id="cfg-name-preview-dot"></span>
+            <span id="cfg-name-preview-text"></span>
+          </span>
+          <input type="color" id="cfg-app-color" class="settings-header-color" title="Color de identidad (ícono + tema)" aria-label="Color de identidad (ícono + tema)">
+        </div>
       </div>
 
-      <div class="settings-section-label">Colores</div>
-      <div class="settings-colors">
-        <label>Acento
-          <input type="color" id="cfg-color-accent">
+      <div class="settings-body">
+        <section class="settings-section">
+          <div class="settings-grid">
+            <label>Tu nombre
+              <input type="text" id="cfg-user-name" placeholder="Vos" maxlength="40" autocomplete="off">
+            </label>
+            <label class="settings-row settings-toggle settings-grid-row">
+              <span>Mostrar procesos del agente (Read, Bash, Edit…)</span>
+              <input type="checkbox" id="cfg-show-tools">
+            </label>
+          </div>
+        </section>
+
+        <label class="settings-loose">Voz de los mensajes
+          <select id="cfg-voice"><option value="">Default del sistema</option></select>
         </label>
-        <label>Burbuja tuya
-          <input type="color" id="cfg-color-me">
-        </label>
-        <label>Burbuja del agente
-          <input type="color" id="cfg-color-ai">
-        </label>
+
+        <section class="settings-section">
+          <h3 class="settings-section-label">Apariencia de los mensajes</h3>
+          <div class="settings-grid">
+            <label>Tipografía
+              <button type="button" class="settings-font-trigger" id="cfg-font-family-btn" aria-haspopup="listbox"></button>
+              <select id="cfg-font-family" hidden tabindex="-1"></select>
+            </label>
+            <label>Tamaño de letra
+              <select id="cfg-font-size">
+                <option value="sm">Chico</option>
+                <option value="">Normal</option>
+                <option value="lg">Grande</option>
+                <option value="xl">Muy grande</option>
+              </select>
+            </label>
+          </div>
+          <div class="settings-colors">
+            <label>Acento
+              <input type="color" id="cfg-color-accent">
+            </label>
+            <label>Burbuja tuya
+              <input type="color" id="cfg-color-me">
+            </label>
+            <label>Burbuja del agente
+              <input type="color" id="cfg-color-ai">
+            </label>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h3 class="settings-section-label">Servidor</h3>
+          <div class="settings-server">
+            <button type="button" id="cfg-restart-btn">Reiniciar server</button>
+            <span class="settings-hint" title="Aplica código nuevo (git pull). Corta la conexión unos segundos.">Aplica código nuevo (git pull). Corta la conexión unos segundos.</span>
+          </div>
+        </section>
       </div>
 
-      <div class="settings-section-label">Servidor</div>
-      <div class="settings-server">
-        <button type="button" id="cfg-restart-btn">Reiniciar server</button>
-        <span class="settings-hint">Aplica código nuevo (git pull). Corta la conexión unos segundos.</span>
+      <div class="settings-footer">
+        <div class="settings-footer-actions">
+          <button type="button" id="cfg-reset" class="settings-icon-btn" title="Restaurar valores por defecto" aria-label="Restaurar valores por defecto">↺</button>
+          <button value="cancel">Cerrar</button>
+        </div>
+        <div class="settings-version">{{APP_NAME}} v{{APP_VERSION}}</div>
       </div>
-
-      <menu>
-        <button type="button" id="cfg-reset">Restaurar</button>
-        <button value="cancel">Cerrar</button>
-      </menu>
-      <div class="settings-version">{{APP_NAME}} v{{APP_VERSION}}</div>
     </form>
   </dialog>
 
@@ -271,16 +301,16 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=62"></script>
+  <script src="app.js?v=69"></script>
   <!-- Split de app.js por dominio (sesión 2026-08-20) — scripts clásicos, no
        ES modules: siguen compartiendo el mismo scope global que app.js, por
        eso cargan DESPUÉS (usan $()/settings/selectConv/etc. definidos ahí).
        Ver comentario de cada archivo. -->
-  <script src="toast.js?v=61"></script>
-  <script src="pwa.js?v=61"></script>
-  <script src="tts.js?v=61"></script>
-  <script src="search.js?v=61"></script>
-  <script src="doc-scanner.js?v=61"></script>
-  <script src="lightbox.js?v=61"></script>
+  <script src="toast.js?v=66"></script>
+  <script src="pwa.js?v=66"></script>
+  <script src="tts.js?v=66"></script>
+  <script src="search.js?v=66"></script>
+  <script src="doc-scanner.js?v=66"></script>
+  <script src="lightbox.js?v=66"></script>
 </body>
 </html>

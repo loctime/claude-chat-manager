@@ -11,6 +11,10 @@
 // vive pegado a este bloque en el archivo viejo pero no es un tema de TTS,
 // es una burbuja de mensaje — no lo movemos por moverlo.
 let ttsUtterance = null;
+// Una sola voz para mensajes propios y del agente (settings.voice) — antes
+// eran dos ajustes separados (voiceAssistant/voiceUser), simplificado a
+// pedido de Diego. `kind` se deja en la firma por si el día de mañana hace
+// falta distinguir de nuevo, pero hoy no afecta qué voz se usa.
 function speak(text, btn, kind = 'assistant') {
   if (!('speechSynthesis' in window)) return;
   if (ttsUtterance) {
@@ -19,8 +23,7 @@ function speak(text, btn, kind = 'assistant') {
     if (ttsUtterance._btn === btn) { ttsUtterance = null; return; }
   }
   const u = new SpeechSynthesisUtterance(text);
-  const voiceName = kind === 'user' ? settings.voiceUser : settings.voiceAssistant;
-  const voice = voiceName ? speechSynthesis.getVoices().find(v => v.name === voiceName) : null;
+  const voice = settings.voice ? speechSynthesis.getVoices().find(v => v.name === settings.voice) : null;
   if (voice) { u.voice = voice; u.lang = voice.lang; }
   else u.lang = 'es-AR';
   u._btn = btn;
@@ -30,6 +33,30 @@ function speak(text, btn, kind = 'assistant') {
     btn.classList.remove('playing');
     if (ttsUtterance === u) ttsUtterance = null;
   };
+  speechSynthesis.speak(u);
+}
+
+// Muestra de audio para el selector de voz de Configuración — mismo
+// singleton `ttsUtterance` que speak() de arriba, así elegir una voz nueva
+// corta un mensaje que se estuviera leyendo (y viceversa) en vez de
+// solaparse. A diferencia de speak(), no lee settings.voice: usa la voz que
+// está seleccionada en el <select> en ese momento, aunque todavía no se
+// haya guardado — se dispara sola al cambiar la selección (ver
+// cfg-voice.onchange en app.js), no hace falta un botón aparte.
+function previewVoice(selectEl) {
+  if (!('speechSynthesis' in window)) return;
+  if (ttsUtterance) {
+    speechSynthesis.cancel();
+    document.querySelectorAll('.msg-tts.playing').forEach(b => b.classList.remove('playing'));
+    ttsUtterance = null;
+  }
+  const voiceName = selectEl.value;
+  const voice = voiceName ? speechSynthesis.getVoices().find(v => v.name === voiceName) : null;
+  const u = new SpeechSynthesisUtterance('Hola, así se va a escuchar.');
+  if (voice) { u.voice = voice; u.lang = voice.lang; }
+  else u.lang = 'es-AR';
+  ttsUtterance = u;
+  u.onend = u.onerror = () => { if (ttsUtterance === u) ttsUtterance = null; };
   speechSynthesis.speak(u);
 }
 

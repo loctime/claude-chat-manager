@@ -2033,6 +2033,57 @@ messagesEl.addEventListener('scroll', () => {
   syncJumpBtn();
 });
 
+// Barra fija arriba de #messages con una vista previa de TU último mensaje
+// (#last-user-pin, HTML). En una tanda larga (varios tool calls + respuesta
+// larga) tu propio mensaje queda muy arriba del scroll y se pierde de vista
+// — esto lo deja siempre visible, con click para volver a él. Se llama al
+// terminar loadMessages() (recarga completa) y apenas se manda un mensaje
+// nuevo (addUserMsgWithFiles, burbuja optimista, antes de que loadMessages
+// la reemplace por la versión con uuid del jsonl).
+function msgText(el) {
+  const t = el.querySelector('.msg-text');
+  return t ? t.textContent.trim() : '';
+}
+
+// Configura una fila del pin (botón) para que muestre `text` (recortado a
+// `limit`) y, al tocarla, salte a `el` con el mismo scrollIntoView+highlight
+// que usa el buscador.
+function setPinRow(btn, el, text, limit) {
+  const raw = text || '📎 Adjunto';
+  const preview = raw.length > limit ? raw.slice(0, limit) + '…' : raw;
+  btn.querySelector('.last-user-pin-text').textContent = preview;
+  btn.title = text || 'Adjunto sin texto';
+  btn.onclick = () => {
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.add('search-hit');
+    setTimeout(() => el.classList.remove('search-hit'), 2000);
+  };
+}
+
+function updateLastUserPin() {
+  const wrap = $('last-user-pin');
+  const userMsgs = messagesEl.querySelectorAll('.msg.user');
+  const last = userMsgs[userMsgs.length - 1];
+  if (!last) { wrap.hidden = true; return; }
+
+  const lastText = msgText(last);
+  setPinRow($('last-user-pin-last'), last, lastText, 200);
+
+  // Un último mensaje muy corto ("si", "dale", "ok"...) no alcanza para
+  // acordarse de qué se estaba hablando — sumamos arriba, más chico, el
+  // mensaje propio anterior como contexto.
+  const isShort = lastText.length <= 20 || lastText.split(/\s+/).filter(Boolean).length <= 3;
+  const prevRow = $('last-user-pin-prev');
+  const prev = isShort ? userMsgs[userMsgs.length - 2] : null;
+  if (prev) {
+    setPinRow(prevRow, prev, msgText(prev), 70);
+    prevRow.hidden = false;
+  } else {
+    prevRow.hidden = true;
+  }
+  wrap.hidden = false;
+}
+
 function addMsg(role, text, opts = {}) {
   const existing = document.getElementById('empty-state');
   if (existing) existing.remove();
@@ -2223,6 +2274,7 @@ async function loadMessages(convId) {
     suppressAutoScroll = false;
     if (wasStuck) scrollToBottom();
     else messagesEl.scrollTop = prevTop;
+    updateLastUserPin();
   }
 }
 
@@ -2858,6 +2910,7 @@ function addUserMsgWithFiles(text, attachments) {
   stickToBottom = true;
   syncJumpBtn();
   scrollToBottom();
+  updateLastUserPin();
   return div;
 }
 
@@ -2923,6 +2976,7 @@ async function performSend(convId, rawText, attachments) {
     if (err.isNetwork) {
       // No se envió: sacamos la burbuja optimista y devolvemos todo al composer.
       if (bubble) bubble.remove();
+      updateLastUserPin();
       restoreComposer(rawText, attachments);
       addMsg('error', err.message + ' — tocá enviar de nuevo');
     } else {
@@ -3151,8 +3205,7 @@ setInterval(loadUsage, 10 * 60 * 1000);
 const SETTINGS_KEY = 'ccm.settings';
 const DEFAULT_SETTINGS = {
   showTools: true,
-  voiceAssistant: '',
-  voiceUser: '',
+  voice: '', // una sola voz para mensajes propios y del agente (antes voiceAssistant/voiceUser separados)
   colorAccent: '',
   colorMe: '',
   colorAi: '',
@@ -3194,7 +3247,76 @@ function populateFontOptions() {
   }
 }
 populateFontOptions();
+
+// El <select> de tipografía queda oculto (ver index.html) — un <option> con
+// font-family inline no se renderiza en la mayoría de los pickers nativos
+// mobile (Android ignora el CSS del option), así que la vista previa real
+// vive en este botón + el menú de showFontMenu(), no en el <select> nativo.
+// El <select> se sigue usando como fuente de verdad del valor (dispara
+// "change" como siempre) para no tocar el resto de applySettings/saveSettings.
+function updateFontTrigger() {
+  const val = $('cfg-font-family').value;
+  const opt = FONT_FAMILY_OPTIONS.find(f => f.value === val) || FONT_FAMILY_OPTIONS[0];
+  const btn = $('cfg-font-family-btn');
+  btn.textContent = opt.label;
+  btn.style.fontFamily = opt.stack;
+}
+function showFontMenu() {
+  document.querySelectorAll('.ctx-menu.font-menu').forEach(m => m.remove());
+  const trigger = $('cfg-font-family-btn');
+  const current = $('cfg-font-family').value;
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu font-menu';
+  menu.innerHTML = FONT_FAMILY_OPTIONS.map(f => `
+    <button type="button" data-value="${f.value}" class="${f.value === current ? 'active' : ''}" style="font-family:${f.stack.replace(/"/g, '&quot;')}">${f.label}</button>
+  `).join('');
+  // Colgado del propio <dialog>, no de document.body: un <dialog> abierto
+  // con showModal() pinta en el "top layer" del navegador, por encima de
+  // TODO el resto del documento sin importar z-index — un menú colgado de
+  // document.body quedaría tapado detrás del modal. Adentro del dialog sí
+  // se ve, y position:fixed lo saca igual del scroll del body.
+  $('settings-dialog').appendChild(menu);
+  const rect = trigger.getBoundingClientRect();
+  menu.style.width = rect.width + 'px';
+  const menuRect = menu.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - menuRect.width - 8)) + 'px';
+  menu.style.top = Math.min(rect.bottom + 4, window.innerHeight - menuRect.height - 8) + 'px';
+
+  menu.addEventListener('click', e => {
+    e.stopPropagation();
+    const btn = e.target.closest('button[data-value]');
+    if (!btn) return;
+    const sel = $('cfg-font-family');
+    sel.value = btn.dataset.value;
+    sel.dispatchEvent(new Event('change'));
+    updateFontTrigger();
+    menu.remove();
+  });
+  menu.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+  function dismiss(e) {
+    if (menu.contains(e.target)) return;
+    menu.remove();
+    document.removeEventListener('click', dismiss, true);
+    document.removeEventListener('touchstart', dismiss, true);
+  }
+  // Delay para saltear el click sintético del touchend que abrió el menú.
+  setTimeout(() => {
+    document.addEventListener('click', dismiss, true);
+    document.addEventListener('touchstart', dismiss, true);
+  }, 350);
+}
+$('cfg-font-family-btn').onclick = showFontMenu;
+
 const settings = { ...DEFAULT_SETTINGS, ...loadSettings() };
+// Migración desde los ajustes viejos voiceAssistant/voiceUser (separados) al
+// nuevo settings.voice (único) — se sacaba de DEFAULT_SETTINGS, pero puede
+// seguir viviendo en el localStorage de quien ya tenía configuración guardada.
+if (!settings.voice && (settings.voiceAssistant || settings.voiceUser)) {
+  settings.voice = settings.voiceAssistant || settings.voiceUser;
+}
+delete settings.voiceAssistant;
+delete settings.voiceUser;
 
 function loadSettings() {
   try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; }
@@ -3285,18 +3407,16 @@ function populateVoices() {
     const bEs = b.lang.startsWith('es') ? 0 : 1;
     return aEs - bEs || a.name.localeCompare(b.name);
   });
-  for (const selId of ['cfg-voice-assistant', 'cfg-voice-user']) {
-    const sel = $(selId);
-    const current = sel.value;
-    sel.innerHTML = '<option value="">Default del sistema</option>';
-    for (const v of sorted) {
-      const opt = document.createElement('option');
-      opt.value = v.name;
-      opt.textContent = `${v.name} (${v.lang})`;
-      sel.appendChild(opt);
-    }
-    sel.value = current;
+  const sel = $('cfg-voice');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">Default del sistema</option>';
+  for (const v of sorted) {
+    const opt = document.createElement('option');
+    opt.value = v.name;
+    opt.textContent = `${v.name} (${v.lang})`;
+    sel.appendChild(opt);
   }
+  sel.value = current;
 }
 if ('speechSynthesis' in window) {
   populateVoices();
@@ -3311,22 +3431,45 @@ function readComputedColor(varName) {
   return '#000000';
 }
 
+// Puntito + nombre del header de Configuración, coloreado en vivo con lo
+// que se está eligiendo/escribiendo — el guardado real de Nombre/Color de
+// identidad es server-side (ver los .onchange de abajo) y pide reiniciar el
+// server para verse de verdad en el ícono/tema, así que esto es solo una
+// vista previa a ojo mientras se elige, no reemplaza esa aplicación real.
+function updateNamePreview() {
+  const name = $('cfg-app-name').value.trim() || APP_NAME;
+  const color = $('cfg-app-color').value || APP_COLOR;
+  $('cfg-name-preview-dot').style.background = color;
+  $('cfg-name-preview-text').textContent = name;
+}
+
 function openSettings() {
   $('cfg-app-name').value = APP_NAME;
   $('cfg-user-name').value = USER_NAME;
   $('cfg-app-color').value = APP_COLOR;
+  updateNamePreview();
   $('cfg-show-tools').checked = settings.showTools;
-  $('cfg-voice-assistant').value = settings.voiceAssistant;
-  $('cfg-voice-user').value = settings.voiceUser;
+  $('cfg-voice').value = settings.voice;
   $('cfg-color-accent').value = settings.colorAccent || readComputedColor('--accent');
   $('cfg-color-me').value = settings.colorMe || readComputedColor('--bubble-me');
   $('cfg-color-ai').value = settings.colorAi || readComputedColor('--bubble-ai');
   $('cfg-font-family').value = settings.fontFamily;
+  updateFontTrigger();
   $('cfg-font-size').value = settings.fontSize;
   $('settings-dialog').showModal();
 }
 
 $('settings-btn').onclick = openSettings;
+$('cfg-app-name').addEventListener('input', updateNamePreview);
+$('cfg-app-color').addEventListener('input', updateNamePreview);
+// Cerrar tocando afuera (el backdrop): un click que cae en el propio
+// <dialog> (no en un descendiente) solo puede venir del backdrop, porque
+// #settings-form ocupa 100% de la caja del dialog — no queda "aire" propio
+// del dialog para clickear. En mobile el dialog es pantalla completa (no
+// hay backdrop visible), así que ahí este listener simplemente nunca dispara.
+$('settings-dialog').addEventListener('click', e => {
+  if (e.target === e.currentTarget) $('settings-dialog').close();
+});
 
 // Nombre: no es localStorage como el resto de esta pantalla — vive en el
 // server (~/.ccm-config.json), así que el título/manifest de la PWA sale
@@ -3399,8 +3542,12 @@ $('cfg-show-tools').onchange = e => {
   settings.showTools = e.target.checked;
   applySettings(); saveSettings();
 };
-$('cfg-voice-assistant').onchange = e => { settings.voiceAssistant = e.target.value; saveSettings(); };
-$('cfg-voice-user').onchange = e => { settings.voiceUser = e.target.value; saveSettings(); };
+// Una sola voz para mensajes propios y del agente. Elegirla reproduce sola
+// una muestra corta (previewVoice, tts.js) — no hace falta un botón aparte.
+$('cfg-voice').onchange = e => {
+  settings.voice = e.target.value; saveSettings();
+  previewVoice(e.target);
+};
 $('cfg-color-accent').oninput = e => { settings.colorAccent = e.target.value; applySettings(); saveSettings(); };
 $('cfg-color-me').oninput = e => { settings.colorMe = e.target.value; applySettings(); saveSettings(); };
 $('cfg-color-ai').oninput = e => { settings.colorAi = e.target.value; applySettings(); saveSettings(); };
@@ -3424,6 +3571,9 @@ $('cfg-restart-btn').onclick = async () => {
 };
 
 $('cfg-reset').onclick = () => {
+  // Confirm agregado al pasar el botón a ícono (perdió el texto "Restaurar"
+  // que antes avisaba qué hacía) — pierde voz, colores, tipografía, todo.
+  if (!confirm('Restaurar la configuración a los valores por defecto?\n\nSe pierden la voz, los colores, la tipografía y el tamaño de letra elegidos.')) return;
   Object.assign(settings, DEFAULT_SETTINGS);
   applySettings(); saveSettings();
   openSettings();
