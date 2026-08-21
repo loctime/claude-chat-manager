@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=73">
+  <link rel="stylesheet" href="style.css?v=74">
   <!-- Color de identidad server-side (Configuración → Color de identidad). Va
        después de style.css para pisar el --accent default de ahí; el ajuste
        personal por-dispositivo ("Acento" en Colores, más abajo) sigue
@@ -61,7 +61,6 @@
         <button type="button" class="pane-tab" data-pane="1">Archivado</button>
         <button type="button" class="pane-tab" data-pane="2">📝 Notas</button>
         <button type="button" class="pane-tab" data-pane="3">📷 Escáner</button>
-        <button type="button" class="pane-tab" data-pane="4">🧹 Sesiones</button>
       </nav>
       <div id="ptr-indicator" hidden>
         <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
@@ -86,39 +85,6 @@
               <div id="scan-result" class="scan-result" hidden></div>
               <div id="scan-queue" class="scan-queue" hidden></div>
             </div>
-          </div>
-          <div id="tree-sessions" class="tree-pane sessions-pane">
-            <div class="cleanup-header">
-              <button type="button" id="sessions-back" class="archived-back">← Volver a chats</button>
-              <h2>🧹 Sesiones</h2>
-              <span id="cleanup-total">0 sesiones · 0 MB</span>
-            </div>
-            <div class="cleanup-filters">
-              <div id="cleanup-class-filters" class="cleanup-chips"></div>
-              <select id="cleanup-folder-filter"><option value="">Todas las carpetas</option></select>
-              <select id="cleanup-size-filter">
-                <option value="0">Cualquier tamaño</option>
-                <option value="1000000">&gt; 1 MB</option>
-                <option value="5000000">&gt; 5 MB</option>
-                <option value="20000000">&gt; 20 MB</option>
-              </select>
-              <select id="cleanup-date-filter">
-                <option value="0">Cualquier fecha</option>
-                <option value="7">Últimos 7 días</option>
-                <option value="30">Últimos 30 días</option>
-                <option value="older30">Hace más de 30 días</option>
-              </select>
-              <select id="cleanup-sort">
-                <option value="size">Tamaño (mayor primero)</option>
-                <option value="lastActivity">Última actividad</option>
-                <option value="messageCount">Cantidad de mensajes</option>
-              </select>
-            </div>
-            <label class="cleanup-select-all">
-              <input type="checkbox" id="cleanup-select-all-cb">
-              Seleccionar todo lo visible
-            </label>
-            <div id="cleanup-list" class="cleanup-list"></div>
           </div>
         </div>
       </div>
@@ -241,6 +207,45 @@
     </form>
   </dialog>
 
+  <!-- Limpieza de sesiones — abierto desde Configuración → Almacenamiento -->
+  <dialog id="cleanup-dialog">
+    <form id="cleanup-form" method="dialog">
+      <div id="tree-sessions" class="sessions-pane">
+        <div class="cleanup-header">
+          <h2>🧹 Sesiones</h2>
+          <span id="cleanup-total">0 sesiones · 0 MB</span>
+          <button type="submit" class="cleanup-close-btn" aria-label="Cerrar">✕</button>
+        </div>
+        <div class="cleanup-filters">
+          <div id="cleanup-class-filters" class="cleanup-chips"></div>
+          <select id="cleanup-folder-filter"><option value="">Todas las carpetas</option></select>
+          <select id="cleanup-size-filter">
+            <option value="0">Cualquier tamaño</option>
+            <option value="1000000">&gt; 1 MB</option>
+            <option value="5000000">&gt; 5 MB</option>
+            <option value="20000000">&gt; 20 MB</option>
+          </select>
+          <select id="cleanup-date-filter">
+            <option value="0">Cualquier fecha</option>
+            <option value="7">Últimos 7 días</option>
+            <option value="30">Últimos 30 días</option>
+            <option value="older30">Hace más de 30 días</option>
+          </select>
+          <select id="cleanup-sort">
+            <option value="size">Tamaño (mayor primero)</option>
+            <option value="lastActivity">Última actividad</option>
+            <option value="messageCount">Cantidad de mensajes</option>
+          </select>
+        </div>
+        <label class="cleanup-select-all">
+          <input type="checkbox" id="cleanup-select-all-cb">
+          Seleccionar todo lo visible
+        </label>
+        <div id="cleanup-list" class="cleanup-list"></div>
+      </div>
+    </form>
+  </dialog>
+
   <!-- Confirmación de borrado de sesiones -->
   <dialog id="cleanup-confirm-dialog">
     <form method="dialog" id="cleanup-confirm-form">
@@ -324,6 +329,14 @@
         </section>
 
         <section class="settings-section">
+          <h3 class="settings-section-label">Almacenamiento</h3>
+          <div class="settings-server">
+            <button type="button" id="settings-cleanup-btn">🧹 Limpiar sesiones</button>
+            <span class="settings-hint">Ver, filtrar y borrar sesiones de Claude Code guardadas en disco para liberar espacio.</span>
+          </div>
+        </section>
+
+        <section class="settings-section">
           <h3 class="settings-section-label">Servidor</h3>
           <div class="settings-server">
             <button type="button" id="cfg-restart-btn">Reiniciar server</button>
@@ -357,7 +370,7 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=76"></script>
+  <script src="app.js?v=77"></script>
   <!-- Split de app.js por dominio (sesión 2026-08-20) — scripts clásicos, no
        ES modules: siguen compartiendo el mismo scope global que app.js, por
        eso cargan DESPUÉS (usan $()/settings/selectConv/etc. definidos ahí).
@@ -368,6 +381,6 @@
   <script src="search.js?v=66"></script>
   <script src="doc-scanner.js?v=70"></script>
   <script src="lightbox.js?v=66"></script>
-  <script src="sessions-cleanup.js?v=67"></script>
+  <script src="sessions-cleanup.js?v=68"></script>
 </body>
 </html>

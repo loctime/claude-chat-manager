@@ -8,7 +8,7 @@ let archivedTotal = 0;
 let archivedTreeLimit = 100;
 let archivedTreeHasMore = false;
 let archivedTreeTotal = 0;
-let activePane = 0; // 0=chats 1=archived 2=notas 3=escaner 4=sesiones
+let activePane = 0; // 0=chats 1=archived 2=notas 3=escaner
 let notebookListLoaded = false;
 let notebooks = [];
 let currentNotebook = null; // {id, name} de la libreta abierta, o null si estamos en la lista
@@ -817,15 +817,6 @@ async function goToPane(index) {
       return;
     }
   }
-  if (index === 4) {
-    try {
-      await loadCleanupSessions();
-    } catch (err) {
-      toast('No se pudieron cargar las sesiones: ' + err.message);
-      if (myGeneration === paneNavGeneration) paneNavTarget = activePane;
-      return;
-    }
-  }
   if (myGeneration !== paneNavGeneration) return; // otra navegación más nueva ya tomó el control
   activePane = index;
   $('tree-viewport-inner').dataset.pane = String(index);
@@ -845,7 +836,6 @@ document.querySelectorAll('.pane-tab').forEach(btn => {
   btn.onclick = () => goToPane(Number(btn.dataset.pane));
 });
 $('scan-back').onclick = () => goToPane(0);
-$('sessions-back').onclick = () => goToPane(0);
 // Acceso directo al Escáner desde el header — en mobile #pane-tabs está
 // oculto (solo aparece en pantallas >=768px, ver style.css) y la única forma
 // de llegar a una pestaña es haciendo swipe, poco descubrible. Este botón
@@ -3253,7 +3243,7 @@ function paneSwipeStart(clientX, clientY) {
   return true;
 }
 
-const PANE_COUNT = 5;
+const PANE_COUNT = 4;
 
 function paneSwipeMove(clientX, clientY) {
   if (!paneDragging) return false;

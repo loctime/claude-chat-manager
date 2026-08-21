@@ -3,6 +3,11 @@
 // mover — nace ya separado, sigue el mismo patrón que search.js/doc-scanner.js:
 // script clásico cargado después de app.js, mismo scope global compartido.
 // Ver docs/superpowers/specs/2026-08-20-limpieza-sesiones-design.md.
+//
+// Vivió primero como pestaña propia del carrusel de panes; a pedido de Diego
+// ("me molesta el botón") pasó a abrirse como dialog aparte desde
+// Configuración → Almacenamiento — el HTML (#cleanup-dialog/#tree-sessions)
+// y el resto de esta lógica no cambiaron, solo el disparador de apertura.
 
 let cleanupSessions = [];      // último reporte crudo del server
 let cleanupActiveClasses = new Set(); // clasificaciones activas en los chips (vacío = todas)
@@ -224,3 +229,18 @@ $('cleanup-confirm-form').addEventListener('submit', (e) => {
   $('cleanup-confirm-dialog').close();
   runCleanupDelete();
 });
+
+// Se recarga cada vez que se abre (no hay flag de "ya cargado" como en
+// Archivado/Notas): la protección por "últimos 5 días" cambia con el
+// tiempo real, así que conviene refrescar siempre que Diego vuelve a mirar
+// esta pantalla, no solo la primera vez.
+async function openCleanupDialog() {
+  $('settings-dialog').close();
+  $('cleanup-dialog').showModal();
+  try {
+    await loadCleanupSessions();
+  } catch (err) {
+    toast('No se pudieron cargar las sesiones: ' + err.message);
+  }
+}
+$('settings-cleanup-btn').onclick = openCleanupDialog;
