@@ -1367,6 +1367,7 @@ app.get('/api/cleanup/sessions', (req, res) => {
     accountProjectsDir(acc),
     data.conversations,
     convId => convStatus(convId) !== 'idle',
+    data.superseded,
   );
   res.json({ ...report, account: acc });
 });
@@ -1381,14 +1382,23 @@ app.post('/api/cleanup/delete', (req, res) => {
     data.conversations,
     ids,
     convId => convStatus(convId) !== 'idle',
+    data.superseded,
   );
+  let changed = false;
   if (result.removedConvIds.length) {
     for (const convId of result.removedConvIds) delete data.conversations[convId];
-    if (Array.isArray(data.superseded)) {
-      data.superseded = data.superseded.filter(sid => !result.deleted.includes(sid));
-    }
-    meta.save(data, metaFile);
+    changed = true;
   }
+  // Corre siempre que se haya borrado algo (no solo cuando removedConvIds no está
+  // vacío): un sessionId puede estar únicamente en superseded — sin conv propia
+  // asociada a un currentSessionId borrado — y aun así hay que sacarlo de la lista
+  // para no dejar un id stale apuntando a un .jsonl que ya no existe.
+  if (result.deleted.length && Array.isArray(data.superseded)) {
+    const before = data.superseded.length;
+    data.superseded = data.superseded.filter(sid => !result.deleted.includes(sid));
+    if (data.superseded.length !== before) changed = true;
+  }
+  if (changed) meta.save(data, metaFile);
   // Resync best-effort: si falla (índice no disponible en esta máquina), el
   // borrado ya ocurrió igual — no vale la pena fallar la request por esto.
   syncSearchIndex(acc, { reason: 'cleanup' }).catch(() => {});

@@ -5,7 +5,7 @@ const path = require('path');
 const os = require('os');
 const {
   listForCleanup, classifySession, isProtectedSession, RECENT_PROTECTION_MS,
-  buildCleanupReport, deleteCleanupSessions,
+  buildCleanupReport, deleteCleanupSessions, _clearCleanupListCache,
 } = require('../src/scanner');
 
 function tmpProjectsDir() {
@@ -129,4 +129,118 @@ test('deleteCleanupSessions devuelve el convId a borrar cuando la sesión sí er
   const result = deleteCleanupSessions(root, conversations, ['app-vieja'], () => false);
   assert.deepEqual(result.deleted, ['app-vieja']);
   assert.deepEqual(result.removedConvIds, ['conv-x']);
+});
+
+// ── Fix #1: compactedFromSession / superseded no quedan huérfanos ──
+
+test('compactedFromSession hereda pinned de su conv: se clasifica app y queda protegida', () => {
+  const dir = tmpProjectsDir();
+  writeSession(dir, 'vieja-compactada', [userMsg('a'), assistantMsg('b'), userMsg('c'), assistantMsg('d')]);
+  writeSession(dir, 'actual-1', [userMsg('e'), assistantMsg('f')]);
+  const conversations = {
+    'conv-pin': { currentSessionId: 'actual-1', compactedFromSession: 'vieja-compactada', pinned: true, archived: false },
+  };
+  const root = projectsRoot(dir);
+
+  const report = buildCleanupReport(root, conversations, () => false, []);
+  const vieja = report.sessions.find(s => s.sessionId === 'vieja-compactada');
+  assert.equal(vieja.classification, 'app');
+  assert.equal(vieja.convId, 'conv-pin');
+  assert.equal(vieja.pinned, true);
+  assert.equal(vieja.protected, true);
+  assert.equal(vieja.protectedReason, 'pinned');
+
+  const result = deleteCleanupSessions(root, conversations, ['vieja-compactada', 'actual-1'], () => false, []);
+  assert.deepEqual(result.deleted, []);
+  assert.deepEqual(result.skipped.map(s => s.id).sort(), ['actual-1', 'vieja-compactada']);
+  assert.ok(result.skipped.every(s => s.reason === 'pinned'));
+  assert.equal(fs.existsSync(path.join(dir, 'vieja-compactada.jsonl')), true);
+});
+
+test('compactedFromSession hereda archived de su conv en isProtectedSession/buildCleanupReport', () => {
+  const dir = tmpProjectsDir();
+  writeSession(dir, 'vieja-2', [userMsg('a'), assistantMsg('b'), userMsg('c'), assistantMsg('d')]);
+  const conversations = {
+    'conv-arch': { currentSessionId: 'actual-2', compactedFromSession: 'vieja-2', pinned: false, archived: true },
+  };
+  const root = projectsRoot(dir);
+  const report = buildCleanupReport(root, conversations, () => false, []);
+  const vieja = report.sessions.find(s => s.sessionId === 'vieja-2');
+  assert.equal(vieja.classification, 'app');
+  assert.equal(vieja.archived, true);
+  assert.equal(vieja.protected, true);
+  assert.equal(vieja.protectedReason, 'archived');
+});
+
+test('sessionId en data.superseded sin conv propia clasifica app en vez de orphan/trivial', () => {
+  const dir = tmpProjectsDir();
+  writeSession(dir, 'superseded-1', [userMsg('a'), assistantMsg('b'), userMsg('c'), assistantMsg('d')]);
+  const root = projectsRoot(dir);
+  const report = buildCleanupReport(root, {}, () => false, ['superseded-1']);
+  const s = report.sessions.find(x => x.sessionId === 'superseded-1');
+  assert.equal(s.classification, 'app');
+  assert.equal(s.convId, null);
+});
+
+// ── Fix #2: sessionIds inválidos (path traversal) se rechazan antes de tocar el filesystem ──
+
+test('deleteCleanupSessions rechaza sessionIds con separadores de path (traversal) y no borra afuera de projectsDir', () => {
+  const dir = tmpProjectsDir();
+  const root = projectsRoot(dir);
+  // Simula el archivo "afuera" que un id malicioso lograría alcanzar sin el chequeo:
+  // findSessionFile hace path.join(projectsDir, d, sessionId + '.jsonl'), así que
+  // '../evil' desde adentro de la subcarpeta del proyecto resuelve acá mismo.
+  const outsideFile = path.join(root, 'evil.jsonl');
+  fs.writeFileSync(outsideFile, 'no debería tocarse');
+  try {
+    const maliciousIds = ['../evil', '../../evil', 'a/../../evil', '..\\evil'];
+    const result = deleteCleanupSessions(root, {}, maliciousIds, () => false, []);
+    assert.equal(result.deleted.length, 0);
+    for (const id of maliciousIds) {
+      assert.deepEqual(result.skipped.find(s => s.id === id), { id, reason: 'id-invalido' });
+    }
+    assert.equal(fs.existsSync(outsideFile), true, 'el archivo fuera de projectsDir no debe tocarse');
+  } finally {
+    fs.unlinkSync(outsideFile);
+  }
+});
+
+test('deleteCleanupSessions sigue aceptando sessionIds válidos (UUID-like) tras el chequeo', () => {
+  const dir = tmpProjectsDir();
+  writeSession(dir, 'abc-123_DEF.456', [userMsg('a'), assistantMsg('b'), userMsg('c'), assistantMsg('d')]);
+  const root = projectsRoot(dir);
+  const result = deleteCleanupSessions(root, {}, ['abc-123_DEF.456'], () => false, []);
+  assert.deepEqual(result.deleted, ['abc-123_DEF.456']);
+});
+
+// ── Fix #3: listForCleanup cachea por mtime (mismo patrón que _sessionInfoCache) ──
+
+test('listForCleanup cachea por mtime: no relee un .jsonl sin cambios, y sí relee tras tocar su mtime', () => {
+  const dir = tmpProjectsDir();
+  writeSession(dir, 'a', [userMsg('hola'), assistantMsg('dale')]);
+  const root = projectsRoot(dir);
+  _clearCleanupListCache();
+
+  const first = listForCleanup(root);
+  assert.equal(first.length, 1);
+
+  const originalReadFileSync = fs.readFileSync;
+  let calls = 0;
+  fs.readFileSync = (...args) => { calls++; return originalReadFileSync(...args); };
+  try {
+    const second = listForCleanup(root);
+    assert.equal(calls, 0, 'no debería releer el .jsonl si el mtime no cambió');
+    assert.deepEqual(second, first);
+
+    const filePath = path.join(dir, 'a.jsonl');
+    const future = new Date(Date.now() + 5000);
+    fs.utimesSync(filePath, future, future);
+
+    const third = listForCleanup(root);
+    assert.equal(calls, 1, 'debería releer el .jsonl una vez que cambió su mtime');
+    assert.equal(third.length, 1);
+    assert.equal(third[0].sessionId, 'a');
+  } finally {
+    fs.readFileSync = originalReadFileSync;
+  }
 });
