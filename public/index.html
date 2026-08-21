@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=65">
+  <link rel="stylesheet" href="style.css?v=70">
   <!-- Color de identidad server-side (Configuración → Color de identidad). Va
        después de style.css para pisar el --accent default de ahí; el ajuste
        personal por-dispositivo ("Acento" en Colores, más abajo) sigue
@@ -83,6 +83,7 @@
               <button type="button" id="scan-start-btn" class="scan-start-btn">📷 Escanear documento</button>
               <p class="scan-hint">Sacá o subí una foto de un documento — se detecta el borde, se endereza la perspectiva y se limpia el contraste, todo local en la PC (no llama a Claude, no gasta tokens).</p>
               <div id="scan-result" class="scan-result" hidden></div>
+              <div id="scan-queue" class="scan-queue" hidden></div>
             </div>
           </div>
         </div>
@@ -310,7 +311,7 @@
   <script src="pwa.js?v=66"></script>
   <script src="tts.js?v=66"></script>
   <script src="search.js?v=66"></script>
-  <script src="doc-scanner.js?v=66"></script>
+  <script src="doc-scanner.js?v=70"></script>
   <script src="lightbox.js?v=66"></script>
 </body>
 </html>
