@@ -1171,14 +1171,13 @@ app.post('/api/notebooks/:id/notes/upload', notesUpload.single('file'), (req, re
 // ── Escáner de documentos (tipo CamScanner) ──
 // Detecta el documento en la foto, endereza la perspectiva y limpia el
 // contraste (canal rojo + umbral adaptivo — mismo enfoque que ya veníamos
-// usando para remitos en mejora-imagen/, ver mejora-imagen/CLAUDE.md). Todo
-// corre local con OpenCV vía un script Python — no pasa por Claude ni gasta
-// tokens.
+// usando para remitos, ver scripts/mejora-imagen/README.md). Todo corre
+// local con OpenCV vía un script Python — no pasa por Claude ni gasta
+// tokens. Vendorizado adentro del repo (antes vivía en una carpeta hermana
+// fuera de git, así que se rompía en cualquier checkout que no fuera el de
+// Fernando) — ver docs/superpowers/specs/2026-08-17-escaner-documentos-design.md.
 const PYTHON_CMD = IS_WIN ? 'python' : 'python3';
-const SCAN_SCRIPT = path.join(
-  process.env.CCM_DEFAULT_PROJECT_DIR || path.join(__dirname, '..', '..'),
-  'mejora-imagen', 'mejorar_imagen.py'
-);
+const SCAN_SCRIPT = path.join(__dirname, '..', 'scripts', 'mejora-imagen', 'mejorar_imagen.py');
 const SCANS_DIR = path.join(HOME_DIR, '.ccm-notes', 'scans');
 
 const scanUpload = multer({

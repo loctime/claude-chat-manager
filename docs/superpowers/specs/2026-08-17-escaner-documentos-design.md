@@ -1,6 +1,6 @@
 # Escáner de documentos (tipo CamScanner) — diseño y estado actual
 
-**Fecha**: 2026-08-17
+**Fecha**: 2026-08-17 (última actualización: 2026-08-21 — script vendorizado adentro del repo)
 **Estado**: implementado y activo (no está gateado detrás de ningún flag)
 
 ## Contexto
@@ -8,8 +8,18 @@
 Pestaña nueva en el sidebar (`Chats / Archivado / Notas / Mail / Escáner`, ver `header-scan-btn` en
 `index.html`) para sacarle o subirle una foto a un documento (remito, factura, formulario en papel
 carbónico, etc.) y recibir de vuelta una versión enderezada y limpia — mismo caso de uso que venía
-resolviéndose a mano con `mejora-imagen/mejorar_imagen.py` (ver su `CLAUDE.md`), pero ahora
-integrado a la PWA en vez de tener que pasarle el archivo a Claude por chat.
+resolviéndose a mano con `mejora-imagen/mejorar_imagen.py` (carpeta suelta fuera de este repo, ver
+su `CLAUDE.md`), pero ahora integrado a la PWA en vez de tener que pasarle el archivo a Claude por
+chat.
+
+⚠️ **Corregido 2026-08-21:** hasta esa fecha `server.js` apuntaba al script con una ruta relativa
+hacia esa carpeta hermana (`../../mejora-imagen/mejorar_imagen.py`), que **no está en git** — vivía
+solo en la PC de Fernando. El feature funcionaba para él pero se habría roto en cualquier otro
+checkout del repo (Diego incluido) apenas alguien tocara `/api/scan`. Fix: el script se copió
+("vendorizó") adentro del repo en `scripts/mejora-imagen/` (ver su propio `README.md`), y
+`SCAN_SCRIPT` en `server.js` ahora apunta ahí. La carpeta original sigue existiendo aparte para uso
+suelto (remitos, facturas por chat) — son dos copias sin symlink, hay que replicar a mano si se
+corrige un bug de detección en una y no en la otra.
 
 **Todo el procesamiento corre local con OpenCV, vía ese mismo script Python. No pasa por Claude,
 no gasta tokens.**
@@ -79,8 +89,10 @@ GrabCut se dispara, ver `CLAUDE.md` de `mejora-imagen/`).
 
 ## Requisito de entorno
 
-Igual que `mejora-imagen/` standalone: Python 3 + OpenCV (`cv2`) instalados en el PATH que use el
-server (`PYTHON_CMD` = `python` en Windows, `python3` en Linux/macOS). Si el server corre en una
-máquina donde no se corrió `mejora-imagen/setup.sh` todavía, `/api/scan` va a fallar con el stderr
-del `execFile` visible en la respuesta de error (recortado a 300 caracteres) — no hay chequeo
-previo de que OpenCV esté disponible antes de aceptar la foto.
+Python 3 + OpenCV (`cv2`) instalados en el PATH que use el server (`PYTHON_CMD` = `python` en
+Windows, `python3` en Linux/macOS). Si el server corre en una máquina donde no se corrió
+`scripts/mejora-imagen/setup.sh` todavía, `/api/scan` va a fallar con el stderr del `execFile`
+visible en la respuesta de error (recortado a 300 caracteres) — no hay chequeo previo de que
+OpenCV esté disponible antes de aceptar la foto. Con el script ahora adentro del repo (fix
+2026-08-21), este es el único requisito real — ya no hace falta que exista ninguna carpeta hermana
+fuera de `claude-chat-manager/`.
