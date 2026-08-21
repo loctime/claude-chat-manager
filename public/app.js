@@ -1998,6 +1998,18 @@ function isNearBottom() {
 function scrollToBottom() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
+// Al cambiar de conversación (Tab o click) no queremos el fondo del todo
+// (te tira al final del último mensaje, ya leído) sino el PRINCIPIO del
+// último mensaje, para poder arrancar a leerlo. `pendingScrollToLastStart`
+// lo activa selectConv() antes de loadMessages() y loadMessages() lo
+// consume una sola vez (no pisa el comportamiento normal de "seguir
+// pegado al fondo" mientras el turno sigue en curso).
+let pendingScrollToLastStart = false;
+function scrollToLastMessageStart() {
+  const last = messagesEl.lastElementChild;
+  if (last) last.scrollIntoView({ block: 'start' });
+  else scrollToBottom();
+}
 // Botón "ir al final": aparece solo cuando estás despegado del fondo.
 // .new = llegó contenido mientras leías · .done = terminó el turno.
 const jumpBtn = $('jump-bottom');
@@ -2296,7 +2308,10 @@ async function loadMessages(convId) {
     if (inCompacted && !dividerPlaced) addCompactDivider();
   } finally {
     suppressAutoScroll = false;
-    if (wasStuck) scrollToBottom();
+    if (pendingScrollToLastStart) {
+      pendingScrollToLastStart = false;
+      scrollToLastMessageStart();
+    } else if (wasStuck) scrollToBottom();
     else messagesEl.scrollTop = prevTop;
     updateLastUserPin();
   }
@@ -2546,9 +2561,13 @@ async function selectConv(convId, name, model, lastModel, projectDir) {
   }
   showNotebookView(false);
   openChat();
-  // Al abrir otra conversación siempre arrancamos abajo, sin heredar la
-  // posición de scroll de la anterior.
+  // Al abrir otra conversación no heredamos la posición de scroll de la
+  // anterior: arrancamos mostrando el PRINCIPIO del último mensaje (no el
+  // fondo del todo), para poder leerlo desde el principio. `stickToBottom`
+  // sigue en true aparte, para que si la conversación sigue en curso
+  // (streaming) el auto-scroll normal continúe pegado al fondo como siempre.
   stickToBottom = true;
+  pendingScrollToLastStart = true;
   syncJumpBtn();
   // Abrir la conversación cuenta como "leída" — se lanza en paralelo con
   // loadMessages y se espera antes de refrescar el árbol, así el punto de no
@@ -3105,7 +3124,9 @@ document.addEventListener('keydown', e => {
   if (e.key !== 'Tab') return;
   if (document.querySelector('dialog[open]')) return;
   if (!currentConv) return;
-  const top2 = [...document.querySelectorAll('#tree .conv')].slice(0, 2);
+  const top2 = [...document.querySelectorAll('#tree .conv')]
+    .filter(el => !el._conv.pinned)
+    .slice(0, 2);
   if (top2.length < 2) return;
   e.preventDefault();
   const target = top2[0]._conv.convId === currentConv ? top2[1] : top2[0];
