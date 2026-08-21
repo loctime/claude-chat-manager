@@ -8,7 +8,7 @@ let archivedTotal = 0;
 let archivedTreeLimit = 100;
 let archivedTreeHasMore = false;
 let archivedTreeTotal = 0;
-let activePane = 0; // 0=chats 1=archived 2=notas 3=escaner
+let activePane = 0; // 0=chats 1=archived 2=notas 3=escaner 4=sesiones
 let notebookListLoaded = false;
 let notebooks = [];
 let currentNotebook = null; // {id, name} de la libreta abierta, o null si estamos en la lista
@@ -3134,7 +3134,7 @@ function paneSwipeStart(clientX, clientY) {
   return true;
 }
 
-const PANE_COUNT = 4;
+const PANE_COUNT = 5;
 
 function paneSwipeMove(clientX, clientY) {
   if (!paneDragging) return false;

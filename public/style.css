@@ -207,15 +207,16 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
 #tree-viewport { flex: 1; overflow: hidden; position: relative; }
 #tree-viewport-inner {
   display: flex;
-  width: 400%;
+  width: 500%;
   height: 100%;
   transition: transform .25s ease;
   touch-action: pan-y;
 }
-#tree-viewport-inner[data-pane="1"] { transform: translateX(-25%); }
-#tree-viewport-inner[data-pane="2"] { transform: translateX(-50%); }
-#tree-viewport-inner[data-pane="3"] { transform: translateX(-75%); }
-.tree-pane { width: 25%; flex: none; height: 100%; overflow-y: auto; }
+#tree-viewport-inner[data-pane="1"] { transform: translateX(-20%); }
+#tree-viewport-inner[data-pane="2"] { transform: translateX(-40%); }
+#tree-viewport-inner[data-pane="3"] { transform: translateX(-60%); }
+#tree-viewport-inner[data-pane="4"] { transform: translateX(-80%); }
+.tree-pane { width: 20%; flex: none; height: 100%; overflow-y: auto; }
 .tree-pane::-webkit-scrollbar { width: 4px; }
 .tree-pane::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
@@ -1697,4 +1698,48 @@ body.hide-tools details.tool { display: none !important; }
 #notebook-list { flex: 1; overflow-y: auto; }
 #notebook-list::-webkit-scrollbar { width: 4px; }
 #notebook-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* ── Sesiones: limpieza de conversaciones ── */
+.sessions-pane { display: flex; flex-direction: column; overflow: hidden; }
+.cleanup-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 12px; border-bottom: 1px solid var(--border); flex: none;
+}
+.cleanup-header h2 { font-size: 14px; margin: 0; }
+#cleanup-total { font-size: 12px; color: var(--text2); }
+.cleanup-filters { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex: none; }
+.cleanup-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.cleanup-chip {
+  border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px;
+  font-size: 12px; background: none; color: var(--text2); cursor: pointer;
+}
+.cleanup-chip.active { border-color: var(--accent); color: var(--accent); }
+.cleanup-filters select {
+  background: var(--input-bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 4px 6px; font-size: 12px;
+}
+.cleanup-select-all { display: flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 12px; color: var(--text2); flex: none; }
+.cleanup-list { flex: 1; overflow-y: auto; }
+.session-row {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.session-row.protected { opacity: .6; }
+.session-row-body { flex: 1; min-width: 0; }
+.session-row-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-row-meta { font-size: 11px; color: var(--text2); display: flex; gap: 6px; flex-wrap: wrap; }
+.session-badge {
+  font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border);
+}
+.session-badge-app { color: var(--accent); border-color: var(--accent); }
+.session-badge-channel { color: var(--danger); border-color: var(--danger); }
+.cleanup-toolbar {
+  display: none; align-items: center; justify-content: space-between;
+  padding: 8px 12px; border-top: 1px solid var(--border); background: var(--panel); flex: none;
+}
+.cleanup-toolbar.visible { display: flex; }
+.cleanup-toolbar button.danger { background: var(--danger); color: #fff; border: none; border-radius: var(--radius); padding: 6px 12px; }
+#cleanup-confirm-dialog { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); color: var(--text); padding: 16px; max-width: 360px; }
+.cleanup-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.cleanup-confirm-actions button.danger { background: var(--danger); color: #fff; border: none; border-radius: var(--radius); padding: 6px 14px; }
 .notes-empty { padding: 24px 12px; text-align: center; color: var(--text2); font-size: 13px; }
