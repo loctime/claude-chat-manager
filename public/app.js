@@ -813,6 +813,15 @@ async function goToPane(index) {
       return;
     }
   }
+  if (index === 4) {
+    try {
+      await loadCleanupSessions();
+    } catch (err) {
+      toast('No se pudieron cargar las sesiones: ' + err.message);
+      if (myGeneration === paneNavGeneration) paneNavTarget = activePane;
+      return;
+    }
+  }
   if (myGeneration !== paneNavGeneration) return; // otra navegación más nueva ya tomó el control
   activePane = index;
   $('tree-viewport-inner').dataset.pane = String(index);
