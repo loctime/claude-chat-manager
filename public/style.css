@@ -1781,7 +1781,7 @@ body.hide-tools details.tool { display: none !important; }
   background: var(--panel); color: var(--text); padding: 0;
   width: 90vw; max-width: 720px; height: 85vh; max-height: 720px;
 }
-#cleanup-form { display: flex; flex-direction: column; height: 100%; }
+#cleanup-form { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 .sessions-pane { display: flex; flex-direction: column; overflow: hidden; height: 100%; }
 .cleanup-header {
   display: flex; align-items: center; gap: 8px;
@@ -1794,27 +1794,47 @@ body.hide-tools details.tool { display: none !important; }
 }
 .cleanup-close-btn:hover { color: var(--text); }
 #cleanup-total { font-size: 12px; color: var(--text2); }
-.cleanup-filters { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex: none; }
-.cleanup-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+/* La regla genérica "dialog select/input { width:100% }" (pensada para
+   formularios angostos como Configuración/Búsqueda) se cuela acá adentro
+   y le pega ancho completo a cada <select> Y a cada checkbox — sin este
+   reset los checkboxes de las filas se estiran a todo el ancho y tapan el
+   texto (bug real reportado por Diego con captura). Los selects de acá
+   quedan en grilla de 2 columnas a propósito (4 selects en una sola
+   columna ocupaban media pantalla de alto). */
+.cleanup-filters {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px;
+  padding: 10px 12px; border-bottom: 1px solid var(--border); flex: none;
+}
+.cleanup-chips { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px; }
 .cleanup-chip {
   border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px;
   font-size: 12px; background: none; color: var(--text2); cursor: pointer;
 }
 .cleanup-chip.active { border-color: var(--accent); color: var(--accent); }
 .cleanup-filters select {
-  background: var(--input-bg); color: var(--text); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 4px 6px; font-size: 12px;
+  width: 100%; background: var(--input-bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 6px 8px; font-size: 12px; margin-top: 0;
 }
-.cleanup-select-all { display: flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 12px; color: var(--text2); flex: none; }
-.cleanup-list { flex: 1; overflow-y: auto; }
-.session-row {
+.cleanup-select-all {
   display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  font-size: 12px; color: var(--text2); flex: none; border-bottom: 1px solid var(--border);
+}
+.cleanup-select-all input[type="checkbox"] { width: 16px; height: 16px; margin: 0; flex: none; }
+.cleanup-list { flex: 1; overflow-y: auto; overflow-x: hidden; }
+.session-row {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
   border-bottom: 1px solid var(--border);
 }
-.session-row.protected { opacity: .6; }
+.session-row:hover { background: var(--input-bg); }
+.session-row input[type="checkbox"] { width: 16px; height: 16px; margin: 0; flex: none; }
+.session-row.protected { opacity: .55; }
 .session-row-body { flex: 1; min-width: 0; }
 .session-row-name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.session-row-meta { font-size: 11px; color: var(--text2); display: flex; gap: 6px; flex-wrap: wrap; }
+.session-row-meta {
+  font-size: 11px; color: var(--text2); display: flex; align-items: center;
+  gap: 6px; flex-wrap: wrap; margin-top: 3px;
+}
+.session-row-size { font-weight: 600; color: var(--text); }
 .session-badge {
   font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border);
 }

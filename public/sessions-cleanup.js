@@ -139,8 +139,14 @@ function renderCleanupList() {
       reasonBadge.textContent = CLEANUP_REASON_LABELS[s.protectedReason] || '🔒';
       meta.appendChild(reasonBadge);
     }
+    // El tamaño resaltado aparte (no perdido en la línea de metadata) — es
+    // el dato que más importa acá, ya que el orden por default es por tamaño.
+    const size = document.createElement('span');
+    size.className = 'session-row-size';
+    size.textContent = cleanupFormatMB(s.sizeBytes);
+    meta.appendChild(size);
     const rest = document.createElement('span');
-    rest.textContent = [cleanupFolderName(s.cwd), cleanupFormatMB(s.sizeBytes), (s.lastActivity || '').slice(0, 10)].join(' · ');
+    rest.textContent = [cleanupFolderName(s.cwd), (s.lastActivity || '').slice(0, 10)].join(' · ');
     meta.appendChild(rest);
     body.appendChild(name);
     body.appendChild(meta);
