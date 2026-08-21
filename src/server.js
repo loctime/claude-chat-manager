@@ -1355,6 +1355,46 @@ app.get('/api/tree', (req, res) => {
   res.json({ tree, hasMore, total, limit, archivedTotal, account: acc });
 });
 
+// ── Limpieza de sesiones ──
+// Ver docs/superpowers/specs/2026-08-20-limpieza-sesiones-design.md. Toda la
+// lógica pesada (clasificar, proteger, borrar) vive en scanner.js como
+// funciones puras testeadas aparte — acá solo se cablea HTTP + persistencia
+// de meta.json + el resync del índice de búsqueda.
+app.get('/api/cleanup/sessions', (req, res) => {
+  const acc = req.query.account || activeAccount;
+  const data = meta.load(accountMetaFile(acc));
+  const report = scanner.buildCleanupReport(
+    accountProjectsDir(acc),
+    data.conversations,
+    convId => convStatus(convId) !== 'idle',
+  );
+  res.json({ ...report, account: acc });
+});
+
+app.post('/api/cleanup/delete', (req, res) => {
+  const acc = req.body.account || activeAccount;
+  const ids = Array.isArray(req.body.sessionIds) ? req.body.sessionIds : [];
+  const metaFile = accountMetaFile(acc);
+  const data = meta.load(metaFile);
+  const result = scanner.deleteCleanupSessions(
+    accountProjectsDir(acc),
+    data.conversations,
+    ids,
+    convId => convStatus(convId) !== 'idle',
+  );
+  if (result.removedConvIds.length) {
+    for (const convId of result.removedConvIds) delete data.conversations[convId];
+    if (Array.isArray(data.superseded)) {
+      data.superseded = data.superseded.filter(sid => !result.deleted.includes(sid));
+    }
+    meta.save(data, metaFile);
+  }
+  // Resync best-effort: si falla (índice no disponible en esta máquina), el
+  // borrado ya ocurrió igual — no vale la pena fallar la request por esto.
+  syncSearchIndex(acc, { reason: 'cleanup' }).catch(() => {});
+  res.json({ deleted: result.deleted, skipped: result.skipped, freedBytes: result.freedBytes });
+});
+
 app.get('/api/search', (req, res) => {
   const acc = req.query.account || activeAccount;
   const q = (req.query.q || '').toString().trim();
