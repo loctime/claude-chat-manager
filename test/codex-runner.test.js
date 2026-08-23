@@ -112,3 +112,74 @@ test('cancelar en cola vs. corriendo', () => {
   assert.equal(r.isBusy('c2'), false);
   assert.equal(r.cancel('c1'), true); // corriendo → taskkill contra el pid falso falla, cae a child.kill() (no-op en el fake)
 });
+
+test('línea JSON corrupta en stdout no rompe el parseo', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  const events = [];
+  r.on('event', e => events.push(e));
+  r.send({ convId: 'c1', sessionId: null, cwd: 'C:\\p', text: 'hola' });
+  spawned[0].child.stdout.emit('data', '{"type":"thread.started","thread_id":"t1"}\nbasura no json\n{"type":"turn.completed"}\n');
+  assert.equal(events.length, 2);
+  assert.equal(events[0].event.type, 'thread.started');
+  assert.equal(events[1].event.type, 'turn.completed');
+});
+
+test('close con código != 0 emite idle con stderr', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  const statuses = [];
+  r.on('status', s => statuses.push(s));
+  r.send({ convId: 'c1', sessionId: null, cwd: 'C:\\p', text: 'hola' });
+  spawned[0].child.stderr.emit('data', 'error message aquí');
+  spawned[0].child.emit('close', 1);
+  const idle = statuses.find(s => s.status === 'idle');
+  assert.equal(idle.code, 1);
+  assert.match(idle.stderr, /error message aquí/);
+});
+
+test('flushea buffer al cerrar si la última línea no tiene newline', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  const events = [];
+  r.on('event', e => events.push(e));
+  r.send({ convId: 'c1', sessionId: null, cwd: 'C:\\p', text: 'hola' });
+  spawned[0].child.stdout.emit('data', '{"type":"thread.started","thread_id":"t1"}');
+  // no newline al final, pero emit close debe flusear el buffer
+  spawned[0].child.emit('close', 0);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].event.type, 'thread.started');
+});
+
+test('child.emit(\'error\', ...) emite status idle con code -1 y libera el slot', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  const statuses = [];
+  r.on('status', s => statuses.push(s));
+  r.send({ convId: 'c1', sessionId: null, cwd: 'C:\\p', text: 'hola' });
+  spawned[0].child.emit('error', new Error('spawn failed'));
+  // el error debe emitir idle y liberar el slot
+  const idle = statuses.find(s => s.status === 'idle' && s.code === -1);
+  assert.ok(idle);
+  assert.match(idle.stderr, /spawn failed/);
+  assert.equal(r.isBusy('c1'), false);
+  // un segundo close() no debe emitir otro idle (guard 'done')
+  const beforeClose = statuses.length;
+  spawned[0].child.emit('close', 0);
+  assert.equal(statuses.length, beforeClose);
+});
+
+test('semáforo de maxConcurrent: el tercer job queda en cola y arranca al liberarse un slot', () => {
+  const spawned = [];
+  const r = makeRunner(spawned, { maxConcurrent: 2 });
+  r.send({ convId: 'c1', sessionId: null, cwd: 'C:\\p', text: 'a' });
+  r.send({ convId: 'c2', sessionId: null, cwd: 'C:\\p', text: 'b' });
+  r.send({ convId: 'c3', sessionId: null, cwd: 'C:\\p', text: 'c' });
+  // solo 2 jobs spawnearon; el tercero está en cola
+  assert.equal(spawned.length, 2);
+  assert.ok(r.isBusy('c3'));
+  // al cerrar el primero, el tercero debe arrancar
+  spawned[0].child.emit('close', 0);
+  assert.equal(spawned.length, 3);
+  assert.equal(spawned[2].cmd, 'codex'); // se spawneó el comando
+});
