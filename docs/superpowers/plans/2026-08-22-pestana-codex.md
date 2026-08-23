@@ -581,6 +581,14 @@ function fakeChild() {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
+  // pid + kill: cancel() en Windows revisa child.pid antes de intentar
+  // taskkill, y cae a child.kill(...) si taskkill falla — sin estos dos
+  // campos, cancelar un job "corriendo" en el test tira TypeError
+  // (EventEmitter no tiene .kill). El pid es inventado: taskkill va a
+  // fallar contra un PID inexistente, se cae al catch, y child.kill (acá
+  // un no-op) absorbe el resto sin tocar ningún proceso real.
+  child.pid = 999999;
+  child.kill = () => {};
   return child;
 }
 
@@ -675,7 +683,7 @@ test('cancelar en cola vs. corriendo', () => {
   r.send({ convId: 'c2', sessionId: null, cwd: 'C:\\p', text: 'b' });
   assert.equal(r.cancel('c2'), true); // en cola
   assert.equal(r.isBusy('c2'), false);
-  assert.equal(r.cancel('c1'), true); // corriendo → intenta taskkill, no explota en un entorno sin el binario
+  assert.equal(r.cancel('c1'), true); // corriendo → taskkill contra el pid falso falla, cae a child.kill() (no-op en el fake)
 });
 ```
 
