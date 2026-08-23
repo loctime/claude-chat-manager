@@ -66,3 +66,19 @@ test('getMessages: una línea corrupta no tira abajo el resto', () => {
   assert.equal(msgs[0].text, 'ok');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('listSessions: session_meta sin payload no crashea', () => {
+  const dir = makeTmpSessionsDir();
+  writeRollout(dir, 'broken-1', [
+    { type: 'session_meta' }, // sin payload: guard defensivo lo salta
+    { type: 'event_msg', payload: { type: 'user_message', message: 'mensaje de prueba' }, timestamp: '2026-08-22T00:00:01Z' },
+  ]);
+  scanner._clearSessionInfoCache();
+  const sessions = scanner.listSessions(dir);
+  assert.equal(sessions.length, 1);
+  // sin session_meta válido, usa fallback: sessionId de nombre de archivo
+  assert.match(sessions[0].sessionId, /broken-1/);
+  assert.equal(sessions[0].cwd, null); // sin session_meta válido, cwd es null
+  assert.equal(sessions[0].snippet, 'mensaje de prueba');
+  fs.rmSync(dir, { recursive: true, force: true });
+});

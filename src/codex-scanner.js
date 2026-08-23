@@ -66,7 +66,7 @@ const _infoCache = new Map();
 
 function _computeSessionInfo(filePath) {
   const entries = parseJsonl(filePath);
-  const meta = entries.find(e => e.type === 'session_meta');
+  const meta = entries.find(e => e.type === 'session_meta' && e.payload);
   const msgs = toChatMessages(entries);
   if (!meta && msgs.length === 0) return null;
   const firstUser = msgs.find(m => m.role === 'user');
