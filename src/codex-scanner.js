@@ -40,19 +40,52 @@ function walkRolloutFiles(sessionsDir) {
   return out;
 }
 
-// entries → mensajes de chat. Solo user_message/agent_message (event_msg) — los
-// tool calls (custom_tool_call/custom_tool_call_output en el rollout persistido)
-// quedan fuera de v1 a propósito: se ven en vivo durante el turno (vía SSE, ver
-// codex-runner.js) pero no se reconstruyen al reabrir una conversación vieja.
+// Marcador exacto que codex-runner.js le agrega a CADA mensaje real del
+// usuario antes de mandarlo a `codex exec` (ver infraNotice() en
+// prompt-fragments.js: "AVISO INFRAESTRUCTURA: ..."). Se corta al reconstruir
+// el historial para que coincida con lo que el usuario tipeó de verdad — la
+// burbuja optimista que ya se ve en vivo (addMsg en app.js) nunca incluye el
+// aviso, así que sin este corte el mismo mensaje se vería distinto en vivo
+// que al reabrir la conversación.
+const INFRA_NOTICE_MARKER = '\n\nAVISO INFRAESTRUCTURA:';
+
+// El primer turno de cada sesión de Codex CLI inyecta su propio mensaje con
+// role:"user" (plugins recomendados / AGENTS.md / contexto de entorno) que no
+// es nada que el usuario haya tipeado — verificado en vivo (rollout real):
+// aparece como response_item/message/role:user aparte, antes del primer
+// mensaje real. Se identifica por estos marcadores fijos del propio texto
+// inyectado (siempre trae al menos uno) y se descarta.
+const CLI_CONTEXT_MARKERS = ['<recommended_plugins>', '<environment_context>', '# AGENTS.md instructions'];
+
+function extractText(content) {
+  if (!Array.isArray(content)) return '';
+  return content.filter(c => c && typeof c.text === 'string').map(c => c.text).join('\n\n');
+}
+
+// entries → mensajes de chat. El rollout persistido de Codex CLI (verificado
+// en vivo, cli_version 0.149.0) NO usa event_msg/user_message como en Claude
+// Code — los turnos de texto son response_item con payload.type "message",
+// payload.role "user"/"assistant"/"developer" y payload.content como array de
+// bloques {type, text}. Solo se toman user/assistant (developer es el prompt
+// de sistema completo, no se muestra). Tool calls (custom_tool_call/
+// custom_tool_call_output) quedan fuera de v1 a propósito: se ven en vivo
+// durante el turno (vía SSE, ver codex-runner.js) pero no se reconstruyen al
+// reabrir una conversación vieja.
 function toChatMessages(entries) {
   const items = [];
   for (const e of entries) {
-    if (e.type !== 'event_msg' || !e.payload) continue;
-    if (e.payload.type === 'user_message' && e.payload.message) {
-      items.push({ role: 'user', text: e.payload.message, ts: e.timestamp });
-    } else if (e.payload.type === 'agent_message' && e.payload.message) {
-      items.push({ role: 'assistant', text: e.payload.message, ts: e.timestamp });
+    if (e.type !== 'response_item' || !e.payload || e.payload.type !== 'message') continue;
+    const { role, content } = e.payload;
+    if (role !== 'user' && role !== 'assistant') continue;
+    let text = extractText(content);
+    if (!text) continue;
+    if (role === 'user') {
+      if (CLI_CONTEXT_MARKERS.some(m => text.includes(m))) continue;
+      const idx = text.indexOf(INFRA_NOTICE_MARKER);
+      if (idx !== -1) text = text.slice(0, idx);
+      if (!text) continue;
     }
+    items.push({ role, text, ts: e.timestamp });
   }
   return items;
 }

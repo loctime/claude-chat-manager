@@ -878,23 +878,129 @@ async function codexNewConversation() {
 }
 
 // currentCodexConv: {id, name} de la conversación Codex abierta en #codex-chat,
-// o null si estamos viendo la lista. El composer real (mandar mensaje, cancelar,
-// render de #codex-messages, streaming) es Task 7 — acá solo el cambio de vista.
+// o null si estamos viendo la lista.
 let currentCodexConv = null;
+// EventSource activo del stream de la conversación Codex abierta, o null.
+let codexStream = null;
 
-function codexSelectConv(convId, name) {
-  currentCodexConv = { id: convId, name };
-  $('codex-chat-title').textContent = name;
-  $('codex-messages').innerHTML = '';
+async function codexLoadMessages(convId) {
+  const container = $('codex-messages');
+  container.innerHTML = '';
+  const msgs = await codexApi(`/conversations/${convId}/messages`);
+  for (const m of msgs) addMsg(m.role, m.text, { container, ts: m.ts });
+  if (msgs.length === 0) container.innerHTML = '<div id="empty-state" class="empty-state">Escribile algo a Codex</div>';
+}
+
+function codexOpenStream(convId) {
+  const es = new EventSource(`/api/codex/conversations/${convId}/stream`);
+  es.onmessage = e => {
+    const data = JSON.parse(e.data);
+    const container = $('codex-messages');
+    if (data.kind === 'status') {
+      setCodexBusy(data.status === 'running' || data.status === 'queued');
+      return;
+    }
+    if (data.kind !== 'codex') return;
+    const ev = data.event;
+    if (ev.type === 'item.completed' && ev.item) {
+      if (ev.item.type === 'agent_message' && ev.item.text) {
+        addMsg('assistant', ev.item.text, { container });
+      } else if (ev.item.type === 'command_execution') {
+        addTool('command_execution', { command: ev.item.command }, ev.item.aggregated_output || '', { container });
+      }
+    }
+  };
+  es.onerror = () => { /* EventSource reintenta solo; nada que hacer acá */ };
+  return es;
+}
+
+function codexShowChat() {
   $('codex-tree').style.display = 'none';
   $('codex-chat').style.display = '';
 }
 
 function codexShowTreeList() {
+  if (codexStream) { codexStream.close(); codexStream = null; }
   currentCodexConv = null;
   $('codex-chat').style.display = 'none';
   $('codex-tree').style.display = '';
   codexLoadTree();
+}
+
+async function codexSelectConv(convId, name) {
+  currentCodexConv = { id: convId, name };
+  $('codex-chat-title').textContent = name;
+  codexShowChat();
+  if (codexStream) { codexStream.close(); codexStream = null; }
+  // Limpiar "no leído" al abrir, en paralelo con la carga de mensajes — mismo
+  // orden que usa selectConv() para Claude (PATCH antes de refrescar el árbol,
+  // evita que el punto quede pegado un instante de más por una carrera).
+  codexApi(`/conversations/${convId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ unread: false }),
+  }).catch(() => {});
+  await codexLoadMessages(convId);
+  codexStream = codexOpenStream(convId);
+}
+
+function setCodexBusy(b) {
+  $('codex-send-btn').disabled = b;
+  $('codex-cancel-btn').style.display = b ? '' : 'none';
+}
+
+async function codexCancel() {
+  if (!currentCodexConv) return;
+  await codexApi(`/conversations/${currentCodexConv.id}/message`, { method: 'DELETE' });
+}
+
+async function codexPerformSend(convId, text, imagePath) {
+  addMsg('user', text, { container: $('codex-messages') });
+  setCodexBusy(true);
+  try {
+    await codexApi(`/conversations/${convId}/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, imagePath }),
+    });
+  } catch (err) {
+    addMsg('error', 'No se pudo enviar: ' + err.message, { container: $('codex-messages') });
+    setCodexBusy(false);
+  }
+}
+
+// Sube una imagen a /api/upload (mismo endpoint genérico que ya usa el
+// composer de Chats, no es Codex-específico) y devuelve la ruta local.
+// No se reusa uploadAttachment() tal cual: esa función está acoplada al DOM
+// del composer de Claude (escribe en #composer-attachments, empuja a
+// pendingAttachments, y aborta si currentConv es null) — para Codex hace
+// falta solo la subida, sin esos efectos secundarios. Sí se reusa
+// prepareForUpload(), que es genérica (File → Blob, sin tocar el DOM).
+async function codexUploadImage(file) {
+  const { blob, name } = await prepareForUpload(file, file.name);
+  const fd = new FormData();
+  fd.append('file', blob, name);
+  const res = await netFetch('/api/upload', { method: 'POST', body: fd });
+  if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+  const { path: filePath } = await res.json();
+  return filePath;
+}
+
+async function codexSubmitComposer() {
+  const textEl = $('codex-composer-text');
+  const text = textEl.value.trim();
+  if (!text || !currentCodexConv) return;
+  const imageInput = $('codex-image-input');
+  let imagePath;
+  try {
+    if (imageInput.files[0]) {
+      imagePath = await codexUploadImage(imageInput.files[0]);
+      imageInput.value = '';
+    }
+  } catch (err) {
+    addMsg('error', 'No se pudo subir la imagen: ' + err.message, { container: $('codex-messages') });
+    return;
+  }
+  textEl.value = '';
+  await codexPerformSend(currentCodexConv.id, text, imagePath);
 }
 
 let paneNavGeneration = 0;
@@ -2258,7 +2364,8 @@ function updateLastUserPin() {
 }
 
 function addMsg(role, text, opts = {}) {
-  const existing = document.getElementById('empty-state');
+  const container = opts.container || messagesEl;
+  const existing = container.querySelector('#empty-state') || (container === messagesEl ? document.getElementById('empty-state') : null);
   if (existing) existing.remove();
 
   const div = document.createElement('div');
@@ -2308,12 +2415,14 @@ function addMsg(role, text, opts = {}) {
   } else {
     div.textContent = text;
   }
-  messagesEl.appendChild(div);
-  autoScroll();
+  container.appendChild(div);
+  if (container === messagesEl) autoScroll();
+  else container.scrollTop = container.scrollHeight; // autoScroll()/jumpBtn son estado del pane de Claude — un container ajeno (p.ej. #codex-messages) solo necesita quedar pegado al final
   return div;
 }
 
 function addTool(name, input, output, opts = {}) {
+  const container = opts.container || messagesEl;
   const det = document.createElement('details');
   det.className = 'tool';
   if (opts.compacted) det.classList.add('compacted');
@@ -2381,8 +2490,9 @@ function addTool(name, input, output, opts = {}) {
     }
   }
 
-  messagesEl.appendChild(det);
-  autoScroll();
+  container.appendChild(det);
+  if (container === messagesEl) autoScroll();
+  else container.scrollTop = container.scrollHeight;
 }
 
 // Marcador inline para un boundary de /compact real (mismo session_id antes y
