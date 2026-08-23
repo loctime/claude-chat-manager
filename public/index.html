@@ -61,6 +61,7 @@
         <button type="button" class="pane-tab" data-pane="1">Archivado</button>
         <button type="button" class="pane-tab" data-pane="2">📝 Notas</button>
         <button type="button" class="pane-tab" data-pane="3">📷 Escáner</button>
+        <button type="button" class="pane-tab" data-pane="4">Codex</button>
       </nav>
       <div id="ptr-indicator" hidden>
         <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
@@ -84,6 +85,29 @@
               <p class="scan-hint">Sacá o subí una foto de un documento — se detecta el borde, se endereza la perspectiva y se limpia el contraste, todo local en la PC (no llama a Claude, no gasta tokens).</p>
               <div id="scan-result" class="scan-result" hidden></div>
               <div id="scan-queue" class="scan-queue" hidden></div>
+            </div>
+          </div>
+          <div class="tree-pane codex-pane" id="codex-pane">
+            <div id="codex-tree">
+              <div class="codex-tree-actions">
+                <button type="button" onclick="codexNewConversation()">+ Nueva conversación</button>
+                <button type="button" id="codex-archived-toggle" onclick="codexToggleArchivedView()">Ver archivadas</button>
+              </div>
+              <div id="codex-tree-list"></div>
+            </div>
+            <div id="codex-chat" style="display:none">
+              <div class="codex-chat-header">
+                <button type="button" onclick="codexShowTreeList()">← Volver</button>
+                <span id="codex-chat-title"></span>
+              </div>
+              <div id="codex-messages"></div>
+              <div class="composer codex-composer">
+                <input type="file" id="codex-image-input" accept="image/*" style="display:none">
+                <button type="button" id="codex-attach-btn" onclick="$('codex-image-input').click()">📎</button>
+                <textarea id="codex-composer-text" placeholder="Escribile a Codex..."></textarea>
+                <button type="button" id="codex-cancel-btn" style="display:none" onclick="codexCancel()">Cancelar</button>
+                <button type="button" id="codex-send-btn" onclick="codexSubmitComposer()">Enviar</button>
+              </div>
             </div>
           </div>
         </div>

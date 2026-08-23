@@ -8,7 +8,7 @@ let archivedTotal = 0;
 let archivedTreeLimit = 100;
 let archivedTreeHasMore = false;
 let archivedTreeTotal = 0;
-let activePane = 0; // 0=chats 1=archived 2=notas 3=escaner
+let activePane = 0; // 0=chats 1=archived 2=notas 3=escaner 4=codex
 let notebookListLoaded = false;
 let notebooks = [];
 let currentNotebook = null; // {id, name} de la libreta abierta, o null si estamos en la lista
@@ -252,6 +252,7 @@ async function ensureNotebookCreated() {
 }
 
 let archivedPaneLoaded = false;
+let codexTreeLoaded = false;
 let activeAccount = null;
 const drafts = new Map();
 // Nombre de la app configurado del lado del server (CCM_APP_NAME) — index.html
@@ -783,6 +784,119 @@ async function safeLoadArchivedTree() {
   catch (err) { toast('No se pudo actualizar archivadas: ' + err.message); }
 }
 
+// ── Codex: árbol de conversaciones (pane 4) ──
+// Codex es single-account (no hay withAccount/withAccountBody acá) y su
+// árbol no tiene ni de lejos la complejidad del de Claude (sin proyectos
+// anidados, sin badges de modelo/costo) — wrapper y fila propios en vez de
+// reusar api()/convElement().
+async function codexApi(path, opts) {
+  const method = (opts && opts.method) || 'GET';
+  const res = method === 'GET'
+    ? await netFetch('/api/codex' + path, opts)
+    : await fetch('/api/codex' + path, opts).catch(err => { throw netError(err); });
+  if (!res.ok && res.status !== 202) throw new Error((await res.json()).error || res.statusText);
+  return res.json();
+}
+
+async function codexTogglePin(convId, pinned) {
+  await codexApi(`/conversations/${convId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pinned }),
+  });
+  codexLoadTree();
+}
+
+async function codexToggleArchive(convId, archived) {
+  await codexApi(`/conversations/${convId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ archived }),
+  });
+  codexLoadTree();
+}
+
+function codexConvElement(c) {
+  const div = document.createElement('div');
+  div.className = 'tree-row';
+  div.dataset.convId = c.convId;
+  const badgeEl = badge(c.status) || (c.unread ? '<span class="unread-dot"></span>' : '');
+  const main = document.createElement('div');
+  main.className = 'tree-row-main';
+  const nameEl = document.createElement('span');
+  nameEl.className = 'tree-row-name';
+  nameEl.textContent = c.name; // textContent, no innerHTML — mismo criterio de escape que convElement()
+  main.appendChild(nameEl);
+  if (badgeEl) main.insertAdjacentHTML('beforeend', badgeEl);
+  const snippet = document.createElement('div');
+  snippet.className = 'tree-row-snippet';
+  snippet.textContent = c.snippet;
+  const pinBtn = document.createElement('button');
+  pinBtn.type = 'button';
+  pinBtn.className = 'tree-row-action';
+  pinBtn.textContent = c.pinned ? '📌' : '📍';
+  pinBtn.title = c.pinned ? 'Desanclar' : 'Anclar';
+  pinBtn.onclick = ev => { ev.stopPropagation(); codexTogglePin(c.convId, !c.pinned); };
+  const archiveBtn = document.createElement('button');
+  archiveBtn.type = 'button';
+  archiveBtn.className = 'tree-row-action';
+  archiveBtn.textContent = c.archived ? '↩️' : '🗄️';
+  archiveBtn.title = c.archived ? 'Desarchivar' : 'Archivar';
+  archiveBtn.onclick = ev => { ev.stopPropagation(); codexToggleArchive(c.convId, !c.archived); };
+  div.appendChild(main);
+  div.appendChild(snippet);
+  div.appendChild(pinBtn);
+  div.appendChild(archiveBtn);
+  div.onclick = () => codexSelectConv(c.convId, c.name);
+  return div;
+}
+
+let codexShowingArchived = false;
+
+async function codexLoadTree() {
+  const { conversations, archivedTotal: codexArchivedTotal } = await codexApi(`/tree${codexShowingArchived ? '?archived=1' : ''}`);
+  const nav = $('codex-tree-list');
+  nav.innerHTML = '';
+  if (conversations.length === 0) {
+    nav.innerHTML = `<div class="empty-state">${codexShowingArchived ? 'Sin conversaciones archivadas' : 'Sin conversaciones de Codex todavía'}</div>`;
+  } else {
+    for (const c of conversations) nav.appendChild(codexConvElement(c));
+  }
+  $('codex-archived-toggle').textContent = codexShowingArchived ? '← Volver a activas' : `Ver archivadas (${codexArchivedTotal})`;
+}
+
+function codexToggleArchivedView() {
+  codexShowingArchived = !codexShowingArchived;
+  codexLoadTree();
+}
+
+async function codexNewConversation() {
+  try {
+    const { convId } = await codexApi('/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    codexSelectConv(convId, 'Nueva conversación');
+  } catch (err) {
+    toast('No se pudo crear la conversación de Codex: ' + err.message);
+  }
+}
+
+// currentCodexConv: {id, name} de la conversación Codex abierta en #codex-chat,
+// o null si estamos viendo la lista. El composer real (mandar mensaje, cancelar,
+// render de #codex-messages, streaming) es Task 7 — acá solo el cambio de vista.
+let currentCodexConv = null;
+
+function codexSelectConv(convId, name) {
+  currentCodexConv = { id: convId, name };
+  $('codex-chat-title').textContent = name;
+  $('codex-messages').innerHTML = '';
+  $('codex-tree').style.display = 'none';
+  $('codex-chat').style.display = '';
+}
+
+function codexShowTreeList() {
+  currentCodexConv = null;
+  $('codex-chat').style.display = 'none';
+  $('codex-tree').style.display = '';
+  codexLoadTree();
+}
+
 let paneNavGeneration = 0;
 let paneNavTarget = 0; // pane que debe quedar activo una vez termine la navegación en curso
 
@@ -813,6 +927,16 @@ async function goToPane(index) {
       notebookListLoaded = true;
     } catch (err) {
       toast('No se pudieron cargar las libretas: ' + err.message);
+      if (myGeneration === paneNavGeneration) paneNavTarget = activePane;
+      return;
+    }
+  }
+  if (index === 4 && !codexTreeLoaded) {
+    try {
+      await codexLoadTree();
+      codexTreeLoaded = true;
+    } catch (err) {
+      toast('No se pudo cargar Codex: ' + err.message);
       if (myGeneration === paneNavGeneration) paneNavTarget = activePane;
       return;
     }
@@ -3243,7 +3367,7 @@ function paneSwipeStart(clientX, clientY) {
   return true;
 }
 
-const PANE_COUNT = 4;
+const PANE_COUNT = 5; // Chats/Archivado/Notas/Escáner/Codex
 
 function paneSwipeMove(clientX, clientY) {
   if (!paneDragging) return false;
