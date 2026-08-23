@@ -15,6 +15,8 @@ const icon = require('./icon');
 const { Runner } = require('./runner');
 const { CLAUDE_CMD } = require('./claude-cmd');
 const { CodexRunner } = require('./codex-runner');
+const { CodexAvailability } = require('./codex-availability');
+const { CodexUsageService } = require('./codex-usage');
 const codexScanner = require('./codex-scanner');
 const searchIndex = require('./search-index');
 const { getReplySuggestions } = require('./groq-suggest');
@@ -371,6 +373,21 @@ app.get('/api/usage', async (req, res) => {
   });
 });
 
+// Límites de la cuenta ChatGPT con la que está logueado Codex. Se lee del
+// App Server local oficial, no de los límites de Claude ni de una API key.
+const codexUsage = new CodexUsageService();
+const codexAvailability = new CodexAvailability();
+app.get('/api/codex/status', async (req, res) => {
+  res.json(await codexAvailability.get());
+});
+app.get('/api/codex/usage', async (req, res) => {
+  try {
+    res.json(await codexUsage.get());
+  } catch (err) {
+    res.status(503).json({ error: 'No se pudo consultar el uso de Codex: ' + err.message });
+  }
+});
+
 // ── Config de instancia (nombre + color de identidad) — pantalla de Configuración ──
 app.patch('/api/config', (req, res) => {
   const cfg = config.load();
@@ -628,6 +645,8 @@ const sseClients = new Map(); // convId → Set<res>
 const CODEX_META_FILE = path.join(os.homedir(), '.claude', 'session-manager', 'codex-meta.json');
 const codexRunner = new CodexRunner({ selfHost: HOST, selfPort: PORT });
 const codexSseClients = new Map(); // convId → Set<res>
+const CODEX_TTS_SCRIPT = path.join(os.homedir(), '.claude', 'scripts', 'speak-response.py');
+const CODEX_TTS_VOICE = 'es-AR-TomasNeural';
 
 function codexBroadcast(convId, payload) {
   const set = codexSseClients.get(convId);
@@ -637,6 +656,39 @@ function codexBroadcast(convId, payload) {
 
 function codexConvStatus(convId) {
   return codexRunner.running.has(convId) ? 'running' : codexRunner.isBusy(convId) ? 'queued' : 'idle';
+}
+
+// Reusa el narrador del sistema de Claude Code: mismo switch ~/.claude/voice-on,
+// resumen por LLM, limpieza de texto y lock de reproducción. Solo cambia la voz
+// para que Codex se distinga de Claude (Tomás vs. Elena).
+function narrateCodexResponse(convId) {
+  if (!IS_WIN || !fs.existsSync(CODEX_TTS_SCRIPT)) return;
+  try {
+    const data = meta.load(CODEX_META_FILE);
+    const conv = data.conversations[convId];
+    const file = conv && conv.currentSessionId && codexScanner.findSessionFile(conv.currentSessionId);
+    if (!file) return;
+    const messages = codexScanner.getMessages(file);
+    const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && m.text && m.text.trim());
+    if (!lastAssistant) return;
+    const assistantIndex = messages.lastIndexOf(lastAssistant);
+    const user = [...messages.slice(0, assistantIndex)].reverse().find(m => m.role === 'user');
+    const inputFile = path.join(os.tmpdir(), `codex-tts-${process.pid}-${Date.now()}-${crypto.randomUUID()}.json`);
+    fs.writeFileSync(inputFile, JSON.stringify({ user: user?.text || '', assistant: lastAssistant.text }), { encoding: 'utf8', mode: 0o600 });
+    const child = spawn('python', [CODEX_TTS_SCRIPT, '--say-json', inputFile], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      env: {
+        ...process.env,
+        CLAUDE_TTS_VOICE: CODEX_TTS_VOICE,
+        CLAUDE_TTS_FLAG_FILE: path.join(os.homedir(), '.claude', 'codex-voice-on'),
+      },
+    });
+    child.unref();
+  } catch (err) {
+    console.error('[codex-tts] no se pudo lanzar el narrador:', err.message);
+  }
 }
 
 // Precios en USD por millón de tokens. Match por prefijo del model id.
@@ -763,6 +815,9 @@ codexRunner.on('event', ({ convId, event }) => {
 
 codexRunner.on('status', s => {
   codexBroadcast(s.convId, { kind: 'status', ...s });
+  if (s.status === 'idle' && s.code === 0 && !s.cancelled) {
+    narrateCodexResponse(s.convId);
+  }
   // Mismo criterio de "no leído" que ya usa Claude (ver runner.on('status', ...)
   // más arriba en este archivo): un turno terminó sin nadie mirando esta convId
   // por SSE ahora mismo → se marca unread. No se replica la generación de título
@@ -1907,6 +1962,7 @@ app.patch('/api/codex/conversations/:id', (req, res) => {
   if ('pinned' in req.body) conv.pinned = !!req.body.pinned;
   if ('archived' in req.body) conv.archived = !!req.body.archived;
   if ('unread' in req.body) conv.unread = !!req.body.unread;
+  if ('hidden' in req.body) conv.hidden = !!req.body.hidden;
   meta.save(data, CODEX_META_FILE);
   res.json({ ok: true });
 });
@@ -1944,7 +2000,10 @@ app.get('/api/codex/conversations/:id/stream', (req, res) => {
   if (!codexSseClients.has(convId)) codexSseClients.set(convId, new Set());
   codexSseClients.get(convId).add(res);
   const st = codexConvStatus(convId);
-  if (st !== 'idle') res.write(`data: ${JSON.stringify({ kind: 'status', status: st })}\n\n`);
+  // Send "idle" on connect too. If SSE misses the last event of a turn,
+  // EventSource reconnects after the runner has stopped and used to receive
+  // no status at all, leaving the composer incorrectly locked.
+  res.write(`data: ${JSON.stringify({ kind: 'status', status: st })}\n\n`);
   const heartbeat = setInterval(() => res.write(':heartbeat\n\n'), 20000);
   req.on('close', () => {
     clearInterval(heartbeat);

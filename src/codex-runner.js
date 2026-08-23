@@ -6,7 +6,10 @@ const { infraNotice, pathContract } = require('./prompt-fragments');
 const IS_WIN = process.platform === 'win32';
 
 class CodexRunner extends EventEmitter {
-  constructor({ maxConcurrent = 2, spawnFn = spawn, command = CODEX_CMD, selfHost, selfPort } = {}) {
+  // Codex no tiene cupo interno: cada conversación puede ejecutar su turno
+  // en paralelo. El servidor sigue bloqueando un segundo turno de la misma
+  // conversación para no cruzar su sessionId.
+  constructor({ maxConcurrent = Infinity, spawnFn = spawn, command = CODEX_CMD, selfHost, selfPort } = {}) {
     super();
     this.max = maxConcurrent;
     this.spawnFn = spawnFn;
@@ -65,7 +68,10 @@ class CodexRunner extends EventEmitter {
     const sub = ['exec'];
     if (job.sessionId) sub.push('resume', job.sessionId);
     const args = [...sub, '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox'];
-    if (job.cwd) args.push('-C', job.cwd);
+    // `codex exec` accepts -C, but `codex exec resume <session>` does not.
+    // spawn() already uses job.cwd, so resumed turns keep the same directory
+    // without passing an unsupported CLI flag.
+    if (job.cwd && !job.sessionId) args.push('-C', job.cwd);
     if (job.imagePath) args.push('-i', job.imagePath);
     args.push(prompt);
 

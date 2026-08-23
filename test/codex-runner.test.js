@@ -50,6 +50,7 @@ test('con sessionId: "exec resume <id>"', () => {
   assert.equal(a[0], 'exec');
   assert.equal(a[1], 'resume');
   assert.equal(a[2], 's1');
+  assert.ok(!a.includes('-C'), 'resume usa el cwd de spawn, sin -C incompatible');
 });
 
 test('con imagePath agrega -i', () => {
@@ -182,4 +183,20 @@ test('semáforo de maxConcurrent: el tercer job queda en cola y arranca al liber
   spawned[0].child.emit('close', 0);
   assert.equal(spawned.length, 3);
   assert.equal(spawned[2].cmd, 'codex'); // se spawneó el comando
+});
+
+test('por defecto no limita los turnos de conversaciones Codex distintas', () => {
+  const spawned = [];
+  const r = new CodexRunner({
+    command: 'codex',
+    spawnFn: (cmd, args, opts) => {
+      const child = fakeChild();
+      spawned.push({ cmd, args, opts, child });
+      return child;
+    },
+  });
+  r.send({ convId: 'c1', cwd: 'C:\\p', text: 'a' });
+  r.send({ convId: 'c2', cwd: 'C:\\p', text: 'b' });
+  r.send({ convId: 'c3', cwd: 'C:\\p', text: 'c' });
+  assert.equal(spawned.length, 3);
 });

@@ -253,8 +253,10 @@ async function ensureNotebookCreated() {
 
 let archivedPaneLoaded = false;
 let codexTreeLoaded = false;
+let codexAvailable = false;
 let activeAccount = null;
 const drafts = new Map();
+const codexDrafts = new Map();
 // Nombre de la app configurado del lado del server (CCM_APP_NAME) — index.html
 // y manifest.json ya vienen con el nombre correcto server-rendered; esto es
 // solo para los pedacitos que arma el JS después (título dinámico, toasts).
@@ -348,6 +350,10 @@ function updateCountdownLabel(el) {
 function renderUsageBar(el, info) {
   if (!info || info.pct == null) { el.hidden = true; return; }
   el.hidden = false;
+  const label = el.querySelector('.usage-bar-label');
+  // Codex informa la duración real de cada ventana. Claude conserva las
+  // etiquetas fijas 5h/Semana que ya venía usando esta pantalla.
+  label.dataset.staticLabel = info.label || (el.id === 'usage-5h' ? '5h' : 'Semana');
   const pct = Math.max(0, Math.min(100, info.pct));
   const tone = usageTone(pct);
   const fill = el.querySelector('.usage-bar-fill');
@@ -367,15 +373,40 @@ setInterval(() => {
   if (b7 && !b7.hidden) updateCountdownLabel(b7);
 }, 30000);
 async function loadUsage() {
+  const provider = activePane === 4 ? 'codex' : 'claude';
   try {
-    const d = await api(withAccount('/usage'));
+    const d = provider === 'codex'
+      ? await api('/codex/usage')
+      : await api(withAccount('/usage'));
+    // Si se cambió de pestaña mientras la consulta estaba en vuelo, no dejar
+    // que el header quede mostrando el proveedor anterior.
+    if ((activePane === 4 ? 'codex' : 'claude') !== provider) return;
     const box = $('account-status');
-    if (!d.email && !d.fiveHour && !d.sevenDay) { box.hidden = true; return; }
+    const first = provider === 'codex' ? d.primary : d.fiveHour;
+    const second = provider === 'codex' ? d.secondary : d.sevenDay;
+    if (!d.email && !first && !second) { box.hidden = true; return; }
     box.hidden = false;
-    $('account-status-email').textContent = d.email || '';
-    renderUsageBar($('usage-5h'), d.fiveHour);
-    renderUsageBar($('usage-7d'), d.sevenDay);
+    $('account-status-email').textContent = provider === 'codex'
+      ? `Codex${d.plan ? ' · ' + d.plan : ''}`
+      : (d.email || '');
+    renderUsageBar($('usage-5h'), first);
+    renderUsageBar($('usage-7d'), second);
   } catch {}
+}
+
+// Codex es opcional: en una instalación sin CLI o sin login la pestaña no se
+// muestra. El endpoint usa `codex login status`, no inicia un agente ni gasta
+// cuota; si falla, la app sigue funcionando normalmente como chat de Claude.
+async function loadCodexAvailability() {
+  try {
+    const res = await fetch('/api/codex/status');
+    const data = await res.json();
+    if (!res.ok || !data.available) return;
+    codexAvailable = true;
+    PANE_COUNT = 5;
+    document.body.classList.add('codex-available');
+    $('codex-tab').hidden = false;
+  } catch { /* Codex no está configurado en esta instalación */ }
 }
 
 // ── Toast: ver toast.js ──
@@ -1033,6 +1064,229 @@ async function codexSubmitComposer() {
   await codexPerformSend(currentCodexConv.id, text, imagePath);
 }
 
+// Codex usa la misma pantalla de chat que Claude. Sus endpoints siguen siendo
+// propios, pero lista, header, mensajes y composer ya no viven en un mini-chat.
+let codexMainBusy = false;
+
+function codexSharedRow(c) {
+  const div = document.createElement('div');
+  div.className = 'conv' + (currentCodexConv && c.convId === currentCodexConv.id ? ' active' : '');
+  const pin = c.pinned ? '<span class="conv-pin" title="Fijada">📌</span>' : '';
+  div.innerHTML = `<div class="conv-avatar"></div><div class="conv-body"><div class="name">${pin}<span class="conv-name-text"></span></div><div class="sub"><span class="conv-date"></span></div></div>${badge(c.status) || (c.unread ? '<span class="unread-dot" title="Sin leer"></span>' : '')}`;
+  div.querySelector('.conv-avatar').textContent = avatarChar(c.name);
+  div.querySelector('.conv-name-text').textContent = c.name;
+  div.querySelector('.conv-date').textContent = c.snippet || (c.lastActivity || '').slice(0, 16).replace('T', ' ');
+  div._codexConv = c;
+  div.onclick = () => selectCodexShared(c.convId, c.name);
+  attachCodexRowGestures(div, c);
+  return div;
+}
+
+async function loadCodexSharedTree() {
+  const { conversations } = await codexApi('/tree');
+  const nav = $('codex-pane');
+  nav.innerHTML = '';
+  if (!conversations.length) nav.insertAdjacentHTML('beforeend', '<div id="empty-state"><p>Sin conversaciones de Codex todavía</p></div>');
+  else conversations.forEach(c => nav.appendChild(codexSharedRow(c)));
+}
+
+// Codex usa el mismo patrón táctil para seleccionar/fijar/ocultar. El swipe
+// horizontal se cede al cambio de pestaña, porque archivados queda fuera de
+// alcance por ahora.
+function attachCodexRowGestures(el, conv) {
+  let touchTimer = null, longPressed = false, startX = 0, startY = 0;
+  let axisLocked = null, rowDragging = false, currentDx = 0, redirectedToPane = false;
+  const resetRow = () => {
+    el.style.transition = 'transform .2s ease, opacity .2s ease';
+    el.style.transform = ''; el.style.opacity = '';
+    setTimeout(() => { el.style.transition = ''; }, 200);
+  };
+  el.addEventListener('contextmenu', e => { e.preventDefault(); showCodexConvMenu(e.clientX, e.clientY, conv); });
+  el.addEventListener('touchstart', e => {
+    longPressed = false; axisLocked = null; rowDragging = false; currentDx = 0; redirectedToPane = false;
+    const touch = e.touches[0]; startX = touch.clientX; startY = touch.clientY;
+    touchTimer = setTimeout(() => {
+      longPressed = true; touchTimer = null; showCodexConvMenu(startX, startY, conv);
+      if (navigator.vibrate) { try { navigator.vibrate(30); } catch {} }
+    }, 500);
+  }, { passive: true });
+  el.addEventListener('touchmove', e => {
+    if (longPressed) return;
+    const touch = e.touches[0];
+    if (redirectedToPane) { if (paneSwipeMove(touch.clientX, touch.clientY)) e.preventDefault(); return; }
+    const dx = touch.clientX - startX, dy = touch.clientY - startY;
+    if (axisLocked === null) {
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+      axisLocked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+      if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
+      if (axisLocked === 'x' && dx < 0) {
+        redirectedToPane = true;
+        if (paneSwipeStart(startX, startY) && paneSwipeMove(touch.clientX, touch.clientY)) e.preventDefault();
+        return;
+      }
+    }
+    if (axisLocked !== 'x') return;
+    e.preventDefault(); rowDragging = true; currentDx = Math.max(0, dx);
+    el.style.transform = `translateX(${currentDx}px)`;
+    el.style.opacity = String(Math.max(0.3, 1 - currentDx / 200));
+  }, { passive: false });
+  el.addEventListener('touchend', async () => {
+    if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
+    if (redirectedToPane) await paneSwipeEnd();
+    else if (rowDragging && !longPressed) resetRow();
+    redirectedToPane = false; rowDragging = false; axisLocked = null;
+  });
+  el.addEventListener('touchcancel', () => {
+    if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
+    if (redirectedToPane) paneSwipeEnd(); else if (rowDragging) resetRow();
+    redirectedToPane = false; rowDragging = false; axisLocked = null;
+  });
+  el.addEventListener('click', e => {
+    if (longPressed) { longPressed = false; e.stopPropagation(); e.preventDefault(); }
+  }, { capture: true });
+}
+
+function showCodexConvMenu(x, y, conv) {
+  document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  menu.innerHTML = `<button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button><button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`;
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = Math.min(x, window.innerWidth - rect.width - 8) + 'px';
+  menu.style.top = Math.min(y, window.innerHeight - rect.height - 8) + 'px';
+  const dismiss = e => {
+    if (menu.contains(e.target)) return;
+    menu.remove(); document.removeEventListener('click', dismiss, true); document.removeEventListener('touchstart', dismiss, true);
+  };
+  menu.addEventListener('click', async e => {
+    e.stopPropagation();
+    const action = e.target.dataset && e.target.dataset.action;
+    if (!action) return;
+    menu.remove(); document.removeEventListener('click', dismiss, true); document.removeEventListener('touchstart', dismiss, true);
+    try {
+      const patch = action === 'pin' ? { pinned: !conv.pinned } : { hidden: true };
+      await codexApi(`/conversations/${conv.convId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) });
+      if (action === 'hide' && currentCodexConv && currentCodexConv.id === conv.convId) closeChat();
+      loadCodexSharedTree();
+      if (action === 'hide') toast('Conversación ocultada', 'info', 2500);
+    } catch (err) { toast('No se pudo actualizar: ' + err.message); }
+  });
+  menu.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+  setTimeout(() => { document.addEventListener('click', dismiss, true); document.addEventListener('touchstart', dismiss, true); }, 350);
+}
+
+function setCodexMainBusy(value) {
+  codexMainBusy = value;
+  $('input').disabled = !currentCodexConv || value;
+  $('send').disabled = !currentCodexConv || value;
+  $('attach-btn').disabled = !currentCodexConv || value;
+  $('cancel-btn').hidden = !value;
+  $('conv-status').textContent = value ? 'escribiendo…' : '';
+}
+
+async function loadCodexSharedMessages(convId) {
+  messagesEl.innerHTML = '';
+  const msgs = await codexApi(`/conversations/${convId}/messages`);
+  if (!msgs.length) {
+    messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Codex</p></div>';
+    return;
+  }
+  for (const m of msgs) {
+    if (m.role === 'tool') addTool(m.name, m.input, m.output);
+    else addMsg(m.role, m.text, { ts: m.ts });
+  }
+  scrollToBottom();
+}
+
+function openCodexSharedStream(convId) {
+  const stream = new EventSource(`/api/codex/conversations/${convId}/stream`);
+  stream.onmessage = e => {
+    if (!currentCodexConv || currentCodexConv.id !== convId) return;
+    const payload = JSON.parse(e.data);
+    if (payload.kind === 'status') {
+      if (payload.status === 'idle') {
+        setCodexMainBusy(false);
+        loadCodexSharedMessages(convId).then(() => loadCodexSharedTree());
+      } else {
+        setCodexMainBusy(true);
+        loadCodexSharedTree();
+      }
+      return;
+    }
+    if (payload.kind !== 'codex') return;
+    const item = payload.event && payload.event.item;
+    if (!item || payload.event.type !== 'item.completed') return;
+    if (item.type === 'agent_message' && item.text) addMsg('assistant', item.text);
+    if (item.type === 'command_execution') addTool('command_execution', { command: item.command }, item.aggregated_output || '');
+  };
+  stream.onerror = () => setTimeout(() => {
+    if (currentCodexConv && currentCodexConv.id === convId) loadCodexSharedMessages(convId);
+  }, 1500);
+  return stream;
+}
+
+async function selectCodexShared(convId, name) {
+  $('panel-chat').classList.add('codex-chat-theme');
+  if (eventSource) { eventSource.close(); eventSource = null; }
+  if (codexStream) codexStream.close();
+  if (currentCodexConv && currentCodexConv.id) codexDrafts.set(currentCodexConv.id, $('input').value);
+  currentConv = null;
+  currentCodexConv = { id: convId, name };
+  $('conv-title').textContent = name;
+  $('input').value = codexDrafts.get(convId) || '';
+  $('input').placeholder = 'Escribile a Codex…';
+  autoResize($('input'));
+  $('model-select').hidden = true;
+  $('conv-folder').hidden = true;
+  $('cost-badge').hidden = true;
+  $('mic-btn').hidden = true;
+  $('attach-btn').hidden = false;
+  $('file-input').accept = 'image/*,text/*,application/*';
+  clearAttachments();
+  $('queued-bar').hidden = true;
+  $('last-user-pin').hidden = true;
+  setCodexMainBusy(false);
+  showNotebookView(false);
+  openChat();
+  const markRead = codexApi(`/conversations/${convId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ unread: false }) }).catch(() => {});
+  await loadCodexSharedMessages(convId);
+  await markRead;
+  codexStream = openCodexSharedStream(convId);
+  loadCodexSharedTree();
+  if (!isMobile()) $('input').focus();
+}
+
+async function createCodexSharedConversation() {
+  // Igual que Chats: abrimos un borrador local. La metadata y su fila recién
+  // existen cuando se manda el primer mensaje.
+  if (eventSource) { eventSource.close(); eventSource = null; }
+  if (codexStream) { codexStream.close(); codexStream = null; }
+  if (currentCodexConv && currentCodexConv.id) codexDrafts.set(currentCodexConv.id, $('input').value);
+  const { convId } = await codexApi('/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  currentConv = null;
+  $('panel-chat').classList.add('codex-chat-theme');
+  currentCodexConv = { id: convId, name: 'Nueva conversación' };
+  $('conv-title').textContent = currentCodexConv.name;
+  $('input').value = '';
+  $('input').placeholder = 'Escribile a Codex…';
+  autoResize($('input'));
+  $('model-select').hidden = true;
+  $('conv-folder').hidden = true;
+  $('cost-badge').hidden = true;
+  $('mic-btn').hidden = true;
+  $('attach-btn').hidden = false;
+  $('file-input').accept = 'image/*,text/*,application/*';
+  clearAttachments();
+  $('queued-bar').hidden = true;
+  $('last-user-pin').hidden = true;
+  messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Codex</p></div>';
+  setCodexMainBusy(false);
+  showNotebookView(false);
+  openChat();
+  loadCodexSharedTree();
+}
+
 let paneNavGeneration = 0;
 let paneNavTarget = 0; // pane que debe quedar activo una vez termine la navegación en curso
 
@@ -1069,7 +1323,7 @@ async function goToPane(index) {
   }
   if (index === 4 && !codexTreeLoaded) {
     try {
-      await codexLoadTree();
+      await loadCodexSharedTree();
       codexTreeLoaded = true;
     } catch (err) {
       toast('No se pudo cargar Codex: ' + err.message);
@@ -1079,10 +1333,14 @@ async function goToPane(index) {
   }
   if (myGeneration !== paneNavGeneration) return; // otra navegación más nueva ya tomó el control
   activePane = index;
+  // El acento identifica la pestaña visible, no el chat que haya quedado
+  // abierto en el panel principal.
+  document.body.classList.toggle('codex-list-theme', index === 4);
   $('tree-viewport-inner').dataset.pane = String(index);
   document.querySelectorAll('.pane-tab').forEach(t => {
     t.classList.toggle('active', t.dataset.pane === String(index));
   });
+  loadUsage();
 }
 
 function resetArchivedPane() {
@@ -2836,10 +3094,10 @@ document.addEventListener('visibilitychange', () => {
   }
   // Mismo mecanismo que arriba pero para la pestaña Codex — mismo problema de
   // stream/túnel muerto al volver del background.
-  if (currentCodexConv) {
+  if (currentCodexConv && currentCodexConv.id) {
     if (codexStream) codexStream.close();
-    codexStream = codexOpenStream(currentCodexConv.id);
-    codexLoadMessages(currentCodexConv.id);
+    codexStream = openCodexSharedStream(currentCodexConv.id);
+    loadCodexSharedMessages(currentCodexConv.id);
   }
 });
 
@@ -2888,6 +3146,15 @@ $('cost-badge').onclick = () => toast($('cost-badge').title, 'info', 5000);
 
 // ── Select conversation ──
 async function selectConv(convId, name, model, lastModel, projectDir) {
+  $('panel-chat').classList.remove('codex-chat-theme');
+  if (codexStream) { codexStream.close(); codexStream = null; }
+  if (currentCodexConv && currentCodexConv.id) codexDrafts.set(currentCodexConv.id, $('input').value);
+  currentCodexConv = null;
+  $('input').placeholder = 'Mensaje…';
+  $('model-select').hidden = false;
+  $('mic-btn').hidden = false;
+  $('attach-btn').hidden = false;
+  $('file-input').accept = 'image/*,text/*,application/*';
   exitMultiSelectMode(); // los elementos marcados quedan del chat anterior, no tiene sentido arrastrarlos
   if (currentConv) drafts.set(currentConv, $('input').value);
   currentConv = convId;
@@ -2957,7 +3224,11 @@ function autoResize(el) {
   el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight, 120) + 'px';
 }
-$('input').addEventListener('input', () => autoResize($('input')));
+$('input').addEventListener('input', () => {
+  const input = $('input');
+  autoResize(input);
+  if (currentCodexConv && currentCodexConv.id) codexDrafts.set(currentCodexConv.id, input.value);
+});
 
 // ── Keyboard ──
 // En móvil el Enter del teclado virtual hace punto aparte (no envía) — para enviar
@@ -2974,6 +3245,11 @@ $('input').addEventListener('keydown', e => {
 
 // ── Cancel ──
 $('cancel-btn').onclick = async () => {
+  if (currentCodexConv) {
+    try { await codexApi(`/conversations/${currentCodexConv.id}/message`, { method: 'DELETE' }); }
+    catch (err) { addMsg('error', 'No se pudo cancelar: ' + err.message); }
+    return;
+  }
   if (!currentConv) return;
   try { await api(`/conversations/${currentConv}/message`, { method: 'DELETE' }); }
   catch (err) { addMsg('error', 'No se pudo cancelar: ' + err.message); }
@@ -3096,7 +3372,7 @@ async function prepareForUpload(file, displayName) {
 }
 
 async function uploadAttachment(file) {
-  if (!currentConv) { addMsg('error', 'Elegí una conversación antes de adjuntar'); return; }
+  if (!currentConv && !currentCodexConv) { addMsg('error', 'Elegí una conversación antes de adjuntar'); return; }
   const displayName = file.name || `pegado-${Date.now()}.${(file.type.split('/')[1] || 'bin')}`;
   const loadingChip = document.createElement('div');
   loadingChip.className = 'attach-chip attach-chip-loading';
@@ -3163,7 +3439,7 @@ $('input').addEventListener('paste', (e) => {
   // composer del chat — que en ese momento está hidden —, o sea que
   // desaparecía sin dejar rastro visible.
   const notebookOpen = () => !$('notebook-view').hidden;
-  const canDrop = () => (notebookOpen() ? !!currentNotebook : !!currentConv);
+  const canDrop = () => (notebookOpen() ? !!currentNotebook : !!(currentConv || currentCodexConv));
   const acceptDrop = (files) => {
     if (notebookOpen()) return (async () => { for (const f of files) await uploadNoteFile(f); })();
     return uploadFiles(files);
@@ -3392,6 +3668,42 @@ async function performSend(convId, rawText, attachments) {
 $('composer').onsubmit = async e => {
   e.preventDefault();
   const rawText = $('input').value.trim();
+  if (currentCodexConv) {
+    const attachments = [...pendingAttachments];
+    if ((!rawText && attachments.length === 0) || codexMainBusy) return;
+    let convId = currentCodexConv.id;
+    const draft = currentCodexConv;
+    // El runner de Codex acepta una imagen por -i. Todos los adjuntos se
+    // incluyen además como rutas locales en el prompt para que pueda abrirlos.
+    const image = attachments.find(a => a.file && a.file.type && a.file.type.startsWith('image/'));
+    const imagePath = image && image.path;
+    const attachmentText = attachments.map(a => `[Archivo adjunto: ${a.path}]`).join('\n');
+    const text = attachmentText + (rawText ? (attachmentText ? '\n\n' : '') + rawText : '');
+    $('input').value = '';
+    autoResize($('input'));
+    clearAttachments();
+    setCodexMainBusy(true);
+    try {
+      if (!convId) {
+        const created = await codexApi('/conversations', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        if (currentCodexConv !== draft) return;
+        convId = created.convId;
+        currentCodexConv = { id: convId, name: 'Nueva conversación' };
+        codexStream = openCodexSharedStream(convId);
+      }
+      addUserMsgWithFiles(rawText, attachments);
+      await codexApi(`/conversations/${convId}/message`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, imagePath }),
+      });
+      codexDrafts.delete(convId);
+    } catch (err) {
+      addMsg('error', 'No se pudo enviar: ' + err.message);
+      setCodexMainBusy(false);
+    }
+    return;
+  }
   if ((!rawText && pendingAttachments.length === 0) || !currentConv) return;
 
   const convId = currentConv;
@@ -3461,6 +3773,11 @@ $('new-conv').onclick = async () => {
       openNotebookDraft();
       return;
     }
+    if (activePane === 4) {
+      await createCodexSharedConversation();
+      $('input').focus();
+      return;
+    }
     const { convId, projectDir } = await api('/conversations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3484,6 +3801,17 @@ $('new-conv').onclick = async () => {
 document.addEventListener('keydown', e => {
   if (e.key !== 'Tab') return;
   if (document.querySelector('dialog[open]')) return;
+  if (currentCodexConv && currentCodexConv.id) {
+    const top2 = [...document.querySelectorAll('#codex-pane .conv')]
+      .filter(el => !el._codexConv.pinned)
+      .slice(0, 2);
+    if (top2.length < 2) return;
+    e.preventDefault();
+    const target = top2[0]._codexConv.convId === currentCodexConv.id ? top2[1] : top2[0];
+    const c = target._codexConv;
+    selectCodexShared(c.convId, c.name);
+    return;
+  }
   if (!currentConv) return;
   const top2 = [...document.querySelectorAll('#tree .conv')]
     .filter(el => !el._conv.pinned)
@@ -3516,7 +3844,7 @@ function paneSwipeStart(clientX, clientY) {
   return true;
 }
 
-const PANE_COUNT = 5; // Chats/Archivado/Notas/Escáner/Codex
+let PANE_COUNT = 4; // Codex se suma solo cuando el CLI está listo.
 
 function paneSwipeMove(clientX, clientY) {
   if (!paneDragging) return false;
@@ -3591,6 +3919,7 @@ function pollTrees() {
   if (archivedPaneLoaded) safeLoadArchivedTree();
 }
 loadAccounts().then(() => safeLoadTree());
+loadCodexAvailability();
 setInterval(pollTrees, 15000);
 
 // Aviso pendiente de un reinicio anterior (ej. "se saltó git pull porque
@@ -3613,6 +3942,7 @@ const DEFAULT_SETTINGS = {
   showTools: true,
   voice: '', // una sola voz para mensajes propios y del agente (antes voiceAssistant/voiceUser separados)
   colorAccent: '',
+  colorCodex: '#10a37f',
   colorMe: '',
   colorAi: '',
   fontFamily: '',
@@ -3743,7 +4073,7 @@ function contrastTextColor(hex) {
 function applySettings() {
   document.body.classList.toggle('hide-tools', !settings.showTools);
   const root = document.documentElement;
-  const vars = { '--accent': settings.colorAccent, '--bubble-me': settings.colorMe, '--bubble-ai': settings.colorAi };
+  const vars = { '--accent': settings.colorAccent, '--codex-accent': settings.colorCodex, '--bubble-me': settings.colorMe, '--bubble-ai': settings.colorAi };
   for (const [k, v] of Object.entries(vars)) {
     if (v) root.style.setProperty(k, v);
     else root.style.removeProperty(k);
@@ -3857,6 +4187,7 @@ function openSettings() {
   $('cfg-show-tools').checked = settings.showTools;
   $('cfg-voice').value = settings.voice;
   $('cfg-color-accent').value = settings.colorAccent || readComputedColor('--accent');
+  $('cfg-color-codex').value = settings.colorCodex || readComputedColor('--codex-accent');
   $('cfg-color-me').value = settings.colorMe || readComputedColor('--bubble-me');
   $('cfg-color-ai').value = settings.colorAi || readComputedColor('--bubble-ai');
   $('cfg-font-family').value = settings.fontFamily;
@@ -3988,6 +4319,7 @@ $('cfg-voice').onchange = e => {
   previewVoice(e.target);
 };
 $('cfg-color-accent').oninput = e => { settings.colorAccent = e.target.value; applySettings(); saveSettings(); };
+$('cfg-color-codex').oninput = e => { settings.colorCodex = e.target.value; applySettings(); saveSettings(); };
 $('cfg-color-me').oninput = e => { settings.colorMe = e.target.value; applySettings(); saveSettings(); };
 $('cfg-color-ai').oninput = e => { settings.colorAi = e.target.value; applySettings(); saveSettings(); };
 $('cfg-font-family').onchange = e => { settings.fontFamily = e.target.value; applySettings(); saveSettings(); };

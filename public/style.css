@@ -9,6 +9,7 @@
   --bubble-me: #005c4b;
   --bubble-ai: #2f3f4a;
   --accent:    #25d366;
+  --codex-accent: #10a37f;
   --text:      #e9edef;
   --text2:     #8696a0;
   --border:    #2a3942;
@@ -23,6 +24,13 @@
 
 html, body { height: 100%; overflow: hidden; }
 body { background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, sans-serif; font-size: 15px; }
+/* La lista cambia con la pestaña seleccionada; el chat se colorea por el
+   proveedor de la conversación abierta y no depende de esa pestaña. */
+body.codex-list-theme #panel-list {
+  --accent: var(--codex-accent);
+}
+#panel-chat.codex-chat-theme { --accent: var(--codex-accent); }
+#panel-chat.codex-chat-theme #chat-header { background: var(--codex-accent); }
 
 /* ── App shell ── */
 #app { display: flex; height: 100dvh; position: relative; overflow: hidden; }
@@ -202,12 +210,14 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
   }
   .pane-tab:hover { color: var(--text); }
   .pane-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .pane-tab[data-pane="4"] { color: var(--codex-accent); }
+  .pane-tab[data-pane="4"].active { color: var(--codex-accent); border-bottom-color: var(--codex-accent); }
 }
 
 #tree-viewport { flex: 1; overflow: hidden; position: relative; }
 #tree-viewport-inner {
   display: flex;
-  width: 500%; /* 5 panes: Chats/Archivado/Notas/Escáner/Codex — ver PANE_COUNT en app.js */
+  width: 400%; /* Chats/Archivado/Notas/Escáner; Codex se habilita al detectarlo */
   height: 100%;
   transition: transform .25s ease;
   touch-action: pan-y;
@@ -264,8 +274,8 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
    que está cableado para lo específico de Claude — model select, costo,
    tool calls). El composer real (mandar/cancelar/streaming) llega en Task 7;
    acá solo va el layout. ── */
-.codex-pane { display: flex; flex-direction: column; overflow: hidden; }
 #codex-tree { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+#codex-tree[hidden] { display: none; }
 .codex-tree-actions { display: flex; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); flex: none; }
 .codex-tree-actions button {
   background: var(--input-bg); color: var(--text); border: none; border-radius: var(--radius);
@@ -519,6 +529,9 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
   border-radius: 6px; padding: 3px 6px; font-size: 12px; cursor: pointer;
   max-width: 110px; overflow: hidden; text-overflow: ellipsis;
 }
+body.codex-available #tree-viewport-inner { width: 500%; }
+body:not(.codex-available) #codex-pane { display: none; }
+#model-select[hidden], #mic-btn[hidden], #attach-btn[hidden] { display: none; }
 
 #conv-folder {
   flex: 0 0 auto;
