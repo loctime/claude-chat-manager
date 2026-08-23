@@ -894,6 +894,7 @@ async function codexLoadMessages(convId) {
 function codexOpenStream(convId) {
   const es = new EventSource(`/api/codex/conversations/${convId}/stream`);
   es.onmessage = e => {
+    if (!currentCodexConv || convId !== currentCodexConv.id) return; // la conversación activa cambió mientras este fetch/stream estaba en vuelo — ignorar (mismo guard que el openStream de Claude, app.js:2716)
     const data = JSON.parse(e.data);
     const container = $('codex-messages');
     if (data.kind === 'status') {
@@ -949,7 +950,11 @@ function setCodexBusy(b) {
 
 async function codexCancel() {
   if (!currentCodexConv) return;
-  await codexApi(`/conversations/${currentCodexConv.id}/message`, { method: 'DELETE' });
+  try {
+    await codexApi(`/conversations/${currentCodexConv.id}/message`, { method: 'DELETE' });
+  } catch (err) {
+    addMsg('error', 'No se pudo cancelar: ' + err.message, { container: $('codex-messages') });
+  }
 }
 
 async function codexPerformSend(convId, text, imagePath) {
