@@ -8,7 +8,7 @@ let archivedTotal = 0;
 let archivedTreeLimit = 100;
 let archivedTreeHasMore = false;
 let archivedTreeTotal = 0;
-let activePane = 0; // 0=chats 1=archived 2=notas 3=escaner
+let activePane = 0; // 0=chats 1=archived 2=notas 3=escaner 4=codex
 let notebookListLoaded = false;
 let notebooks = [];
 let currentNotebook = null; // {id, name} de la libreta abierta, o null si estamos en la lista
@@ -252,6 +252,7 @@ async function ensureNotebookCreated() {
 }
 
 let archivedPaneLoaded = false;
+let codexTreeLoaded = false;
 let activeAccount = null;
 const drafts = new Map();
 // Nombre de la app configurado del lado del server (CCM_APP_NAME) — index.html
@@ -783,6 +784,255 @@ async function safeLoadArchivedTree() {
   catch (err) { toast('No se pudo actualizar archivadas: ' + err.message); }
 }
 
+// ── Codex: árbol de conversaciones (pane 4) ──
+// Codex es single-account (no hay withAccount/withAccountBody acá) y su
+// árbol no tiene ni de lejos la complejidad del de Claude (sin proyectos
+// anidados, sin badges de modelo/costo) — wrapper y fila propios en vez de
+// reusar api()/convElement().
+async function codexApi(path, opts) {
+  const method = (opts && opts.method) || 'GET';
+  const res = method === 'GET'
+    ? await netFetch('/api/codex' + path, opts)
+    : await fetch('/api/codex' + path, opts).catch(err => { throw netError(err); });
+  if (!res.ok && res.status !== 202) throw new Error((await res.json()).error || res.statusText);
+  return res.json();
+}
+
+async function codexTogglePin(convId, pinned) {
+  await codexApi(`/conversations/${convId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pinned }),
+  });
+  codexLoadTree();
+}
+
+async function codexToggleArchive(convId, archived) {
+  await codexApi(`/conversations/${convId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ archived }),
+  });
+  codexLoadTree();
+}
+
+function codexConvElement(c) {
+  const div = document.createElement('div');
+  div.className = 'tree-row';
+  div.dataset.convId = c.convId;
+  const badgeEl = badge(c.status) || (c.unread ? '<span class="unread-dot"></span>' : '');
+  const main = document.createElement('div');
+  main.className = 'tree-row-main';
+  const nameEl = document.createElement('span');
+  nameEl.className = 'tree-row-name';
+  nameEl.textContent = c.name; // textContent, no innerHTML — mismo criterio de escape que convElement()
+  main.appendChild(nameEl);
+  if (badgeEl) main.insertAdjacentHTML('beforeend', badgeEl);
+  const snippet = document.createElement('div');
+  snippet.className = 'tree-row-snippet';
+  snippet.textContent = c.snippet;
+  const pinBtn = document.createElement('button');
+  pinBtn.type = 'button';
+  pinBtn.className = 'tree-row-action';
+  pinBtn.textContent = c.pinned ? '📌' : '📍';
+  pinBtn.title = c.pinned ? 'Desanclar' : 'Anclar';
+  pinBtn.onclick = ev => { ev.stopPropagation(); codexTogglePin(c.convId, !c.pinned); };
+  const archiveBtn = document.createElement('button');
+  archiveBtn.type = 'button';
+  archiveBtn.className = 'tree-row-action';
+  archiveBtn.textContent = c.archived ? '↩️' : '🗄️';
+  archiveBtn.title = c.archived ? 'Desarchivar' : 'Archivar';
+  archiveBtn.onclick = ev => { ev.stopPropagation(); codexToggleArchive(c.convId, !c.archived); };
+  div.appendChild(main);
+  div.appendChild(snippet);
+  div.appendChild(pinBtn);
+  div.appendChild(archiveBtn);
+  div.onclick = () => codexSelectConv(c.convId, c.name);
+  return div;
+}
+
+let codexShowingArchived = false;
+
+async function codexLoadTree() {
+  const { conversations, archivedTotal: codexArchivedTotal } = await codexApi(`/tree${codexShowingArchived ? '?archived=1' : ''}`);
+  const nav = $('codex-tree-list');
+  nav.innerHTML = '';
+  if (conversations.length === 0) {
+    nav.innerHTML = `<div class="empty-state">${codexShowingArchived ? 'Sin conversaciones archivadas' : 'Sin conversaciones de Codex todavía'}</div>`;
+  } else {
+    for (const c of conversations) nav.appendChild(codexConvElement(c));
+  }
+  $('codex-archived-toggle').textContent = codexShowingArchived ? '← Volver a activas' : `Ver archivadas (${codexArchivedTotal})`;
+}
+
+function codexToggleArchivedView() {
+  codexShowingArchived = !codexShowingArchived;
+  codexLoadTree();
+}
+
+async function codexNewConversation() {
+  try {
+    const { convId } = await codexApi('/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    codexSelectConv(convId, 'Nueva conversación');
+  } catch (err) {
+    toast('No se pudo crear la conversación de Codex: ' + err.message);
+  }
+}
+
+// currentCodexConv: {id, name} de la conversación Codex abierta en #codex-chat,
+// o null si estamos viendo la lista.
+let currentCodexConv = null;
+// EventSource activo del stream de la conversación Codex abierta, o null.
+let codexStream = null;
+
+async function codexLoadMessages(convId) {
+  const container = $('codex-messages');
+  container.innerHTML = '';
+  const msgs = await codexApi(`/conversations/${convId}/messages`);
+  for (const m of msgs) addMsg(m.role, m.text, { container, ts: m.ts });
+  if (msgs.length === 0) container.innerHTML = '<div id="empty-state" class="empty-state">Escribile algo a Codex</div>';
+}
+
+function codexOpenStream(convId) {
+  const es = new EventSource(`/api/codex/conversations/${convId}/stream`);
+  es.onmessage = e => {
+    if (!currentCodexConv || convId !== currentCodexConv.id) return; // la conversación activa cambió mientras este fetch/stream estaba en vuelo — ignorar (mismo guard que el openStream de Claude, app.js:2716)
+    const data = JSON.parse(e.data);
+    const container = $('codex-messages');
+    if (data.kind === 'status') {
+      if (data.status === 'idle') {
+        setCodexBusy(false);
+        // Recargar para reconciliar contra lo que quedó en disco — mismo motivo
+        // que loadMessages() en el openStream de Claude (app.js:2740): si el
+        // turno terminó durante un corte del stream (túnel Cloudflare, app en
+        // background), acá es la única forma de que la respuesta aparezca.
+        // Trade-off aceptado: toChatMessages (codex-scanner.js) descarta tool
+        // calls, así que un reload por idle hace desaparecer las tarjetas de
+        // command_execution que se hayan renderizado en vivo durante el turno.
+        codexLoadMessages(convId).then(() => {
+          if (data.code !== 0 && data.stderr) addMsg('error', 'Error: ' + data.stderr, { container });
+        });
+      } else {
+        setCodexBusy(true);
+      }
+      return;
+    }
+    if (data.kind !== 'codex') return;
+    const ev = data.event;
+    if (ev.type === 'item.completed' && ev.item) {
+      if (ev.item.type === 'agent_message' && ev.item.text) {
+        addMsg('assistant', ev.item.text, { container });
+      } else if (ev.item.type === 'command_execution') {
+        addTool('command_execution', { command: ev.item.command }, ev.item.aggregated_output || '', { container });
+      }
+    }
+  };
+  es.onerror = () => {
+    if (!currentCodexConv || convId !== currentCodexConv.id) return;
+    // Mismo fix que el onerror de Claude (app.js:2780): el túnel de Cloudflare
+    // puede cortar el stream SSE a mitad de un turno largo. EventSource
+    // reconecta solo, pero cualquier evento emitido durante el corte se
+    // pierde (el servidor no los reenvía) — sin este reload la respuesta de
+    // Codex nunca se renderiza y el composer queda bloqueado para siempre.
+    setTimeout(() => {
+      if (!currentCodexConv || convId !== currentCodexConv.id) return;
+      codexLoadMessages(convId);
+    }, 1500);
+  };
+  return es;
+}
+
+function codexShowChat() {
+  $('codex-tree').style.display = 'none';
+  $('codex-chat').style.display = '';
+}
+
+function codexShowTreeList() {
+  if (codexStream) { codexStream.close(); codexStream = null; }
+  currentCodexConv = null;
+  $('codex-chat').style.display = 'none';
+  $('codex-tree').style.display = '';
+  codexLoadTree();
+}
+
+async function codexSelectConv(convId, name) {
+  currentCodexConv = { id: convId, name };
+  $('codex-chat-title').textContent = name;
+  codexShowChat();
+  if (codexStream) { codexStream.close(); codexStream = null; }
+  // Limpiar "no leído" al abrir, en paralelo con la carga de mensajes — mismo
+  // orden que usa selectConv() para Claude (PATCH antes de refrescar el árbol,
+  // evita que el punto quede pegado un instante de más por una carrera).
+  codexApi(`/conversations/${convId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ unread: false }),
+  }).catch(() => {});
+  await codexLoadMessages(convId);
+  codexStream = codexOpenStream(convId);
+}
+
+function setCodexBusy(b) {
+  $('codex-send-btn').disabled = b;
+  $('codex-cancel-btn').style.display = b ? '' : 'none';
+}
+
+async function codexCancel() {
+  if (!currentCodexConv) return;
+  try {
+    await codexApi(`/conversations/${currentCodexConv.id}/message`, { method: 'DELETE' });
+  } catch (err) {
+    addMsg('error', 'No se pudo cancelar: ' + err.message, { container: $('codex-messages') });
+  }
+}
+
+async function codexPerformSend(convId, text, imagePath) {
+  addMsg('user', text, { container: $('codex-messages') });
+  setCodexBusy(true);
+  try {
+    await codexApi(`/conversations/${convId}/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, imagePath }),
+    });
+  } catch (err) {
+    addMsg('error', 'No se pudo enviar: ' + err.message, { container: $('codex-messages') });
+    setCodexBusy(false);
+  }
+}
+
+// Sube una imagen a /api/upload (mismo endpoint genérico que ya usa el
+// composer de Chats, no es Codex-específico) y devuelve la ruta local.
+// No se reusa uploadAttachment() tal cual: esa función está acoplada al DOM
+// del composer de Claude (escribe en #composer-attachments, empuja a
+// pendingAttachments, y aborta si currentConv es null) — para Codex hace
+// falta solo la subida, sin esos efectos secundarios. Sí se reusa
+// prepareForUpload(), que es genérica (File → Blob, sin tocar el DOM).
+async function codexUploadImage(file) {
+  const { blob, name } = await prepareForUpload(file, file.name);
+  const fd = new FormData();
+  fd.append('file', blob, name);
+  const res = await netFetch('/api/upload', { method: 'POST', body: fd });
+  if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+  const { path: filePath } = await res.json();
+  return filePath;
+}
+
+async function codexSubmitComposer() {
+  const textEl = $('codex-composer-text');
+  const text = textEl.value.trim();
+  if (!text || !currentCodexConv) return;
+  const imageInput = $('codex-image-input');
+  let imagePath;
+  try {
+    if (imageInput.files[0]) {
+      imagePath = await codexUploadImage(imageInput.files[0]);
+      imageInput.value = '';
+    }
+  } catch (err) {
+    addMsg('error', 'No se pudo subir la imagen: ' + err.message, { container: $('codex-messages') });
+    return;
+  }
+  textEl.value = '';
+  await codexPerformSend(currentCodexConv.id, text, imagePath);
+}
+
 let paneNavGeneration = 0;
 let paneNavTarget = 0; // pane que debe quedar activo una vez termine la navegación en curso
 
@@ -813,6 +1063,16 @@ async function goToPane(index) {
       notebookListLoaded = true;
     } catch (err) {
       toast('No se pudieron cargar las libretas: ' + err.message);
+      if (myGeneration === paneNavGeneration) paneNavTarget = activePane;
+      return;
+    }
+  }
+  if (index === 4 && !codexTreeLoaded) {
+    try {
+      await codexLoadTree();
+      codexTreeLoaded = true;
+    } catch (err) {
+      toast('No se pudo cargar Codex: ' + err.message);
       if (myGeneration === paneNavGeneration) paneNavTarget = activePane;
       return;
     }
@@ -2134,7 +2394,8 @@ function updateLastUserPin() {
 }
 
 function addMsg(role, text, opts = {}) {
-  const existing = document.getElementById('empty-state');
+  const container = opts.container || messagesEl;
+  const existing = container.querySelector('#empty-state') || (container === messagesEl ? document.getElementById('empty-state') : null);
   if (existing) existing.remove();
 
   const div = document.createElement('div');
@@ -2184,12 +2445,14 @@ function addMsg(role, text, opts = {}) {
   } else {
     div.textContent = text;
   }
-  messagesEl.appendChild(div);
-  autoScroll();
+  container.appendChild(div);
+  if (container === messagesEl) autoScroll();
+  else container.scrollTop = container.scrollHeight; // autoScroll()/jumpBtn son estado del pane de Claude — un container ajeno (p.ej. #codex-messages) solo necesita quedar pegado al final
   return div;
 }
 
 function addTool(name, input, output, opts = {}) {
+  const container = opts.container || messagesEl;
   const det = document.createElement('details');
   det.className = 'tool';
   if (opts.compacted) det.classList.add('compacted');
@@ -2257,8 +2520,9 @@ function addTool(name, input, output, opts = {}) {
     }
   }
 
-  messagesEl.appendChild(det);
-  autoScroll();
+  container.appendChild(det);
+  if (container === messagesEl) autoScroll();
+  else container.scrollTop = container.scrollHeight;
 }
 
 // Marcador inline para un boundary de /compact real (mismo session_id antes y
@@ -2564,10 +2828,19 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { hiddenSince = Date.now(); return; }
   const wasHiddenFor = hiddenSince ? Date.now() - hiddenSince : 0;
   hiddenSince = 0;
-  if (wasHiddenFor < 3000 || !currentConv) return;
-  openStream(currentConv);
-  loadMessages(currentConv);
-  refreshVisibleTrees();
+  if (wasHiddenFor < 3000) return;
+  if (currentConv) {
+    openStream(currentConv);
+    loadMessages(currentConv);
+    refreshVisibleTrees();
+  }
+  // Mismo mecanismo que arriba pero para la pestaña Codex — mismo problema de
+  // stream/túnel muerto al volver del background.
+  if (currentCodexConv) {
+    if (codexStream) codexStream.close();
+    codexStream = codexOpenStream(currentCodexConv.id);
+    codexLoadMessages(currentCodexConv.id);
+  }
 });
 
 // ── Cost badge ──
@@ -3243,7 +3516,7 @@ function paneSwipeStart(clientX, clientY) {
   return true;
 }
 
-const PANE_COUNT = 4;
+const PANE_COUNT = 5; // Chats/Archivado/Notas/Escáner/Codex
 
 function paneSwipeMove(clientX, clientY) {
   if (!paneDragging) return false;

@@ -207,15 +207,16 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
 #tree-viewport { flex: 1; overflow: hidden; position: relative; }
 #tree-viewport-inner {
   display: flex;
-  width: 400%;
+  width: 500%; /* 5 panes: Chats/Archivado/Notas/Escáner/Codex — ver PANE_COUNT en app.js */
   height: 100%;
   transition: transform .25s ease;
   touch-action: pan-y;
 }
-#tree-viewport-inner[data-pane="1"] { transform: translateX(-25%); }
-#tree-viewport-inner[data-pane="2"] { transform: translateX(-50%); }
-#tree-viewport-inner[data-pane="3"] { transform: translateX(-75%); }
-.tree-pane { width: 25%; flex: none; height: 100%; overflow-y: auto; }
+#tree-viewport-inner[data-pane="1"] { transform: translateX(-20%); }
+#tree-viewport-inner[data-pane="2"] { transform: translateX(-40%); }
+#tree-viewport-inner[data-pane="3"] { transform: translateX(-60%); }
+#tree-viewport-inner[data-pane="4"] { transform: translateX(-80%); }
+.tree-pane { width: 20%; flex: none; height: 100%; overflow-y: auto; }
 .tree-pane::-webkit-scrollbar { width: 4px; }
 .tree-pane::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
@@ -258,6 +259,74 @@ body { background: var(--bg); color: var(--text); font-family: system-ui, -apple
   border: 1px solid var(--border); border-radius: var(--radius); padding: 4px 8px; align-self: flex-start;
 }
 .scan-badge-ok { color: var(--accent); border-color: var(--accent); }
+
+/* ── Codex: árbol de conversaciones + mini chat propio (no reusa #panel-chat,
+   que está cableado para lo específico de Claude — model select, costo,
+   tool calls). El composer real (mandar/cancelar/streaming) llega en Task 7;
+   acá solo va el layout. ── */
+.codex-pane { display: flex; flex-direction: column; overflow: hidden; }
+#codex-tree { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.codex-tree-actions { display: flex; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); flex: none; }
+.codex-tree-actions button {
+  background: var(--input-bg); color: var(--text); border: none; border-radius: var(--radius);
+  padding: 8px 10px; font-size: 12.5px; cursor: pointer; flex: 1;
+}
+.codex-tree-actions button:hover { filter: brightness(1.15); }
+#codex-tree-list { flex: 1; overflow-y: auto; }
+.empty-state { padding: 24px 12px; text-align: center; color: var(--text2); font-size: 13px; }
+
+/* Fila de conversación Codex — versión simplificada de .conv (sin badges de
+   modelo/costo). Grid de 2 filas x 3 columnas: nombre+badge arriba, snippet
+   abajo, los dos botones de acción (pin/archivar) ocupan ambas filas a la
+   derecha. */
+.tree-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.tree-row:hover { background: var(--header); }
+.tree-row-main { grid-column: 1; grid-row: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
+.tree-row-name { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tree-row-snippet {
+  grid-column: 1; grid-row: 2;
+  font-size: 12px; color: var(--text2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tree-row-action {
+  grid-row: 1 / 3;
+  background: none; border: none; color: var(--text2); cursor: pointer;
+  font-size: 14px; padding: 4px 6px; border-radius: 6px;
+}
+.tree-row-action:hover { background: var(--border); color: var(--text); }
+
+#codex-chat { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.codex-chat-header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex: none; }
+.codex-chat-header button {
+  background: none; border: none; color: var(--text2); cursor: pointer;
+  font-size: 13px; padding: 6px 4px;
+}
+.codex-chat-header button:hover { color: var(--text); }
+#codex-chat-title { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#codex-messages { flex: 1; overflow-y: auto; padding: 8px 12px; display: flex; flex-direction: column; gap: 3px; }
+
+/* .composer — genérico, hoy solo lo usa Codex; mismo patrón visual que
+   .notes-composer (Notas) pero sin acoplarse a esa clase. */
+.composer { display: flex; gap: 6px; padding: 8px 12px calc(8px + var(--safe-b)); border-top: 1px solid var(--border); align-items: flex-end; flex: none; }
+.composer textarea {
+  flex: 1; resize: none; max-height: 120px; padding: 8px 10px;
+  background: var(--input-bg); border: none; border-radius: var(--radius);
+  color: var(--text); font-family: var(--chat-font); font-size: var(--chat-size);
+}
+.composer button {
+  background: none; border: none; color: var(--text2); cursor: pointer;
+  width: 36px; height: 36px; flex: none; display: flex; align-items: center; justify-content: center;
+}
+.composer button:hover { color: var(--text); }
 .scan-variants { display: flex; flex-direction: column; gap: 14px; }
 .scan-variant {
   background: var(--header); border: 1px solid var(--border); border-radius: var(--radius);

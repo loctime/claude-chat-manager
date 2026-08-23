@@ -14,6 +14,8 @@ const config = require('./config');
 const icon = require('./icon');
 const { Runner } = require('./runner');
 const { CLAUDE_CMD } = require('./claude-cmd');
+const { CodexRunner } = require('./codex-runner');
+const codexScanner = require('./codex-scanner');
 const searchIndex = require('./search-index');
 const { getReplySuggestions } = require('./groq-suggest');
 
@@ -623,6 +625,20 @@ app.use(express.static(PUBLIC_DIR, {
 const runner = new Runner({ selfHost: HOST, selfPort: PORT });
 const sseClients = new Map(); // convId → Set<res>
 
+const CODEX_META_FILE = path.join(os.homedir(), '.claude', 'session-manager', 'codex-meta.json');
+const codexRunner = new CodexRunner({ selfHost: HOST, selfPort: PORT });
+const codexSseClients = new Map(); // convId → Set<res>
+
+function codexBroadcast(convId, payload) {
+  const set = codexSseClients.get(convId);
+  if (!set) return;
+  for (const res of set) res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function codexConvStatus(convId) {
+  return codexRunner.running.has(convId) ? 'running' : codexRunner.isBusy(convId) ? 'queued' : 'idle';
+}
+
 // Precios en USD por millón de tokens. Match por prefijo del model id.
 // Fuente: página pública de precios Anthropic (Ene 2026). Ajustar cuando cambien.
 const PRICE_TABLE = [
@@ -729,6 +745,37 @@ runner.on('status', s => {
       if (conv) {
         conv.unread = true;
         meta.save(data, metaFile);
+      }
+    }
+  }
+});
+
+codexRunner.on('event', ({ convId, event }) => {
+  if (event.type === 'thread.started' && event.thread_id) {
+    const data = meta.load(CODEX_META_FILE);
+    if (data.conversations[convId] && data.conversations[convId].currentSessionId !== event.thread_id) {
+      meta.advanceSession(data, convId, event.thread_id);
+      meta.save(data, CODEX_META_FILE);
+    }
+  }
+  codexBroadcast(convId, { kind: 'codex', event });
+});
+
+codexRunner.on('status', s => {
+  codexBroadcast(s.convId, { kind: 'status', ...s });
+  // Mismo criterio de "no leído" que ya usa Claude (ver runner.on('status', ...)
+  // más arriba en este archivo): un turno terminó sin nadie mirando esta convId
+  // por SSE ahora mismo → se marca unread. No se replica la generación de título
+  // por IA ni el resync del índice de búsqueda — ninguno de los dos existe para
+  // Codex en v1 (fuera de alcance, ver spec).
+  if (s.status === 'idle' && !s.cancelled) {
+    const hasViewer = (codexSseClients.get(s.convId)?.size || 0) > 0;
+    if (!hasViewer) {
+      const data = meta.load(CODEX_META_FILE);
+      const conv = data.conversations[s.convId];
+      if (conv) {
+        conv.unread = true;
+        meta.save(data, CODEX_META_FILE);
       }
     }
   }
@@ -1809,6 +1856,102 @@ app.get('/api/conversations/:id/stream', (req, res) => {
     if (!set) return;
     set.delete(res);
     if (set.size === 0) sseClients.delete(convId);
+  });
+});
+
+app.post('/api/codex/conversations', (req, res) => {
+  const projectDir = process.env.CCM_DEFAULT_PROJECT_DIR || os.homedir();
+  const convId = crypto.randomUUID();
+  const data = meta.load(CODEX_META_FILE);
+  data.conversations[convId] = { currentSessionId: null, projectDir };
+  meta.save(data, CODEX_META_FILE);
+  res.status(201).json({ convId, projectDir });
+});
+
+app.get('/api/codex/tree', (req, res) => {
+  const data = meta.load(CODEX_META_FILE);
+  const convs = [];
+  for (const [convId, c] of Object.entries(data.conversations)) {
+    if (c.hidden) continue;
+    // Evitar listSessions(): escanea y parsea CADA rollout bajo ~/.codex/sessions/
+    // (todo el uso histórico de Codex CLI en la máquina, no solo lo de Jarvis) para
+    // descartar casi todo — acá solo hace falta la sesión de esta conv puntual.
+    // findSessionFile() es barato (readdir), sessionInfo() cachea por mtime.
+    const file = c.currentSessionId ? codexScanner.findSessionFile(c.currentSessionId) : null;
+    const s = (file && codexScanner.sessionInfo(file)) || {};
+    convs.push({
+      convId,
+      name: c.name || s.snippet || '(nueva conversación)',
+      snippet: s.snippet || '',
+      lastActivity: s.lastActivity || null,
+      messageCount: s.messageCount || 0,
+      pinned: !!c.pinned,
+      archived: !!c.archived,
+      unread: !!c.unread,
+      status: codexConvStatus(convId),
+    });
+  }
+  const showArchived = req.query.archived === '1';
+  const filtered = showArchived ? convs.filter(c => c.archived) : convs.filter(c => !c.archived);
+  filtered.sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    return (b.lastActivity || '').localeCompare(a.lastActivity || '');
+  });
+  res.json({ conversations: filtered, archivedTotal: convs.filter(c => c.archived).length });
+});
+
+app.patch('/api/codex/conversations/:id', (req, res) => {
+  const data = meta.load(CODEX_META_FILE);
+  const conv = data.conversations[req.params.id];
+  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  if ('pinned' in req.body) conv.pinned = !!req.body.pinned;
+  if ('archived' in req.body) conv.archived = !!req.body.archived;
+  if ('unread' in req.body) conv.unread = !!req.body.unread;
+  meta.save(data, CODEX_META_FILE);
+  res.json({ ok: true });
+});
+
+app.get('/api/codex/conversations/:id/messages', (req, res) => {
+  const data = meta.load(CODEX_META_FILE);
+  const conv = data.conversations[req.params.id];
+  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  if (!conv.currentSessionId) return res.json([]);
+  const file = codexScanner.findSessionFile(conv.currentSessionId);
+  res.json(file ? codexScanner.getMessages(file) : []);
+});
+
+app.post('/api/codex/conversations/:id/message', (req, res) => {
+  const convId = req.params.id;
+  const text = (req.body.text || '').trim();
+  if (!text) return res.status(400).json({ error: 'mensaje vacío' });
+  if (codexRunner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación ya está procesando un mensaje' });
+  const data = meta.load(CODEX_META_FILE);
+  const conv = data.conversations[convId];
+  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  const cwd = conv.projectDir || os.homedir();
+  codexRunner.send({ convId, sessionId: conv.currentSessionId, cwd, text, imagePath: req.body.imagePath || undefined });
+  res.status(202).json({ queued: true });
+});
+
+app.delete('/api/codex/conversations/:id/message', (req, res) => {
+  res.json({ cancelled: codexRunner.cancel(req.params.id) });
+});
+
+app.get('/api/codex/conversations/:id/stream', (req, res) => {
+  const convId = req.params.id;
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  res.write('\n');
+  if (!codexSseClients.has(convId)) codexSseClients.set(convId, new Set());
+  codexSseClients.get(convId).add(res);
+  const st = codexConvStatus(convId);
+  if (st !== 'idle') res.write(`data: ${JSON.stringify({ kind: 'status', status: st })}\n\n`);
+  const heartbeat = setInterval(() => res.write(':heartbeat\n\n'), 20000);
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    const set = codexSseClients.get(convId);
+    if (!set) return;
+    set.delete(res);
+    if (set.size === 0) codexSseClients.delete(convId);
   });
 });
 
