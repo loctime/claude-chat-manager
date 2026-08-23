@@ -898,7 +898,21 @@ function codexOpenStream(convId) {
     const data = JSON.parse(e.data);
     const container = $('codex-messages');
     if (data.kind === 'status') {
-      setCodexBusy(data.status === 'running' || data.status === 'queued');
+      if (data.status === 'idle') {
+        setCodexBusy(false);
+        // Recargar para reconciliar contra lo que quedó en disco — mismo motivo
+        // que loadMessages() en el openStream de Claude (app.js:2740): si el
+        // turno terminó durante un corte del stream (túnel Cloudflare, app en
+        // background), acá es la única forma de que la respuesta aparezca.
+        // Trade-off aceptado: toChatMessages (codex-scanner.js) descarta tool
+        // calls, así que un reload por idle hace desaparecer las tarjetas de
+        // command_execution que se hayan renderizado en vivo durante el turno.
+        codexLoadMessages(convId).then(() => {
+          if (data.code !== 0 && data.stderr) addMsg('error', 'Error: ' + data.stderr, { container });
+        });
+      } else {
+        setCodexBusy(true);
+      }
       return;
     }
     if (data.kind !== 'codex') return;
@@ -911,7 +925,18 @@ function codexOpenStream(convId) {
       }
     }
   };
-  es.onerror = () => { /* EventSource reintenta solo; nada que hacer acá */ };
+  es.onerror = () => {
+    if (!currentCodexConv || convId !== currentCodexConv.id) return;
+    // Mismo fix que el onerror de Claude (app.js:2780): el túnel de Cloudflare
+    // puede cortar el stream SSE a mitad de un turno largo. EventSource
+    // reconecta solo, pero cualquier evento emitido durante el corte se
+    // pierde (el servidor no los reenvía) — sin este reload la respuesta de
+    // Codex nunca se renderiza y el composer queda bloqueado para siempre.
+    setTimeout(() => {
+      if (!currentCodexConv || convId !== currentCodexConv.id) return;
+      codexLoadMessages(convId);
+    }, 1500);
+  };
   return es;
 }
 
@@ -2803,10 +2828,19 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { hiddenSince = Date.now(); return; }
   const wasHiddenFor = hiddenSince ? Date.now() - hiddenSince : 0;
   hiddenSince = 0;
-  if (wasHiddenFor < 3000 || !currentConv) return;
-  openStream(currentConv);
-  loadMessages(currentConv);
-  refreshVisibleTrees();
+  if (wasHiddenFor < 3000) return;
+  if (currentConv) {
+    openStream(currentConv);
+    loadMessages(currentConv);
+    refreshVisibleTrees();
+  }
+  // Mismo mecanismo que arriba pero para la pestaña Codex — mismo problema de
+  // stream/túnel muerto al volver del background.
+  if (currentCodexConv) {
+    if (codexStream) codexStream.close();
+    codexStream = codexOpenStream(currentCodexConv.id);
+    codexLoadMessages(currentCodexConv.id);
+  }
 });
 
 // ── Cost badge ──

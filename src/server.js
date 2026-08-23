@@ -1870,12 +1870,15 @@ app.post('/api/codex/conversations', (req, res) => {
 
 app.get('/api/codex/tree', (req, res) => {
   const data = meta.load(CODEX_META_FILE);
-  const sessions = codexScanner.listSessions();
-  const byId = new Map(sessions.map(s => [s.sessionId, s]));
   const convs = [];
   for (const [convId, c] of Object.entries(data.conversations)) {
     if (c.hidden) continue;
-    const s = byId.get(c.currentSessionId) || {};
+    // Evitar listSessions(): escanea y parsea CADA rollout bajo ~/.codex/sessions/
+    // (todo el uso histórico de Codex CLI en la máquina, no solo lo de Jarvis) para
+    // descartar casi todo — acá solo hace falta la sesión de esta conv puntual.
+    // findSessionFile() es barato (readdir), sessionInfo() cachea por mtime.
+    const file = c.currentSessionId ? codexScanner.findSessionFile(c.currentSessionId) : null;
+    const s = (file && codexScanner.sessionInfo(file)) || {};
     convs.push({
       convId,
       name: c.name || s.snippet || '(nueva conversación)',

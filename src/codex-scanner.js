@@ -150,4 +150,4 @@ function findSessionFile(sessionId, sessionsDir = SESSIONS_DIR) {
 
 function _clearSessionInfoCache() { _infoCache.clear(); }
 
-module.exports = { listSessions, findSessionFile, getMessages, toChatMessages, SESSIONS_DIR, _clearSessionInfoCache };
+module.exports = { listSessions, findSessionFile, getMessages, toChatMessages, sessionInfo, SESSIONS_DIR, _clearSessionInfoCache };
