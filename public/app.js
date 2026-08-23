@@ -398,14 +398,11 @@ async function loadUsage() {
 // muestra. El endpoint usa `codex login status`, no inicia un agente ni gasta
 // cuota; si falla, la app sigue funcionando normalmente como chat de Claude.
 async function loadCodexAvailability() {
+  codexAvailable = false;
   try {
     const res = await fetch('/api/codex/status');
     const data = await res.json();
-    if (!res.ok || !data.available) return;
-    codexAvailable = true;
-    PANE_COUNT = 5;
-    document.body.classList.add('codex-available');
-    $('codex-tab').hidden = false;
+    codexAvailable = Boolean(res.ok && data.available);
   } catch { /* Codex no está configurado en esta instalación */ }
 }
 
@@ -1083,11 +1080,17 @@ function codexSharedRow(c) {
 }
 
 async function loadCodexSharedTree() {
-  const { conversations } = await codexApi('/tree');
   const nav = $('codex-pane');
   nav.innerHTML = '';
+  await loadCodexAvailability();
+  if (!codexAvailable) {
+    nav.innerHTML = '<div id="empty-state"><p>Codex no está configurado en esta instalación.</p><p>En la PC que ejecuta J.A.R.V.I.S, iniciá sesión con <code>codex login</code> y actualizá esta página.</p></div>';
+    return false;
+  }
+  const { conversations } = await codexApi('/tree');
   if (!conversations.length) nav.insertAdjacentHTML('beforeend', '<div id="empty-state"><p>Sin conversaciones de Codex todavía</p></div>');
   else conversations.forEach(c => nav.appendChild(codexSharedRow(c)));
+  return true;
 }
 
 // Codex usa el mismo patrón táctil para seleccionar/fijar/ocultar. El swipe
@@ -1260,6 +1263,11 @@ async function selectCodexShared(convId, name) {
 async function createCodexSharedConversation() {
   // Igual que Chats: abrimos un borrador local. La metadata y su fila recién
   // existen cuando se manda el primer mensaje.
+  await loadCodexAvailability();
+  if (!codexAvailable) {
+    await loadCodexSharedTree();
+    return;
+  }
   if (eventSource) { eventSource.close(); eventSource = null; }
   if (codexStream) { codexStream.close(); codexStream = null; }
   if (currentCodexConv && currentCodexConv.id) codexDrafts.set(currentCodexConv.id, $('input').value);
@@ -1323,8 +1331,7 @@ async function goToPane(index) {
   }
   if (index === 4 && !codexTreeLoaded) {
     try {
-      await loadCodexSharedTree();
-      codexTreeLoaded = true;
+      codexTreeLoaded = await loadCodexSharedTree();
     } catch (err) {
       toast('No se pudo cargar Codex: ' + err.message);
       if (myGeneration === paneNavGeneration) paneNavTarget = activePane;
@@ -3844,7 +3851,7 @@ function paneSwipeStart(clientX, clientY) {
   return true;
 }
 
-let PANE_COUNT = 4; // Codex se suma solo cuando el CLI está listo.
+const PANE_COUNT = 5; // Chats/Archivado/Notas/Escáner/Codex.
 
 function paneSwipeMove(clientX, clientY) {
   if (!paneDragging) return false;

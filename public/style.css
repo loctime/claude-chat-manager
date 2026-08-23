@@ -217,7 +217,7 @@ body.codex-list-theme #panel-list {
 #tree-viewport { flex: 1; overflow: hidden; position: relative; }
 #tree-viewport-inner {
   display: flex;
-  width: 400%; /* Chats/Archivado/Notas/Escáner; Codex se habilita al detectarlo */
+  width: 500%; /* Chats/Archivado/Notas/Escáner/Codex */
   height: 100%;
   transition: transform .25s ease;
   touch-action: pan-y;
@@ -529,8 +529,6 @@ body.codex-list-theme #panel-list {
   border-radius: 6px; padding: 3px 6px; font-size: 12px; cursor: pointer;
   max-width: 110px; overflow: hidden; text-overflow: ellipsis;
 }
-body.codex-available #tree-viewport-inner { width: 500%; }
-body:not(.codex-available) #codex-pane { display: none; }
 #model-select[hidden], #mic-btn[hidden], #attach-btn[hidden] { display: none; }
 
 #conv-folder {
