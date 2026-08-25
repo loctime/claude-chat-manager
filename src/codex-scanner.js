@@ -67,14 +67,36 @@ function extractText(content) {
 // Code — los turnos de texto son response_item con payload.type "message",
 // payload.role "user"/"assistant"/"developer" y payload.content como array de
 // bloques {type, text}. Solo se toman user/assistant (developer es el prompt
-// de sistema completo, no se muestra). Tool calls (custom_tool_call/
-// custom_tool_call_output) quedan fuera de v1 a propósito: se ven en vivo
-// durante el turno (vía SSE, ver codex-runner.js) pero no se reconstruyen al
-// reabrir una conversación vieja.
+// de sistema completo, no se muestra). Las tool calls se reconstruyen junto
+// con su salida: sin esto, al recibir el evento idle la UI recargaba desde el
+// rollout y desaparecían los Bash/Edit/comandos que se habían visto en vivo.
 function toChatMessages(entries) {
+  const toolOutputs = new Map();
+  for (const e of entries) {
+    if (e.type !== 'response_item' || !e.payload || e.payload.type !== 'custom_tool_call_output') continue;
+    const { call_id: callId, output } = e.payload;
+    if (!callId) continue;
+    const text = typeof output === 'string'
+      ? output
+      : extractText(output) || (output == null ? '' : JSON.stringify(output));
+    toolOutputs.set(callId, text);
+  }
+
   const items = [];
   for (const e of entries) {
-    if (e.type !== 'response_item' || !e.payload || e.payload.type !== 'message') continue;
+    if (e.type !== 'response_item' || !e.payload) continue;
+    if (e.payload.type === 'custom_tool_call') {
+      const { call_id: callId, name, input } = e.payload;
+      items.push({
+        role: 'tool',
+        name: name || 'comando',
+        input: input == null ? '' : input,
+        output: toolOutputs.get(callId) || '',
+        ts: e.timestamp,
+      });
+      continue;
+    }
+    if (e.payload.type !== 'message') continue;
     const { role, content } = e.payload;
     if (role !== 'user' && role !== 'assistant') continue;
     let text = extractText(content);

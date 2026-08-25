@@ -1,4 +1,5 @@
 const express = require('express');
+const compression = require('compression');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
@@ -222,6 +223,15 @@ const SEARCH_SYNC_MS = 60_000;
 const upload = multer({ dest: UPLOAD_DIR, limits: { fileSize: 50 * 1024 * 1024 } });
 
 const app = express();
+// Comprimido global, EXCEPTO las rutas SSE (/stream): compression bufferea en
+// zlib antes de flushear, lo que rompería el heartbeat de 20s que ya existe
+// para evitar que Cloudflare Tunnel corte esas conexiones por inactividad
+// (~100s) — ver "Bug resuelto 2026-07-20: mensajes que desaparecían" en
+// CLAUDE.local.md. No comprimir SSE es estándar (no ganan casi nada igual,
+// son eventos chicos), así que excluirlas no cuesta nada.
+app.use(compression({
+  filter: (req, res) => !req.path.endsWith('/stream') && compression.filter(req, res),
+}));
 app.use(express.json());
 
 // Auth por cookie — solo si ACCESS_PIN está seteado
@@ -630,9 +640,14 @@ function serveIcon(size) {
 app.get('/icon-192.png', serveIcon(192));
 app.get('/icon-512.png', serveIcon(512));
 
-// index.html y archivos JS/CSS nunca cacheados por el browser
+// index.html y el código propio (app.js/style.css) nunca cacheados por el
+// browser, para que un rebrand no quede pegado en el celu. Las libs de
+// vendor/ son distintas: son terceros pineados por versión que no cambian
+// entre deploys de este repo — no hay motivo para bajarlas de nuevo en cada
+// carga. Se les da cache normal (revalidación por ETag, no "para siempre").
 app.use(express.static(PUBLIC_DIR, {
   setHeaders(res, filePath) {
+    if (filePath.includes(`${path.sep}vendor${path.sep}`)) return;
     if (filePath.endsWith('.html') || filePath.endsWith('.js') || filePath.endsWith('.css') || filePath.endsWith('manifest.json')) {
       res.setHeader('Cache-Control', 'no-store');
     }

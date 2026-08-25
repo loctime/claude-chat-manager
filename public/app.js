@@ -1,4 +1,8 @@
 let currentConv = null;
+// Acción rápida de menú: el agente conserva el contexto del proyecto mucho
+// mejor que el server. Una sesión puede haber arrancado en HOME y luego entrar
+// a un repo, por lo que ejecutar `git -C <cwd>` desde acá sería poco fiable.
+const GIT_SYNC_PROMPT = `Sincronizá con Git el repositorio en el que venimos trabajando en esta conversación. Primero identificá el repo correcto y revisá git status. Si hay cambios pendientes, revisalos brevemente, hacé git add -A y creá un commit con un mensaje corto y descriptivo. Después ejecutá git pull --rebase y git push. No uses force push, git reset --hard ni descartes cambios. Si hay conflictos, no los resuelvas a ciegas: detenete y explicá qué falta. Al final informá claramente qué pasó y el hash del commit si se creó uno.`;
 let eventSource = null;
 let tree = [];
 let treeLimit = 100;
@@ -338,14 +342,29 @@ function formatCountdown(ms) {
   const m = totalMin % 60;
   return `${h} : ${String(m).padStart(2, '0')} min`;
 }
-// El label ("5h" / "Semana") se reemplaza por la cuenta regresiva al reinicio
-// mientras haya resetsAt guardado en el dataset — se recalcula solo (ver
-// setInterval más abajo) sin esperar al próximo loadUsage(), así el número
-// baja solo entre polls en vez de quedar pegado al valor de la última carga.
+// La ventana corta conserva una cuenta regresiva. Para la semanal es mucho
+// más útil el momento concreto de reinicio ("viernes 4:50") que una cifra
+// grande de horas; sirve igual para Claude y Codex.
+function formatWeeklyReset(resetsAt) {
+  const date = new Date(resetsAt);
+  const day = date.toLocaleDateString('es-AR', { weekday: 'long' });
+  const time = `${date.getHours()}:${String(date.getMinutes()).padStart(2, '0')}`;
+  return `${day} ${time}`;
+}
+
+// El label ("5h" / "Semana") se reemplaza mientras haya resetsAt guardado en
+// el dataset. La cuenta atrás se recalcula sola (ver setInterval más abajo),
+// sin esperar al próximo loadUsage().
 function updateCountdownLabel(el) {
   const label = el.querySelector('.usage-bar-label');
   const resetsAt = el.dataset.resetsAt ? Number(el.dataset.resetsAt) : null;
-  label.textContent = resetsAt ? formatCountdown(resetsAt - Date.now()) : label.dataset.staticLabel;
+  if (!resetsAt) {
+    label.textContent = label.dataset.staticLabel;
+  } else if (el.id === 'usage-7d') {
+    label.textContent = resetsAt <= Date.now() ? '¡ya!' : formatWeeklyReset(resetsAt);
+  } else {
+    label.textContent = formatCountdown(resetsAt - Date.now());
+  }
 }
 function renderUsageBar(el, info) {
   if (!info || info.pct == null) { el.hidden = true; return; }
@@ -915,7 +934,10 @@ async function codexLoadMessages(convId) {
   const container = $('codex-messages');
   container.innerHTML = '';
   const msgs = await codexApi(`/conversations/${convId}/messages`);
-  for (const m of msgs) addMsg(m.role, m.text, { container, ts: m.ts });
+  for (const m of msgs) {
+    if (m.role === 'tool') addTool(m.name, m.input, m.output, { container, ts: m.ts });
+    else addMsg(m.role, m.text, { container, ts: m.ts });
+  }
   if (msgs.length === 0) container.innerHTML = '<div id="empty-state" class="empty-state">Escribile algo a Codex</div>';
 }
 
@@ -1153,7 +1175,7 @@ function showCodexConvMenu(x, y, conv) {
   document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
   const menu = document.createElement('div');
   menu.className = 'ctx-menu';
-  menu.innerHTML = `<button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button><button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`;
+  menu.innerHTML = `<button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button><button data-action="git-sync">⬆️ Git: commit + pull + push</button><button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`;
   document.body.appendChild(menu);
   const rect = menu.getBoundingClientRect();
   menu.style.left = Math.min(x, window.innerWidth - rect.width - 8) + 'px';
@@ -1167,6 +1189,21 @@ function showCodexConvMenu(x, y, conv) {
     const action = e.target.dataset && e.target.dataset.action;
     if (!action) return;
     menu.remove(); document.removeEventListener('click', dismiss, true); document.removeEventListener('touchstart', dismiss, true);
+    if (action === 'git-sync') {
+      if (!confirm('Sincronizar Git desde esta conversación?\n\nLe pide a Codex que ubique el repo en el que se trabajó, haga commit de los cambios pendientes, pull con rebase y push. No hace force push ni descarta cambios.')) return;
+      try {
+        await selectCodexShared(conv.convId, conv.name);
+        setCodexMainBusy(true);
+        addUserMsgWithFiles(GIT_SYNC_PROMPT, []);
+        await codexApi(`/conversations/${conv.convId}/message`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: GIT_SYNC_PROMPT }),
+        });
+      } catch (err) {
+        setCodexMainBusy(false);
+        addMsg('error', 'No se pudo iniciar la sincronización Git: ' + err.message);
+      }
+      return;
+    }
     try {
       const patch = action === 'pin' ? { pinned: !conv.pinned } : { hidden: true };
       await codexApi(`/conversations/${conv.convId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) });
@@ -1576,6 +1613,7 @@ function showConvMenu(x, y, conv) {
     <button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button>
     <button data-action="archive">${conv.archived ? '📂 Desarchivar' : '📁 Archivar'}</button>
     <button data-action="compact">🗜️ Compactar</button>
+    <button data-action="git-sync">⬆️ Git: commit + pull + push</button>
     <button data-action="hide" class="ctx-danger">🙈 Ocultar</button>
   `;
   document.body.appendChild(menu);
@@ -1589,6 +1627,18 @@ function showConvMenu(x, y, conv) {
     menu.remove();
     document.removeEventListener('click', dismiss, true);
     document.removeEventListener('touchstart', dismiss, true);
+    if (action === 'git-sync') {
+      if (!confirm('Sincronizar Git desde esta conversación?\n\nLe pide a Claude que ubique el repo en el que se trabajó, haga commit de los cambios pendientes, pull con rebase y push. No hace force push ni descarta cambios.')) return;
+      try {
+        // En vez de ejecutar Git directamente desde el servidor, el pedido va al
+        // agente de esta charla: es el único que conserva el contexto suficiente
+        // para distinguir el proyecto correcto cuando la sesión arrancó en HOME
+        // y después trabajó dentro de una subcarpeta.
+        await selectConv(conv.convId, conv.name, conv.model, conv.lastModel, conv.currentDir || conv.projectDir);
+        await performSend(conv.convId, GIT_SYNC_PROMPT, []);
+      } catch (err) { toast('No se pudo iniciar la sincronización Git: ' + err.message); }
+      return;
+    }
     if (action === 'compact') {
       if (!confirm('Compactar la conversación?\n\nEjecuta el /compact nativo de Claude Code sobre la sesión actual — reduce el contexto sin perder la sesión. Puede tardar bastante en charlas largas.')) return;
       try {
@@ -2593,11 +2643,35 @@ function msgText(el) {
   return t ? t.textContent.trim() : '';
 }
 
+// La barra fija del último mensaje tiene que resumir lo que escribió la
+// persona, no la ruta interna del upload. Claude/los distintos transportes
+// pueden persistir el adjunto como "[Archivo adjunto: ...]" o como un tag
+// <image ... path="...">; ambos se muestran como un único indicador.
+function pinPreviewText(text) {
+  const imageTagRe = /<image\b[^>]*?(?:\bpath\s*=\s*["'][^"']+["'])?[^>]*>[\s\S]*?<\/image>/gi;
+  const attachmentRe = /\[Archivo adjunto:\s*([^\]]+)\]/gi;
+  const imagePathRe = /(?:[A-Za-z]:[\\/]|\/(?:home|tmp|root|var|opt|usr|mnt)\/)[^\s<>'"\]]+?\.(?:avif|bmp|gif|heic|jpe?g|png|svg|webp)(?=$|\s|[.,;:!?\]])/gi;
+  const hasImage = imageTagRe.test(text) || imagePathRe.test(text);
+
+  // Las expresiones con /g conservan lastIndex entre llamadas.
+  imageTagRe.lastIndex = 0;
+  attachmentRe.lastIndex = 0;
+  imagePathRe.lastIndex = 0;
+  const clean = text
+    .replace(imageTagRe, ' ')
+    .replace(attachmentRe, ' ')
+    .replace(imagePathRe, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  return (hasImage ? '🖼️ ' : '') + clean;
+}
+
 // Configura una fila del pin (botón) para que muestre `text` (recortado a
 // `limit`) y, al tocarla, salte a `el` con el mismo scrollIntoView+highlight
 // que usa el buscador.
 function setPinRow(btn, el, text, limit) {
-  const raw = text || '📎 Adjunto';
+  const raw = pinPreviewText(text) || '📎 Adjunto';
   const preview = raw.length > limit ? raw.slice(0, limit) + '…' : raw;
   btn.querySelector('.last-user-pin-text').textContent = preview;
   btn.title = text || 'Adjunto sin texto';

@@ -81,6 +81,27 @@ test('toChatMessages: corta el AVISO INFRAESTRUCTURA que codex-runner.js agrega 
   assert.deepEqual(msgs, [{ role: 'user', text: 'respondé OK', ts: 't1' }]);
 });
 
+test('toChatMessages: conserva tool calls y su salida al reconstruir el historial', () => {
+  const entries = [
+    {
+      type: 'response_item',
+      payload: { type: 'custom_tool_call', call_id: 'call-1', name: 'Bash', input: { command: 'npm test' } },
+      timestamp: 't1',
+    },
+    {
+      type: 'response_item',
+      payload: { type: 'custom_tool_call_output', call_id: 'call-1', output: [{ type: 'input_text', text: '12 passing' }] },
+      timestamp: 't2',
+    },
+    msgItem('assistant', 'Todo verde.', 't3'),
+  ];
+  const msgs = scanner.toChatMessages(entries);
+  assert.deepEqual(msgs, [
+    { role: 'tool', name: 'Bash', input: { command: 'npm test' }, output: '12 passing', ts: 't1' },
+    { role: 'assistant', text: 'Todo verde.', ts: 't3' },
+  ]);
+});
+
 test('listSessions: camina AAAA/MM/DD y arma snippet + cwd desde session_meta', () => {
   const dir = makeTmpSessionsDir();
   writeRollout(dir, 'abc-123', [
