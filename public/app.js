@@ -1,8 +1,10 @@
 let currentConv = null;
-// Acción rápida de menú: el agente conserva el contexto del proyecto mucho
-// mejor que el server. Una sesión puede haber arrancado en HOME y luego entrar
-// a un repo, por lo que ejecutar `git -C <cwd>` desde acá sería poco fiable.
-const GIT_SYNC_PROMPT = `Sincronizá con Git el repositorio en el que venimos trabajando en esta conversación. Primero identificá el repo correcto y revisá git status. Si hay cambios pendientes, revisalos brevemente, hacé git add -A y creá un commit con un mensaje corto y descriptivo. Después ejecutá git pull --rebase y git push. No uses force push, git reset --hard ni descartes cambios. Si hay conflictos, no los resuelvas a ciegas: detenete y explicá qué falta. Al final informá claramente qué pasó y el hash del commit si se creó uno.`;
+function gitSyncToast(result) {
+  const repo = (result.repo || '').split(/[\\/]/).filter(Boolean).pop() || 'repo';
+  return result.committed
+    ? `Git listo en ${repo}: commit ${result.commit}, pull y push OK`
+    : `Git listo en ${repo}: sin cambios para commitear, pull y push OK`;
+}
 let eventSource = null;
 let tree = [];
 let treeLimit = 100;
@@ -1190,17 +1192,12 @@ function showCodexConvMenu(x, y, conv) {
     if (!action) return;
     menu.remove(); document.removeEventListener('click', dismiss, true); document.removeEventListener('touchstart', dismiss, true);
     if (action === 'git-sync') {
-      if (!confirm('Sincronizar Git desde esta conversación?\n\nLe pide a Codex que ubique el repo en el que se trabajó, haga commit de los cambios pendientes, pull con rebase y push. No hace force push ni descarta cambios.')) return;
+      if (!confirm('Sincronizar Git en el repo de esta conversación?\n\nEjecuta directo: commit de cambios pendientes, pull con rebase y push. No hace force push ni descarta cambios.')) return;
       try {
-        await selectCodexShared(conv.convId, conv.name);
-        setCodexMainBusy(true);
-        addUserMsgWithFiles(GIT_SYNC_PROMPT, []);
-        await codexApi(`/conversations/${conv.convId}/message`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: GIT_SYNC_PROMPT }),
-        });
+        const result = await codexApi(`/conversations/${conv.convId}/git-sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        toast(gitSyncToast(result), 'info', 5000);
       } catch (err) {
-        setCodexMainBusy(false);
-        addMsg('error', 'No se pudo iniciar la sincronización Git: ' + err.message);
+        toast('No se pudo sincronizar Git: ' + err.message);
       }
       return;
     }
@@ -1628,15 +1625,13 @@ function showConvMenu(x, y, conv) {
     document.removeEventListener('click', dismiss, true);
     document.removeEventListener('touchstart', dismiss, true);
     if (action === 'git-sync') {
-      if (!confirm('Sincronizar Git desde esta conversación?\n\nLe pide a Claude que ubique el repo en el que se trabajó, haga commit de los cambios pendientes, pull con rebase y push. No hace force push ni descarta cambios.')) return;
+      if (!confirm('Sincronizar Git en el repo de esta conversación?\n\nEjecuta directo: commit de cambios pendientes, pull con rebase y push. No hace force push ni descarta cambios.')) return;
       try {
-        // En vez de ejecutar Git directamente desde el servidor, el pedido va al
-        // agente de esta charla: es el único que conserva el contexto suficiente
-        // para distinguir el proyecto correcto cuando la sesión arrancó en HOME
-        // y después trabajó dentro de una subcarpeta.
-        await selectConv(conv.convId, conv.name, conv.model, conv.lastModel, conv.currentDir || conv.projectDir);
-        await performSend(conv.convId, GIT_SYNC_PROMPT, []);
-      } catch (err) { toast('No se pudo iniciar la sincronización Git: ' + err.message); }
+        const result = await api(`/conversations/${conv.convId}/git-sync`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(withAccountBody({})),
+        });
+        toast(gitSyncToast(result), 'info', 5000);
+      } catch (err) { toast('No se pudo sincronizar Git: ' + err.message); }
       return;
     }
     if (action === 'compact') {

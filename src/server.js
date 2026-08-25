@@ -21,6 +21,7 @@ const { CodexUsageService } = require('./codex-usage');
 const codexScanner = require('./codex-scanner');
 const searchIndex = require('./search-index');
 const { getReplySuggestions } = require('./groq-suggest');
+const gitSync = require('./git-sync');
 
 const IS_WIN = process.platform === 'win32';
 // WSL: Linux corriendo dentro de Windows (kernel expone "microsoft" en
@@ -980,6 +981,21 @@ function resolveConv(convId, acc = activeAccount) {
   return { data, conv: data.conversations[convId], metaFile };
 }
 
+// Busca los cwd más recientes que la sesión registró. El cwd inicial suele ser
+// HOME, pero cada tool call conserva el subproyecto donde realmente se trabajó;
+// así el botón Git apunta al repo de la charla sin pedirle nada al agente.
+function gitCwdsForSession(file, fallback, parse = scanner.parseJsonl) {
+  const cwds = [];
+  if (file) {
+    for (const entry of parse(file).reverse()) {
+      if (typeof entry.cwd === 'string' && entry.cwd) cwds.push(entry.cwd);
+      if (entry.payload && typeof entry.payload.cwd === 'string' && entry.payload.cwd) cwds.push(entry.payload.cwd);
+    }
+  }
+  if (fallback) cwds.push(fallback);
+  return cwds;
+}
+
 // ── Upload de archivo adjunto (con compresión automática de imágenes) ──
 const IMAGE_COMPRESS_EXTS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif']);
 const MAX_IMAGE_BYTES = 1.5 * 1024 * 1024; // 1.5MB → comprimir
@@ -1753,6 +1769,27 @@ app.post('/api/conversations/:id/message', (req, res) => {
   res.status(202).json({ queued: true });
 });
 
+// Sincronización Git directa desde el menú de una charla. No se interpreta un
+// comando del navegador: el server invoca `git` con argv fijos y el repo se
+// deduce de los cwd ya guardados por la sesión de Claude Code.
+app.post('/api/conversations/:id/git-sync', async (req, res) => {
+  const convId = req.params.id;
+  if (runner.isBusy(convId) || compacting.has(convId)) return res.status(409).json({ error: 'esa conversación está procesando una tarea' });
+  const acc = req.body.account || activeAccount;
+  const projectsDir = accountProjectsDir(acc);
+  const { conv } = resolveConv(convId, acc);
+  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  const file = conv.currentSessionId ? scanner.findSessionFile(conv.currentSessionId, projectsDir) : null;
+  const repo = await gitSync.resolveRepo(gitCwdsForSession(file, conv.projectDir));
+  if (!repo) return res.status(400).json({ error: 'no encontré un repositorio Git asociado a esta conversación' });
+  try {
+    res.json(await gitSync.syncRepo(repo));
+  } catch (err) {
+    const detail = (err.stderr || err.stdout || err.message || 'falló Git').trim().slice(0, 1000);
+    res.status(409).json({ error: detail });
+  }
+});
+
 app.post('/api/conversations/:id/compact', (req, res) => {
   const convId = req.params.id;
   if (runner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación está procesando un mensaje' });
@@ -2002,6 +2039,23 @@ app.post('/api/codex/conversations/:id/message', (req, res) => {
   const cwd = conv.projectDir || os.homedir();
   codexRunner.send({ convId, sessionId: conv.currentSessionId, cwd, text, imagePath: req.body.imagePath || undefined });
   res.status(202).json({ queued: true });
+});
+
+app.post('/api/codex/conversations/:id/git-sync', async (req, res) => {
+  const convId = req.params.id;
+  if (codexRunner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación está procesando una tarea' });
+  const data = meta.load(CODEX_META_FILE);
+  const conv = data.conversations[convId];
+  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  const file = conv.currentSessionId ? codexScanner.findSessionFile(conv.currentSessionId) : null;
+  const repo = await gitSync.resolveRepo(gitCwdsForSession(file, conv.projectDir, codexScanner.parseJsonl));
+  if (!repo) return res.status(400).json({ error: 'no encontré un repositorio Git asociado a esta conversación' });
+  try {
+    res.json(await gitSync.syncRepo(repo));
+  } catch (err) {
+    const detail = (err.stderr || err.stdout || err.message || 'falló Git').trim().slice(0, 1000);
+    res.status(409).json({ error: detail });
+  }
 });
 
 app.delete('/api/codex/conversations/:id/message', (req, res) => {
