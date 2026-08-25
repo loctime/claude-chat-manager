@@ -31,7 +31,7 @@ function makeRunner(spawned, opts = {}) {
   });
 }
 
-test('mensaje nuevo: "exec" sin "resume", con -C y el prompt al final', () => {
+test('mensaje nuevo: "exec" sin "resume", con -C y prompt separado por --', () => {
   const spawned = [];
   const r = makeRunner(spawned);
   r.send({ convId: 'c1', sessionId: null, cwd: 'C:\\p', text: 'hola' });
@@ -39,6 +39,7 @@ test('mensaje nuevo: "exec" sin "resume", con -C y el prompt al final', () => {
   assert.equal(a[0], 'exec');
   assert.ok(!a.includes('resume'));
   assert.ok(a.includes('-C') && a[a.indexOf('-C') + 1] === 'C:\\p');
+  assert.equal(a[a.length - 2], '--');
   assert.equal(a[a.length - 1], 'hola');
 });
 
@@ -51,6 +52,7 @@ test('con sessionId: "exec resume <id>"', () => {
   assert.equal(a[1], 'resume');
   assert.equal(a[2], 's1');
   assert.ok(!a.includes('-C'), 'resume usa el cwd de spawn, sin -C incompatible');
+  assert.equal(a[a.length - 2], '--');
 });
 
 test('con imagePath agrega -i', () => {
@@ -59,6 +61,7 @@ test('con imagePath agrega -i', () => {
   r.send({ convId: 'c1', sessionId: null, cwd: 'C:\\p', text: 'mirá esto', imagePath: 'C:\\img.png' });
   const a = spawned[0].args;
   assert.ok(a.includes('-i') && a[a.indexOf('-i') + 1] === 'C:\\img.png');
+  assert.equal(a[a.length - 2], '--', 'el prompt queda separado de -i');
 });
 
 test('con selfPort, el prompt final incluye el aviso de infraestructura y el contrato de rutas', () => {

@@ -73,6 +73,11 @@ class CodexRunner extends EventEmitter {
     // without passing an unsupported CLI flag.
     if (job.cwd && !job.sessionId) args.push('-C', job.cwd);
     if (job.imagePath) args.push('-i', job.imagePath);
+    // En Codex CLI para Windows, un prompt posicional después de flags como
+    // `-i` puede terminar interpretándose como stdin. Como este runner cierra
+    // stdin a propósito, el CLI queda sin mensaje y la conversación parece
+    // colgada. `--` desambigua el prompt (nuevo o resume) de las opciones.
+    args.push('--');
     args.push(prompt);
 
     // El paquete @openai/codex no vendorea un .exe (ver codex-cmd.js) — siempre
