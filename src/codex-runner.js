@@ -90,6 +90,34 @@ class CodexRunner extends EventEmitter {
     let stderr = '';
     let done = false;
 
+    // `codex exec --json` escribe este evento cuando el agente ya terminó su
+    // turno. En Windows el proceso puede quedar vivo unos segundos más (o
+    // colgado) después de haberlo emitido. Si esperamos únicamente el `close`,
+    // Jarvis queda mostrando "procesando" aunque la respuesta ya esté en
+    // pantalla. Este es el fin lógico del turno; `close` queda como respaldo
+    // para errores y para CLIs que no hayan llegado a completar el turno.
+    const finish = ({ code, terminal = false, error } = {}) => {
+      if (done) return;
+      done = true;
+      this.running.delete(job.convId);
+      const status = { convId: job.convId, status: 'idle', code };
+      if (error) status.stderr = error;
+      this.emit('status', status);
+      this._drain();
+
+      // El evento final garantiza que ya no hay más contenido útil por leer.
+      // Cerramos el árbol del CLI para que un proceso rezagado no siga
+      // reteniendo recursos ni compita con el próximo `resume` de la sesión.
+      if (terminal && !child.killed) {
+        if (IS_WIN && child.pid) {
+          try { execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); }
+          catch { child.kill('SIGTERM'); }
+        } else {
+          child.kill('SIGTERM');
+        }
+      }
+    };
+
     child.stdout.on('data', d => {
       buf += d.toString();
       let i;
@@ -100,29 +128,24 @@ class CodexRunner extends EventEmitter {
         let ev;
         try { ev = JSON.parse(line); } catch { continue; }
         this.emit('event', { convId: job.convId, event: ev });
+        if (ev.type === 'turn.completed') finish({ code: 0, terminal: true });
       }
     });
     child.stderr.on('data', d => { stderr += d.toString(); });
     child.on('error', err => {
-      if (done) return;
-      done = true;
-      this.running.delete(job.convId);
-      this.emit('status', { convId: job.convId, status: 'idle', code: -1, stderr: err.message });
-      this._drain();
+      finish({ code: -1, error: err.message });
     });
     child.on('close', code => {
       if (done) return;
-      done = true;
-      this.running.delete(job.convId);
       if (buf.trim()) {
         let ev;
         try { ev = JSON.parse(buf); } catch {}
-        if (ev) this.emit('event', { convId: job.convId, event: ev });
+        if (ev) {
+          this.emit('event', { convId: job.convId, event: ev });
+          if (ev.type === 'turn.completed') return finish({ code: 0 });
+        }
       }
-      const status = { convId: job.convId, status: 'idle', code };
-      if (code !== 0) status.stderr = stderr;
-      this.emit('status', status);
-      this._drain();
+      finish({ code, error: code !== 0 ? stderr : undefined });
     });
   }
 }

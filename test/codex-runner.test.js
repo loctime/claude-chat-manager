@@ -92,6 +92,22 @@ test('parsea stdout JSONL y emite un evento por línea', () => {
   assert.equal(events[0].event.thread_id, 't1');
 });
 
+test('turn.completed libera el turno sin esperar un close tardío del CLI', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  const statuses = [];
+  r.on('status', s => statuses.push(s));
+  r.send({ convId: 'c1', sessionId: null, cwd: 'C:\\p', text: 'hola' });
+  spawned[0].child.stdout.emit('data', '{"type":"turn.completed","usage":{}}\n');
+  const idle = statuses.find(s => s.status === 'idle');
+  assert.equal(idle.code, 0);
+  assert.equal(r.isBusy('c1'), false);
+  // El close posterior del proceso que acabamos de terminar no duplica idle.
+  const count = statuses.length;
+  spawned[0].child.emit('close', 0);
+  assert.equal(statuses.length, count);
+});
+
 test('close con código 0 emite status idle', () => {
   const spawned = [];
   const r = makeRunner(spawned);
