@@ -996,6 +996,48 @@ function gitCwdsForSession(file, fallback, parse = scanner.parseJsonl) {
   return cwds;
 }
 
+const PROJECT_SEARCH_ROOTS = [
+  path.join(HOME_DIR, 'Desktop', 'Proyectos'),
+  path.join(HOME_DIR, 'Desktop'),
+];
+
+function normalizeProjectName(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+// "trabajemos en chat-manager" tiene que poder matchear la carpeta
+// "claude-chat-manager". Probamos el nombre entero y sus sufijos unidos por
+// guiones; se exige un alias de al menos 5 caracteres para no confundir repos
+// por palabras comunes.
+function projectMatchScore(message, dirName) {
+  const text = normalizeProjectName(message);
+  const parts = String(dirName).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  let best = 0;
+  for (let i = 0; i < parts.length; i++) {
+    const alias = parts.slice(i).join('');
+    if (alias.length >= 5 && text.includes(alias)) best = Math.max(best, alias.length);
+  }
+  const full = normalizeProjectName(dirName);
+  if (full.length >= 5 && text.includes(full)) best = Math.max(best, full.length);
+  return best;
+}
+
+async function inferRepoFromMessage(text) {
+  if (!text) return null;
+  const candidates = [];
+  for (const root of PROJECT_SEARCH_ROOTS) {
+    let entries = [];
+    try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const score = projectMatchScore(text, entry.name);
+      if (score) candidates.push({ path: path.join(root, entry.name), score });
+    }
+  }
+  candidates.sort((a, b) => b.score - a.score);
+  return gitSync.resolveRepo(candidates.map(c => c.path));
+}
+
 // ── Upload de archivo adjunto (con compresión automática de imágenes) ──
 const IMAGE_COMPRESS_EXTS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif']);
 const MAX_IMAGE_BYTES = 1.5 * 1024 * 1024; // 1.5MB → comprimir
@@ -1735,7 +1777,7 @@ app.get('/api/conversations/:id/messages', (req, res) => {
   res.json(out);
 });
 
-app.post('/api/conversations/:id/message', (req, res) => {
+app.post('/api/conversations/:id/message', async (req, res) => {
   const convId = req.params.id;
   const text = (req.body.text || '').trim();
   if (!text) return res.status(400).json({ error: 'mensaje vacío' });
@@ -1757,6 +1799,13 @@ app.post('/api/conversations/:id/message', (req, res) => {
     delete conv.compactedSummary;
     delete conv.compactedAt;
   }
+  // El primer mensaje suele ser "trabajemos en X". Asociamos el repo ahora,
+  // antes de que Claude empiece a correr comandos desde HOME, para que el
+  // acceso rápido de Git quede ligado a la conversación desde el inicio.
+  if (!conv.gitRepo && !conv.currentSessionId) {
+    const inferredRepo = await inferRepoFromMessage(text);
+    if (inferredRepo) conv.gitRepo = inferredRepo;
+  }
   meta.save(data, metaFile);
   // Las conversaciones "VPS: <proyecto>" no tienen una carpeta local real —
   // conv.projectDir ahí es solo metadata para agrupar/mostrar, no un cwd válido.
@@ -1777,11 +1826,21 @@ app.post('/api/conversations/:id/git-sync', async (req, res) => {
   if (runner.isBusy(convId) || compacting.has(convId)) return res.status(409).json({ error: 'esa conversación está procesando una tarea' });
   const acc = req.body.account || activeAccount;
   const projectsDir = accountProjectsDir(acc);
-  const { conv } = resolveConv(convId, acc);
+  const { data, conv, metaFile } = resolveConv(convId, acc);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
   const file = conv.currentSessionId ? scanner.findSessionFile(conv.currentSessionId, projectsDir) : null;
-  const repo = await gitSync.resolveRepo(gitCwdsForSession(file, conv.projectDir));
+  let repo = await gitSync.resolveRepo([conv.gitRepo, ...gitCwdsForSession(file, conv.projectDir)]);
+  // Conversaciones creadas antes de esta asociación: usar su primer mensaje
+  // como migración perezosa y guardar el resultado si se puede validar.
+  if (!repo && file) {
+    const firstUser = scanner.toChatMessages(scanner.parseJsonl(file)).find(m => m.role === 'user');
+    repo = await inferRepoFromMessage(firstUser && firstUser.text);
+  }
   if (!repo) return res.status(400).json({ error: 'no encontré un repositorio Git asociado a esta conversación' });
+  if (conv.gitRepo !== repo) {
+    conv.gitRepo = repo;
+    meta.save(data, metaFile);
+  }
   try {
     res.json(await gitSync.syncRepo(repo));
   } catch (err) {
@@ -2028,7 +2087,7 @@ app.get('/api/codex/conversations/:id/messages', (req, res) => {
   res.json(file ? codexScanner.getMessages(file) : []);
 });
 
-app.post('/api/codex/conversations/:id/message', (req, res) => {
+app.post('/api/codex/conversations/:id/message', async (req, res) => {
   const convId = req.params.id;
   const text = (req.body.text || '').trim();
   if (!text) return res.status(400).json({ error: 'mensaje vacío' });
@@ -2036,6 +2095,13 @@ app.post('/api/codex/conversations/:id/message', (req, res) => {
   const data = meta.load(CODEX_META_FILE);
   const conv = data.conversations[convId];
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  if (!conv.gitRepo && !conv.currentSessionId) {
+    const inferredRepo = await inferRepoFromMessage(text);
+    if (inferredRepo) {
+      conv.gitRepo = inferredRepo;
+      meta.save(data, CODEX_META_FILE);
+    }
+  }
   const cwd = conv.projectDir || os.homedir();
   codexRunner.send({ convId, sessionId: conv.currentSessionId, cwd, text, imagePath: req.body.imagePath || undefined });
   res.status(202).json({ queued: true });
@@ -2048,8 +2114,16 @@ app.post('/api/codex/conversations/:id/git-sync', async (req, res) => {
   const conv = data.conversations[convId];
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
   const file = conv.currentSessionId ? codexScanner.findSessionFile(conv.currentSessionId) : null;
-  const repo = await gitSync.resolveRepo(gitCwdsForSession(file, conv.projectDir, codexScanner.parseJsonl));
+  let repo = await gitSync.resolveRepo([conv.gitRepo, ...gitCwdsForSession(file, conv.projectDir, codexScanner.parseJsonl)]);
+  if (!repo && file) {
+    const firstUser = codexScanner.toChatMessages(codexScanner.parseJsonl(file)).find(m => m.role === 'user');
+    repo = await inferRepoFromMessage(firstUser && firstUser.text);
+  }
   if (!repo) return res.status(400).json({ error: 'no encontré un repositorio Git asociado a esta conversación' });
+  if (conv.gitRepo !== repo) {
+    conv.gitRepo = repo;
+    meta.save(data, CODEX_META_FILE);
+  }
   try {
     res.json(await gitSync.syncRepo(repo));
   } catch (err) {
