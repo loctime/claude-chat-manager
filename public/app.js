@@ -751,7 +751,7 @@ function convElement(c) {
   div.querySelector('.conv-name-text').textContent = c.name;
   div.querySelector('.conv-date').textContent = (c.lastActivity || '').slice(0, 16).replace('T', ' ');
   div._conv = c;
-  div.onclick = () => selectConv(c.convId, c.name, c.model, c.lastModel, c.currentDir || c.projectDir, c.responseMode);
+  div.onclick = () => selectConv(c.convId, c.name, c.model, c.lastModel, c.gitRepo || c.currentDir || c.projectDir, c.responseMode);
   attachRowGestures(div, c);
   return div;
 }
@@ -1098,7 +1098,7 @@ function codexSharedRow(c) {
   div.querySelector('.conv-name-text').textContent = c.name;
   div.querySelector('.conv-date').textContent = c.snippet || (c.lastActivity || '').slice(0, 16).replace('T', ' ');
   div._codexConv = c;
-  div.onclick = () => selectCodexShared(c.convId, c.name);
+  div.onclick = () => selectCodexShared(c.convId, c.name, c.gitRepo || c.projectDir);
   attachCodexRowGestures(div, c);
   return div;
 }
@@ -1263,7 +1263,7 @@ function openCodexSharedStream(convId) {
   return stream;
 }
 
-async function selectCodexShared(convId, name) {
+async function selectCodexShared(convId, name, projectDir = '') {
   $('panel-chat').classList.add('codex-chat-theme');
   if (eventSource) { eventSource.close(); eventSource = null; }
   if (codexStream) codexStream.close();
@@ -1275,7 +1275,7 @@ async function selectCodexShared(convId, name) {
   $('input').placeholder = 'Escribile a Codex…';
   autoResize($('input'));
   $('model-select').hidden = true;
-  $('conv-folder').hidden = true;
+  setConversationRepoChip(projectDir);
   $('cost-badge').hidden = true;
   $('mic-btn').hidden = true;
   $('attach-btn').hidden = false;
@@ -1291,6 +1291,9 @@ async function selectCodexShared(convId, name) {
   await markRead;
   codexStream = openCodexSharedStream(convId);
   loadCodexSharedTree();
+  codexApi(`/conversations/${convId}/repo`).then(({ repo }) => {
+    if (currentCodexConv && currentCodexConv.id === convId && repo) setConversationRepoChip(repo);
+  }).catch(() => {});
   if (!isMobile()) $('input').focus();
 }
 
@@ -3221,6 +3224,14 @@ async function refreshCostBadge(convId) {
 $('cost-badge').onclick = () => toast($('cost-badge').title, 'info', 5000);
 
 // ── Select conversation ──
+function setConversationRepoChip(repoPath) {
+  const folderEl = $('conv-folder');
+  const dirName = (repoPath || '').split(/[\\/]/).filter(Boolean).pop();
+  folderEl.textContent = dirName || '';
+  folderEl.title = repoPath || '';
+  folderEl.hidden = !dirName;
+}
+
 async function selectConv(convId, name, model, lastModel, projectDir) {
   $('panel-chat').classList.remove('codex-chat-theme');
   if (codexStream) { codexStream.close(); codexStream = null; }
@@ -3238,11 +3249,7 @@ async function selectConv(convId, name, model, lastModel, projectDir) {
   autoResize($('input'));
   $('conv-title').textContent = name;
   $('model-select').value = model || 'sonnet';
-  const folderEl = $('conv-folder');
-  const dirName = (projectDir || '').split(/[\\/]/).filter(Boolean).pop();
-  folderEl.textContent = dirName || '';
-  folderEl.title = projectDir || '';
-  folderEl.hidden = !dirName;
+  setConversationRepoChip(projectDir);
   setBusy(false);
   clearAttachments();
   renderQueuedBar();
@@ -3285,6 +3292,11 @@ async function selectConv(convId, name, model, lastModel, projectDir) {
   await markReadPromise;
   openStream(convId);
   loadTree();
+  const repoParams = new URLSearchParams();
+  if (activeAccount) repoParams.set('account', activeAccount);
+  api(`/conversations/${convId}/repo?${repoParams}`).then(({ repo }) => {
+    if (currentConv === convId && repo) setConversationRepoChip(repo);
+  }).catch(() => {});
   refreshCostBadge(convId);
   // En mobile no autofocuseamos porque dispararía el teclado en pantalla apenas tocás la lista.
   if (!isMobile()) {
