@@ -1038,11 +1038,22 @@ async function inferRepoFromMessage(text) {
   return gitSync.resolveRepo(candidates.map(c => c.path));
 }
 
+async function inferRepoFromMessages(messages) {
+  // La asociación queda pendiente: si el primer mensaje fue genérico, el
+  // siguiente "trabajemos en X" la completa. Priorizamos el más reciente
+  // porque describe mejor el proyecto al que terminó entrando la charla.
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role !== 'user') continue;
+    const repo = await inferRepoFromMessage(messages[i].text);
+    if (repo) return repo;
+  }
+  return null;
+}
+
 async function resolveConversationGitRepo(conv, file, parse = scanner.parseJsonl, messages = scanner.toChatMessages) {
   let repo = await gitSync.resolveRepo([conv.gitRepo, ...gitCwdsForSession(file, conv.projectDir, parse)]);
   if (!repo && file) {
-    const firstUser = messages(parse(file)).find(m => m.role === 'user');
-    repo = await inferRepoFromMessage(firstUser && firstUser.text);
+    repo = await inferRepoFromMessages(messages(parse(file)));
   }
   return repo;
 }
@@ -1810,10 +1821,9 @@ app.post('/api/conversations/:id/message', async (req, res) => {
     delete conv.compactedSummary;
     delete conv.compactedAt;
   }
-  // El primer mensaje suele ser "trabajemos en X". Asociamos el repo ahora,
-  // antes de que Claude empiece a correr comandos desde HOME, para que el
-  // acceso rápido de Git quede ligado a la conversación desde el inicio.
-  if (!conv.gitRepo && !conv.currentSessionId) {
+  // La asociación puede llegar en cualquier mensaje (no necesariamente el
+  // primero): queda pendiente hasta que el texto nombra un proyecto válido.
+  if (!conv.gitRepo) {
     const inferredRepo = await inferRepoFromMessage(text);
     if (inferredRepo) conv.gitRepo = inferredRepo;
   }
@@ -2118,7 +2128,7 @@ app.post('/api/codex/conversations/:id/message', async (req, res) => {
   const data = meta.load(CODEX_META_FILE);
   const conv = data.conversations[convId];
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
-  if (!conv.gitRepo && !conv.currentSessionId) {
+  if (!conv.gitRepo) {
     const inferredRepo = await inferRepoFromMessage(text);
     if (inferredRepo) {
       conv.gitRepo = inferredRepo;
