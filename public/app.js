@@ -14,7 +14,7 @@ let archivedTotal = 0;
 let archivedTreeLimit = 100;
 let archivedTreeHasMore = false;
 let archivedTreeTotal = 0;
-let activePane = 0; // 0=chats 1=archived 2=notas 3=escaner 4=codex
+let activePane = 0; // 0=chats 1=archived 2=codex 3=notas
 let notebookListLoaded = false;
 let notebooks = [];
 let currentNotebook = null; // {id, name} de la libreta abierta, o null si estamos en la lista
@@ -394,14 +394,14 @@ setInterval(() => {
   if (b7 && !b7.hidden) updateCountdownLabel(b7);
 }, 30000);
 async function loadUsage() {
-  const provider = activePane === 4 ? 'codex' : 'claude';
+  const provider = activePane === 2 ? 'codex' : 'claude';
   try {
     const d = provider === 'codex'
       ? await api('/codex/usage')
       : await api(withAccount('/usage'));
     // Si se cambió de pestaña mientras la consulta estaba en vuelo, no dejar
     // que el header quede mostrando el proveedor anterior.
-    if ((activePane === 4 ? 'codex' : 'claude') !== provider) return;
+    if ((activePane === 2 ? 'codex' : 'claude') !== provider) return;
     const box = $('account-status');
     const first = provider === 'codex' ? d.primary : d.fiveHour;
     const second = provider === 'codex' ? d.secondary : d.sevenDay;
@@ -1356,7 +1356,7 @@ async function goToPane(index) {
       return;
     }
   }
-  if (index === 2 && !notebookListLoaded) {
+  if (index === 3 && !notebookListLoaded) {
     try {
       await loadNotebookList();
       notebookListLoaded = true;
@@ -1366,7 +1366,7 @@ async function goToPane(index) {
       return;
     }
   }
-  if (index === 4 && !codexTreeLoaded) {
+  if (index === 2 && !codexTreeLoaded) {
     try {
       codexTreeLoaded = await loadCodexSharedTree();
     } catch (err) {
@@ -1379,7 +1379,7 @@ async function goToPane(index) {
   activePane = index;
   // El acento identifica la pestaña visible, no el chat que haya quedado
   // abierto en el panel principal.
-  document.body.classList.toggle('codex-list-theme', index === 4);
+  document.body.classList.toggle('codex-list-theme', index === 2);
   $('tree-viewport-inner').dataset.pane = String(index);
   document.querySelectorAll('.pane-tab').forEach(t => {
     t.classList.toggle('active', t.dataset.pane === String(index));
@@ -1397,12 +1397,6 @@ function resetArchivedPane() {
 document.querySelectorAll('.pane-tab').forEach(btn => {
   btn.onclick = () => goToPane(Number(btn.dataset.pane));
 });
-$('scan-back').onclick = () => goToPane(0);
-// Acceso directo al Escáner desde el header — en mobile #pane-tabs está
-// oculto (solo aparece en pantallas >=768px, ver style.css) y la única forma
-// de llegar a una pestaña es haciendo swipe, poco descubrible. Este botón
-// evita depender del gesto para una acción tan frecuente como escanear.
-$('header-scan-btn').onclick = () => goToPane(3);
 
 $('notebook-back-btn').onclick = closeChat;
 
@@ -3855,13 +3849,13 @@ $('new-conv').onclick = async () => {
   const btn = $('new-conv');
   btn.disabled = true;
   try {
-    if (activePane === 2) {
+    if (activePane === 3) {
       // No crea la libreta acá — abre un borrador que recién se persiste en
       // ensureNotebookCreated() al mandar la primera nota (ver comentario ahí).
       openNotebookDraft();
       return;
     }
-    if (activePane === 4) {
+    if (activePane === 2) {
       await createCodexSharedConversation();
       $('input').focus();
       return;
@@ -3932,7 +3926,7 @@ function paneSwipeStart(clientX, clientY) {
   return true;
 }
 
-const PANE_COUNT = 5; // Chats/Archivado/Notas/Escáner/Codex.
+const PANE_COUNT = 4; // Chats/Archivado/Codex/Notas.
 
 function paneSwipeMove(clientX, clientY) {
   if (!paneDragging) return false;
@@ -4567,7 +4561,7 @@ function notebookIsVisible() {
 }
 
 function pollNotesPane() {
-  if (activePane !== 2) return;
+  if (activePane !== 3) return;
   // En mobile #notebook-view y la lista son mutuamente excluyentes (overlay),
   // así que alcanza con pollear la que esté a la vista. En desktop las dos
   // conviven en pantalla a la vez — si solo se pollea la que "está visible"
