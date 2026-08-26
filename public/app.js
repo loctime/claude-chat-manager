@@ -1099,7 +1099,7 @@ function codexProjectName(conv) {
 
 function codexConversationLabel(conv) {
   const project = codexProjectName(conv);
-  return project ? `${project} — ${conv.name}` : conv.name;
+  return project || 'Sin proyecto';
 }
 
 function codexSharedRow(c) {
