@@ -2065,9 +2065,10 @@ app.post('/api/codex/conversations', (req, res) => {
   res.status(201).json({ convId, projectDir });
 });
 
-app.get('/api/codex/tree', (req, res) => {
+app.get('/api/codex/tree', async (req, res) => {
   const data = meta.load(CODEX_META_FILE);
   const convs = [];
+  let metadataChanged = false;
   for (const [convId, c] of Object.entries(data.conversations)) {
     if (c.hidden) continue;
     // Evitar listSessions(): escanea y parsea CADA rollout bajo ~/.codex/sessions/
@@ -2076,6 +2077,16 @@ app.get('/api/codex/tree', (req, res) => {
     // findSessionFile() es barato (readdir), sessionInfo() cachea por mtime.
     const file = c.currentSessionId ? codexScanner.findSessionFile(c.currentSessionId) : null;
     const s = (file && codexScanner.sessionInfo(file)) || {};
+    // Charlas creadas antes de la asociación automática no tienen gitRepo
+    // todavía. Resolverlo una vez al listarlas permite mostrar el proyecto en
+    // el título sin obligar a abrir cada conversación.
+    if (!c.gitRepo && file) {
+      const repo = await resolveConversationGitRepo(c, file, codexScanner.parseJsonl, codexScanner.toChatMessages);
+      if (repo) {
+        c.gitRepo = repo;
+        metadataChanged = true;
+      }
+    }
     convs.push({
       convId,
       projectDir: c.projectDir || null,
@@ -2090,6 +2101,7 @@ app.get('/api/codex/tree', (req, res) => {
       status: codexConvStatus(convId),
     });
   }
+  if (metadataChanged) meta.save(data, CODEX_META_FILE);
   const showArchived = req.query.archived === '1';
   const filtered = showArchived ? convs.filter(c => c.archived) : convs.filter(c => !c.archived);
   filtered.sort((a, b) => {

@@ -1089,16 +1089,30 @@ async function codexSubmitComposer() {
 // propios, pero lista, header, mensajes y composer ya no viven en un mini-chat.
 let codexMainBusy = false;
 
+function codexProjectName(conv) {
+  // gitRepo se asocia al detectar el proyecto en cualquier mensaje de la
+  // conversación. No usar projectDir como fallback: las conversaciones nuevas
+  // arrancan en HOME y mostraría "User", que no aporta contexto.
+  const repo = String(conv.gitRepo || '').replace(/[\\/]+$/, '');
+  return repo ? repo.split(/[\\/]/).pop() : '';
+}
+
+function codexConversationLabel(conv) {
+  const project = codexProjectName(conv);
+  return project ? `${project} — ${conv.name}` : conv.name;
+}
+
 function codexSharedRow(c) {
+  const label = codexConversationLabel(c);
   const div = document.createElement('div');
   div.className = 'conv' + (currentCodexConv && c.convId === currentCodexConv.id ? ' active' : '');
   const pin = c.pinned ? '<span class="conv-pin" title="Fijada">📌</span>' : '';
   div.innerHTML = `<div class="conv-avatar"></div><div class="conv-body"><div class="name">${pin}<span class="conv-name-text"></span></div><div class="sub"><span class="conv-date"></span></div></div>${badge(c.status) || (c.unread ? '<span class="unread-dot" title="Sin leer"></span>' : '')}`;
-  div.querySelector('.conv-avatar').textContent = avatarChar(c.name);
-  div.querySelector('.conv-name-text').textContent = c.name;
+  div.querySelector('.conv-avatar').textContent = avatarChar(label);
+  div.querySelector('.conv-name-text').textContent = label;
   div.querySelector('.conv-date').textContent = c.snippet || (c.lastActivity || '').slice(0, 16).replace('T', ' ');
   div._codexConv = c;
-  div.onclick = () => selectCodexShared(c.convId, c.name, c.gitRepo || c.projectDir);
+  div.onclick = () => selectCodexShared(c.convId, label, c.gitRepo || c.projectDir);
   attachCodexRowGestures(div, c);
   return div;
 }
