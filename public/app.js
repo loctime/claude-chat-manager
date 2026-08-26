@@ -1117,9 +1117,9 @@ async function loadCodexSharedTree() {
   return true;
 }
 
-// Codex usa el mismo patrón táctil para seleccionar/fijar/ocultar. El swipe
-// horizontal se cede al cambio de pestaña, porque archivados queda fuera de
-// alcance por ahora.
+// Codex no se archiva con arrastre: cualquier swipe horizontal se cede al
+// carrusel. Así, desde Codex un swipe a la derecha vuelve a Archivado y uno
+// a la izquierda avanza a Notas.
 function attachCodexRowGestures(el, conv) {
   let touchTimer = null, longPressed = false, startX = 0, startY = 0;
   let axisLocked = null, rowDragging = false, currentDx = 0, redirectedToPane = false;
@@ -1146,7 +1146,7 @@ function attachCodexRowGestures(el, conv) {
       if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
       axisLocked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
       if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
-      if (axisLocked === 'x' && dx < 0) {
+      if (axisLocked === 'x') {
         redirectedToPane = true;
         if (paneSwipeStart(startX, startY) && paneSwipeMove(touch.clientX, touch.clientY)) e.preventDefault();
         return;
