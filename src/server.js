@@ -1,4 +1,5 @@
 const express = require('express');
+const compression = require('compression');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
@@ -20,6 +21,7 @@ const { CodexUsageService } = require('./codex-usage');
 const codexScanner = require('./codex-scanner');
 const searchIndex = require('./search-index');
 const { getReplySuggestions } = require('./groq-suggest');
+const gitSync = require('./git-sync');
 
 const IS_WIN = process.platform === 'win32';
 // WSL: Linux corriendo dentro de Windows (kernel expone "microsoft" en
@@ -222,6 +224,15 @@ const SEARCH_SYNC_MS = 60_000;
 const upload = multer({ dest: UPLOAD_DIR, limits: { fileSize: 50 * 1024 * 1024 } });
 
 const app = express();
+// Comprimido global, EXCEPTO las rutas SSE (/stream): compression bufferea en
+// zlib antes de flushear, lo que rompería el heartbeat de 20s que ya existe
+// para evitar que Cloudflare Tunnel corte esas conexiones por inactividad
+// (~100s) — ver "Bug resuelto 2026-07-20: mensajes que desaparecían" en
+// CLAUDE.local.md. No comprimir SSE es estándar (no ganan casi nada igual,
+// son eventos chicos), así que excluirlas no cuesta nada.
+app.use(compression({
+  filter: (req, res) => !req.path.endsWith('/stream') && compression.filter(req, res),
+}));
 app.use(express.json());
 
 // Auth por cookie — solo si ACCESS_PIN está seteado
@@ -630,9 +641,14 @@ function serveIcon(size) {
 app.get('/icon-192.png', serveIcon(192));
 app.get('/icon-512.png', serveIcon(512));
 
-// index.html y archivos JS/CSS nunca cacheados por el browser
+// index.html y el código propio (app.js/style.css) nunca cacheados por el
+// browser, para que un rebrand no quede pegado en el celu. Las libs de
+// vendor/ son distintas: son terceros pineados por versión que no cambian
+// entre deploys de este repo — no hay motivo para bajarlas de nuevo en cada
+// carga. Se les da cache normal (revalidación por ETag, no "para siempre").
 app.use(express.static(PUBLIC_DIR, {
   setHeaders(res, filePath) {
+    if (filePath.includes(`${path.sep}vendor${path.sep}`)) return;
     if (filePath.endsWith('.html') || filePath.endsWith('.js') || filePath.endsWith('.css') || filePath.endsWith('manifest.json')) {
       res.setHeader('Cache-Control', 'no-store');
     }
@@ -963,6 +979,83 @@ function resolveConv(convId, acc = activeAccount) {
   const info = scanner.sessionInfo(file);
   data.conversations[convId] = { currentSessionId: convId, projectDir: (info && info.cwd) || HOME_DIR };
   return { data, conv: data.conversations[convId], metaFile };
+}
+
+// Busca los cwd más recientes que la sesión registró. El cwd inicial suele ser
+// HOME, pero cada tool call conserva el subproyecto donde realmente se trabajó;
+// así el botón Git apunta al repo de la charla sin pedirle nada al agente.
+function gitCwdsForSession(file, fallback, parse = scanner.parseJsonl) {
+  const cwds = [];
+  if (file) {
+    for (const entry of parse(file).reverse()) {
+      if (typeof entry.cwd === 'string' && entry.cwd) cwds.push(entry.cwd);
+      if (entry.payload && typeof entry.payload.cwd === 'string' && entry.payload.cwd) cwds.push(entry.payload.cwd);
+    }
+  }
+  if (fallback) cwds.push(fallback);
+  return cwds;
+}
+
+const PROJECT_SEARCH_ROOTS = [
+  path.join(HOME_DIR, 'Desktop', 'Proyectos'),
+  path.join(HOME_DIR, 'Desktop'),
+];
+
+function normalizeProjectName(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+// "trabajemos en chat-manager" tiene que poder matchear la carpeta
+// "claude-chat-manager". Probamos el nombre entero y sus sufijos unidos por
+// guiones; se exige un alias de al menos 5 caracteres para no confundir repos
+// por palabras comunes.
+function projectMatchScore(message, dirName) {
+  const text = normalizeProjectName(message);
+  const parts = String(dirName).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  let best = 0;
+  for (let i = 0; i < parts.length; i++) {
+    const alias = parts.slice(i).join('');
+    if (alias.length >= 5 && text.includes(alias)) best = Math.max(best, alias.length);
+  }
+  const full = normalizeProjectName(dirName);
+  if (full.length >= 5 && text.includes(full)) best = Math.max(best, full.length);
+  return best;
+}
+
+async function inferRepoFromMessage(text) {
+  if (!text) return null;
+  const candidates = [];
+  for (const root of PROJECT_SEARCH_ROOTS) {
+    let entries = [];
+    try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const score = projectMatchScore(text, entry.name);
+      if (score) candidates.push({ path: path.join(root, entry.name), score });
+    }
+  }
+  candidates.sort((a, b) => b.score - a.score);
+  return gitSync.resolveRepo(candidates.map(c => c.path));
+}
+
+async function inferRepoFromMessages(messages) {
+  // La asociación queda pendiente: si el primer mensaje fue genérico, el
+  // siguiente "trabajemos en X" la completa. Priorizamos el más reciente
+  // porque describe mejor el proyecto al que terminó entrando la charla.
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role !== 'user') continue;
+    const repo = await inferRepoFromMessage(messages[i].text);
+    if (repo) return repo;
+  }
+  return null;
+}
+
+async function resolveConversationGitRepo(conv, file, parse = scanner.parseJsonl, messages = scanner.toChatMessages) {
+  let repo = await gitSync.resolveRepo([conv.gitRepo, ...gitCwdsForSession(file, conv.projectDir, parse)]);
+  if (!repo && file) {
+    repo = await inferRepoFromMessages(messages(parse(file)));
+  }
+  return repo;
 }
 
 // ── Upload de archivo adjunto (con compresión automática de imágenes) ──
@@ -1572,6 +1665,7 @@ app.get('/api/tree', (req, res) => {
     convs.push({
       convId,
       projectDir: c.projectDir,
+      gitRepo: c.gitRepo || null,
       // Carpeta real donde vive la sesión ahora mismo (puede diferir de projectDir,
       // que queda anclado a home a propósito — ver /conversations POST). Sirve
       // solo para mostrar en el header del chat, no para agrupar en el sidebar.
@@ -1600,6 +1694,7 @@ app.get('/api/tree', (req, res) => {
     convs.push({
       convId: s.sessionId,
       projectDir: s.cwd || '(desconocido)',
+      gitRepo: null,
       currentDir: s.cwd || '(desconocido)',
       name: s.snippet,
       snippet: s.snippet,
@@ -1786,7 +1881,7 @@ app.get('/api/conversations/:id/messages', (req, res) => {
   res.json(out);
 });
 
-app.post('/api/conversations/:id/message', (req, res) => {
+app.post('/api/conversations/:id/message', async (req, res) => {
   const convId = req.params.id;
   const text = (req.body.text || '').trim();
   if (!text) return res.status(400).json({ error: 'mensaje vacío' });
@@ -1808,6 +1903,12 @@ app.post('/api/conversations/:id/message', (req, res) => {
     delete conv.compactedSummary;
     delete conv.compactedAt;
   }
+  // La asociación puede llegar en cualquier mensaje (no necesariamente el
+  // primero): queda pendiente hasta que el texto nombra un proyecto válido.
+  if (!conv.gitRepo) {
+    const inferredRepo = await inferRepoFromMessage(text);
+    if (inferredRepo) conv.gitRepo = inferredRepo;
+  }
   meta.save(data, metaFile);
   // Las conversaciones "VPS: <proyecto>" no tienen una carpeta local real —
   // conv.projectDir ahí es solo metadata para agrupar/mostrar, no un cwd válido.
@@ -1818,6 +1919,47 @@ app.post('/api/conversations/:id/message', (req, res) => {
   const cwd = (conv.projectDir || '').startsWith('VPS: ') ? accountHomeDir(acc) : scanner.resolveCwd(conv, accountProjectsDir(acc));
   runner.send({ convId, sessionId: conv.currentSessionId, cwd, text: outgoing, model: conv.model, account: acc });
   res.status(202).json({ queued: true });
+});
+
+// Sincronización Git directa desde el menú de una charla. No se interpreta un
+// comando del navegador: el server invoca `git` con argv fijos y el repo se
+// deduce de los cwd ya guardados por la sesión de Claude Code.
+app.post('/api/conversations/:id/git-sync', async (req, res) => {
+  const convId = req.params.id;
+  if (runner.isBusy(convId) || compacting.has(convId)) return res.status(409).json({ error: 'esa conversación está procesando una tarea' });
+  const acc = req.body.account || activeAccount;
+  const projectsDir = accountProjectsDir(acc);
+  const { data, conv, metaFile } = resolveConv(convId, acc);
+  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  const file = conv.currentSessionId ? scanner.findSessionFile(conv.currentSessionId, projectsDir) : null;
+  const repo = await resolveConversationGitRepo(conv, file);
+  if (!repo) return res.status(400).json({ error: 'no encontré un repositorio Git asociado a esta conversación' });
+  if (conv.gitRepo !== repo) {
+    conv.gitRepo = repo;
+    meta.save(data, metaFile);
+  }
+  try {
+    res.json(await gitSync.syncRepo(repo));
+  } catch (err) {
+    const detail = (err.stderr || err.stdout || err.message || 'falló Git').trim().slice(0, 1000);
+    res.status(409).json({ error: detail });
+  }
+});
+
+// El chip del header pide el repo al abrir una conversación. También migra en
+// forma perezosa los chats creados antes de guardar gitRepo en la metadata.
+app.get('/api/conversations/:id/repo', async (req, res) => {
+  const acc = req.query.account || activeAccount;
+  const projectsDir = accountProjectsDir(acc);
+  const { data, conv, metaFile } = resolveConv(req.params.id, acc);
+  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  const file = conv.currentSessionId ? scanner.findSessionFile(conv.currentSessionId, projectsDir) : null;
+  const repo = await resolveConversationGitRepo(conv, file);
+  if (repo && conv.gitRepo !== repo) {
+    conv.gitRepo = repo;
+    meta.save(data, metaFile);
+  }
+  res.json({ repo: repo || null });
 });
 
 app.post('/api/conversations/:id/compact', (req, res) => {
@@ -2015,9 +2157,10 @@ app.post('/api/codex/conversations', (req, res) => {
   res.status(201).json({ convId, projectDir });
 });
 
-app.get('/api/codex/tree', (req, res) => {
+app.get('/api/codex/tree', async (req, res) => {
   const data = meta.load(CODEX_META_FILE);
   const convs = [];
+  let metadataChanged = false;
   for (const [convId, c] of Object.entries(data.conversations)) {
     if (c.hidden) continue;
     // Evitar listSessions(): escanea y parsea CADA rollout bajo ~/.codex/sessions/
@@ -2026,8 +2169,20 @@ app.get('/api/codex/tree', (req, res) => {
     // findSessionFile() es barato (readdir), sessionInfo() cachea por mtime.
     const file = c.currentSessionId ? codexScanner.findSessionFile(c.currentSessionId) : null;
     const s = (file && codexScanner.sessionInfo(file)) || {};
+    // Charlas creadas antes de la asociación automática no tienen gitRepo
+    // todavía. Resolverlo una vez al listarlas permite mostrar el proyecto en
+    // el título sin obligar a abrir cada conversación.
+    if (!c.gitRepo && file) {
+      const repo = await resolveConversationGitRepo(c, file, codexScanner.parseJsonl, codexScanner.toChatMessages);
+      if (repo) {
+        c.gitRepo = repo;
+        metadataChanged = true;
+      }
+    }
     convs.push({
       convId,
+      projectDir: c.projectDir || null,
+      gitRepo: c.gitRepo || null,
       name: c.name || s.snippet || '(nueva conversación)',
       snippet: s.snippet || '',
       lastActivity: s.lastActivity || null,
@@ -2038,6 +2193,7 @@ app.get('/api/codex/tree', (req, res) => {
       status: codexConvStatus(convId),
     });
   }
+  if (metadataChanged) meta.save(data, CODEX_META_FILE);
   const showArchived = req.query.archived === '1';
   const filtered = showArchived ? convs.filter(c => c.archived) : convs.filter(c => !c.archived);
   filtered.sort((a, b) => {
@@ -2068,7 +2224,7 @@ app.get('/api/codex/conversations/:id/messages', (req, res) => {
   res.json(file ? codexScanner.getMessages(file) : []);
 });
 
-app.post('/api/codex/conversations/:id/message', (req, res) => {
+app.post('/api/codex/conversations/:id/message', async (req, res) => {
   const convId = req.params.id;
   const text = (req.body.text || '').trim();
   if (!text) return res.status(400).json({ error: 'mensaje vacío' });
@@ -2076,9 +2232,50 @@ app.post('/api/codex/conversations/:id/message', (req, res) => {
   const data = meta.load(CODEX_META_FILE);
   const conv = data.conversations[convId];
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  if (!conv.gitRepo) {
+    const inferredRepo = await inferRepoFromMessage(text);
+    if (inferredRepo) {
+      conv.gitRepo = inferredRepo;
+      meta.save(data, CODEX_META_FILE);
+    }
+  }
   const cwd = conv.projectDir || os.homedir();
   codexRunner.send({ convId, sessionId: conv.currentSessionId, cwd, text, imagePath: req.body.imagePath || undefined });
   res.status(202).json({ queued: true });
+});
+
+app.post('/api/codex/conversations/:id/git-sync', async (req, res) => {
+  const convId = req.params.id;
+  if (codexRunner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación está procesando una tarea' });
+  const data = meta.load(CODEX_META_FILE);
+  const conv = data.conversations[convId];
+  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  const file = conv.currentSessionId ? codexScanner.findSessionFile(conv.currentSessionId) : null;
+  const repo = await resolveConversationGitRepo(conv, file, codexScanner.parseJsonl, codexScanner.toChatMessages);
+  if (!repo) return res.status(400).json({ error: 'no encontré un repositorio Git asociado a esta conversación' });
+  if (conv.gitRepo !== repo) {
+    conv.gitRepo = repo;
+    meta.save(data, CODEX_META_FILE);
+  }
+  try {
+    res.json(await gitSync.syncRepo(repo));
+  } catch (err) {
+    const detail = (err.stderr || err.stdout || err.message || 'falló Git').trim().slice(0, 1000);
+    res.status(409).json({ error: detail });
+  }
+});
+
+app.get('/api/codex/conversations/:id/repo', async (req, res) => {
+  const data = meta.load(CODEX_META_FILE);
+  const conv = data.conversations[req.params.id];
+  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  const file = conv.currentSessionId ? codexScanner.findSessionFile(conv.currentSessionId) : null;
+  const repo = await resolveConversationGitRepo(conv, file, codexScanner.parseJsonl, codexScanner.toChatMessages);
+  if (repo && conv.gitRepo !== repo) {
+    conv.gitRepo = repo;
+    meta.save(data, CODEX_META_FILE);
+  }
+  res.json({ repo: repo || null });
 });
 
 app.delete('/api/codex/conversations/:id/message', (req, res) => {

@@ -1,4 +1,10 @@
 let currentConv = null;
+function gitSyncToast(result) {
+  const repo = (result.repo || '').split(/[\\/]/).filter(Boolean).pop() || 'repo';
+  return result.committed
+    ? `Git listo en ${repo}: commit ${result.commit}, pull y push OK`
+    : `Git listo en ${repo}: sin cambios para commitear, pull y push OK`;
+}
 let eventSource = null;
 let tree = [];
 let treeLimit = 100;
@@ -8,7 +14,7 @@ let archivedTotal = 0;
 let archivedTreeLimit = 100;
 let archivedTreeHasMore = false;
 let archivedTreeTotal = 0;
-let activePane = 0; // 0=chats 1=archived 2=notas 3=escaner 4=codex
+let activePane = 0; // 0=chats 1=archived 2=codex 3=notas
 // Etiqueta de "proyecto" activa (filtro del sidebar) — '' = todos, '__none__' =
 // sin etiquetar, o el nombre elegido. Persiste entre recargas/dispositivos vía
 // localStorage porque es justo lo que resuelve "no veo dónde estoy parado".
@@ -343,14 +349,29 @@ function formatCountdown(ms) {
   const m = totalMin % 60;
   return `${h} : ${String(m).padStart(2, '0')} min`;
 }
-// El label ("5h" / "Semana") se reemplaza por la cuenta regresiva al reinicio
-// mientras haya resetsAt guardado en el dataset — se recalcula solo (ver
-// setInterval más abajo) sin esperar al próximo loadUsage(), así el número
-// baja solo entre polls en vez de quedar pegado al valor de la última carga.
+// La ventana corta conserva una cuenta regresiva. Para la semanal es mucho
+// más útil el momento concreto de reinicio ("viernes 4:50") que una cifra
+// grande de horas; sirve igual para Claude y Codex.
+function formatWeeklyReset(resetsAt) {
+  const date = new Date(resetsAt);
+  const day = date.toLocaleDateString('es-AR', { weekday: 'long' });
+  const time = `${date.getHours()}:${String(date.getMinutes()).padStart(2, '0')}`;
+  return `${day} ${time}`;
+}
+
+// El label ("5h" / "Semana") se reemplaza mientras haya resetsAt guardado en
+// el dataset. La cuenta atrás se recalcula sola (ver setInterval más abajo),
+// sin esperar al próximo loadUsage().
 function updateCountdownLabel(el) {
   const label = el.querySelector('.usage-bar-label');
   const resetsAt = el.dataset.resetsAt ? Number(el.dataset.resetsAt) : null;
-  label.textContent = resetsAt ? formatCountdown(resetsAt - Date.now()) : label.dataset.staticLabel;
+  if (!resetsAt) {
+    label.textContent = label.dataset.staticLabel;
+  } else if (el.id === 'usage-7d') {
+    label.textContent = resetsAt <= Date.now() ? '¡ya!' : formatWeeklyReset(resetsAt);
+  } else {
+    label.textContent = formatCountdown(resetsAt - Date.now());
+  }
 }
 function renderUsageBar(el, info) {
   if (!info || info.pct == null) { el.hidden = true; return; }
@@ -378,14 +399,14 @@ setInterval(() => {
   if (b7 && !b7.hidden) updateCountdownLabel(b7);
 }, 30000);
 async function loadUsage() {
-  const provider = activePane === 4 ? 'codex' : 'claude';
+  const provider = activePane === 2 ? 'codex' : 'claude';
   try {
     const d = provider === 'codex'
       ? await api('/codex/usage')
       : await api(withAccount('/usage'));
     // Si se cambió de pestaña mientras la consulta estaba en vuelo, no dejar
     // que el header quede mostrando el proveedor anterior.
-    if ((activePane === 4 ? 'codex' : 'claude') !== provider) return;
+    if ((activePane === 2 ? 'codex' : 'claude') !== provider) return;
     const box = $('account-status');
     const first = provider === 'codex' ? d.primary : d.fiveHour;
     const second = provider === 'codex' ? d.secondary : d.sevenDay;
@@ -745,7 +766,7 @@ function convElement(c) {
   }
   div.querySelector('.conv-date').textContent = (c.lastActivity || '').slice(0, 16).replace('T', ' ');
   div._conv = c;
-  div.onclick = () => selectConv(c.convId, c.name, c.model, c.lastModel, c.currentDir || c.projectDir, c.responseMode);
+  div.onclick = () => selectConv(c.convId, c.name, c.model, c.lastModel, c.gitRepo || c.currentDir || c.projectDir, c.responseMode);
   attachRowGestures(div, c);
   return div;
 }
@@ -932,7 +953,10 @@ async function codexLoadMessages(convId) {
   const container = $('codex-messages');
   container.innerHTML = '';
   const msgs = await codexApi(`/conversations/${convId}/messages`);
-  for (const m of msgs) addMsg(m.role, m.text, { container, ts: m.ts });
+  for (const m of msgs) {
+    if (m.role === 'tool') addTool(m.name, m.input, m.output, { container, ts: m.ts });
+    else addMsg(m.role, m.text, { container, ts: m.ts });
+  }
   if (msgs.length === 0) container.innerHTML = '<div id="empty-state" class="empty-state">Escribile algo a Codex</div>';
 }
 
@@ -1082,16 +1106,30 @@ async function codexSubmitComposer() {
 // propios, pero lista, header, mensajes y composer ya no viven en un mini-chat.
 let codexMainBusy = false;
 
+function codexProjectName(conv) {
+  // gitRepo se asocia al detectar el proyecto en cualquier mensaje de la
+  // conversación. No usar projectDir como fallback: las conversaciones nuevas
+  // arrancan en HOME y mostraría "User", que no aporta contexto.
+  const repo = String(conv.gitRepo || '').replace(/[\\/]+$/, '');
+  return repo ? repo.split(/[\\/]/).pop() : '';
+}
+
+function codexConversationLabel(conv) {
+  const project = codexProjectName(conv);
+  return project || 'Sin proyecto';
+}
+
 function codexSharedRow(c) {
+  const label = codexConversationLabel(c);
   const div = document.createElement('div');
   div.className = 'conv' + (currentCodexConv && c.convId === currentCodexConv.id ? ' active' : '');
   const pin = c.pinned ? '<span class="conv-pin" title="Fijada">📌</span>' : '';
   div.innerHTML = `<div class="conv-avatar"></div><div class="conv-body"><div class="name">${pin}<span class="conv-name-text"></span></div><div class="sub"><span class="conv-date"></span></div></div>${badge(c.status) || (c.unread ? '<span class="unread-dot" title="Sin leer"></span>' : '')}`;
-  div.querySelector('.conv-avatar').textContent = avatarChar(c.name);
-  div.querySelector('.conv-name-text').textContent = c.name;
+  div.querySelector('.conv-avatar').textContent = avatarChar(label);
+  div.querySelector('.conv-name-text').textContent = label;
   div.querySelector('.conv-date').textContent = c.snippet || (c.lastActivity || '').slice(0, 16).replace('T', ' ');
   div._codexConv = c;
-  div.onclick = () => selectCodexShared(c.convId, c.name);
+  div.onclick = () => selectCodexShared(c.convId, label, c.gitRepo || c.projectDir);
   attachCodexRowGestures(div, c);
   return div;
 }
@@ -1110,9 +1148,9 @@ async function loadCodexSharedTree() {
   return true;
 }
 
-// Codex usa el mismo patrón táctil para seleccionar/fijar/ocultar. El swipe
-// horizontal se cede al cambio de pestaña, porque archivados queda fuera de
-// alcance por ahora.
+// Codex no se archiva con arrastre: cualquier swipe horizontal se cede al
+// carrusel. Así, desde Codex un swipe a la derecha vuelve a Archivado y uno
+// a la izquierda avanza a Notas.
 function attachCodexRowGestures(el, conv) {
   let touchTimer = null, longPressed = false, startX = 0, startY = 0;
   let axisLocked = null, rowDragging = false, currentDx = 0, redirectedToPane = false;
@@ -1139,7 +1177,7 @@ function attachCodexRowGestures(el, conv) {
       if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
       axisLocked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
       if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
-      if (axisLocked === 'x' && dx < 0) {
+      if (axisLocked === 'x') {
         redirectedToPane = true;
         if (paneSwipeStart(startX, startY) && paneSwipeMove(touch.clientX, touch.clientY)) e.preventDefault();
         return;
@@ -1170,7 +1208,7 @@ function showCodexConvMenu(x, y, conv) {
   document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
   const menu = document.createElement('div');
   menu.className = 'ctx-menu';
-  menu.innerHTML = `<button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button><button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`;
+  menu.innerHTML = `<button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button><button data-action="git-sync">⬆️ Git: commit + pull + push</button><button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`;
   document.body.appendChild(menu);
   const rect = menu.getBoundingClientRect();
   menu.style.left = Math.min(x, window.innerWidth - rect.width - 8) + 'px';
@@ -1184,6 +1222,16 @@ function showCodexConvMenu(x, y, conv) {
     const action = e.target.dataset && e.target.dataset.action;
     if (!action) return;
     menu.remove(); document.removeEventListener('click', dismiss, true); document.removeEventListener('touchstart', dismiss, true);
+    if (action === 'git-sync') {
+      if (!confirm('Sincronizar Git en el repo de esta conversación?\n\nEjecuta directo: commit de cambios pendientes, pull con rebase y push. No hace force push ni descarta cambios.')) return;
+      try {
+        const result = await codexApi(`/conversations/${conv.convId}/git-sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        toast(gitSyncToast(result), 'info', 5000);
+      } catch (err) {
+        toast('No se pudo sincronizar Git: ' + err.message);
+      }
+      return;
+    }
     try {
       const patch = action === 'pin' ? { pinned: !conv.pinned } : { hidden: true };
       await codexApi(`/conversations/${conv.convId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) });
@@ -1246,7 +1294,7 @@ function openCodexSharedStream(convId) {
   return stream;
 }
 
-async function selectCodexShared(convId, name) {
+async function selectCodexShared(convId, name, projectDir = '') {
   $('panel-chat').classList.add('codex-chat-theme');
   if (eventSource) { eventSource.close(); eventSource = null; }
   if (codexStream) codexStream.close();
@@ -1258,7 +1306,7 @@ async function selectCodexShared(convId, name) {
   $('input').placeholder = 'Escribile a Codex…';
   autoResize($('input'));
   $('model-select').hidden = true;
-  $('conv-folder').hidden = true;
+  setConversationRepoChip(projectDir);
   $('cost-badge').hidden = true;
   $('mic-btn').hidden = true;
   $('attach-btn').hidden = false;
@@ -1274,6 +1322,9 @@ async function selectCodexShared(convId, name) {
   await markRead;
   codexStream = openCodexSharedStream(convId);
   loadCodexSharedTree();
+  codexApi(`/conversations/${convId}/repo`).then(({ repo }) => {
+    if (currentCodexConv && currentCodexConv.id === convId && repo) setConversationRepoChip(repo);
+  }).catch(() => {});
   if (!isMobile()) $('input').focus();
 }
 
@@ -1336,7 +1387,7 @@ async function goToPane(index) {
       return;
     }
   }
-  if (index === 2 && !notebookListLoaded) {
+  if (index === 3 && !notebookListLoaded) {
     try {
       await loadNotebookList();
       notebookListLoaded = true;
@@ -1346,7 +1397,7 @@ async function goToPane(index) {
       return;
     }
   }
-  if (index === 4 && !codexTreeLoaded) {
+  if (index === 2 && !codexTreeLoaded) {
     try {
       codexTreeLoaded = await loadCodexSharedTree();
     } catch (err) {
@@ -1359,9 +1410,9 @@ async function goToPane(index) {
   activePane = index;
   // El acento identifica la pestaña visible, no el chat que haya quedado
   // abierto en el panel principal.
-  document.body.classList.toggle('codex-list-theme', index === 4);
+  document.body.classList.toggle('codex-list-theme', index === 2);
   // El selector de proyecto solo aplica a conversaciones (Chats/Archivado) —
-  // Notas, Escáner y Codex son modelos de datos distintos, sin esta etiqueta.
+  // Notas y Codex son modelos de datos distintos, sin esta etiqueta.
   $('project-bar').hidden = index !== 0 && index !== 1;
   $('tree-viewport-inner').dataset.pane = String(index);
   document.querySelectorAll('.pane-tab').forEach(t => {
@@ -1380,12 +1431,6 @@ function resetArchivedPane() {
 document.querySelectorAll('.pane-tab').forEach(btn => {
   btn.onclick = () => goToPane(Number(btn.dataset.pane));
 });
-$('scan-back').onclick = () => goToPane(0);
-// Acceso directo al Escáner desde el header — en mobile #pane-tabs está
-// oculto (solo aparece en pantallas >=768px, ver style.css) y la única forma
-// de llegar a una pestaña es haciendo swipe, poco descubrible. Este botón
-// evita depender del gesto para una acción tan frecuente como escanear.
-$('header-scan-btn').onclick = () => goToPane(3);
 
 $('notebook-back-btn').onclick = closeChat;
 
@@ -1597,6 +1642,7 @@ function showConvMenu(x, y, conv) {
     <button data-action="archive">${conv.archived ? '📂 Desarchivar' : '📁 Archivar'}</button>
     <button data-action="project">🏷️ ${conv.project ? 'Cambiar proyecto…' : 'Asignar proyecto…'}</button>
     <button data-action="compact">🗜️ Compactar</button>
+    <button data-action="git-sync">⬆️ Git: commit + pull + push</button>
     <button data-action="hide" class="ctx-danger">🙈 Ocultar</button>
   `;
   document.body.appendChild(menu);
@@ -1610,6 +1656,16 @@ function showConvMenu(x, y, conv) {
     menu.remove();
     document.removeEventListener('click', dismiss, true);
     document.removeEventListener('touchstart', dismiss, true);
+    if (action === 'git-sync') {
+      if (!confirm('Sincronizar Git en el repo de esta conversación?\n\nEjecuta directo: commit de cambios pendientes, pull con rebase y push. No hace force push ni descarta cambios.')) return;
+      try {
+        const result = await api(`/conversations/${conv.convId}/git-sync`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(withAccountBody({})),
+        });
+        toast(gitSyncToast(result), 'info', 5000);
+      } catch (err) { toast('No se pudo sincronizar Git: ' + err.message); }
+      return;
+    }
     if (action === 'compact') {
       if (!confirm('Compactar la conversación?\n\nEjecuta el /compact nativo de Claude Code sobre la sesión actual — reduce el contexto sin perder la sesión. Puede tardar bastante en charlas largas.')) return;
       try {
@@ -2807,11 +2863,35 @@ function msgText(el) {
   return t ? t.textContent.trim() : '';
 }
 
+// La barra fija del último mensaje tiene que resumir lo que escribió la
+// persona, no la ruta interna del upload. Claude/los distintos transportes
+// pueden persistir el adjunto como "[Archivo adjunto: ...]" o como un tag
+// <image ... path="...">; ambos se muestran como un único indicador.
+function pinPreviewText(text) {
+  const imageTagRe = /<image\b[^>]*?(?:\bpath\s*=\s*["'][^"']+["'])?[^>]*>[\s\S]*?<\/image>/gi;
+  const attachmentRe = /\[Archivo adjunto:\s*([^\]]+)\]/gi;
+  const imagePathRe = /(?:[A-Za-z]:[\\/]|\/(?:home|tmp|root|var|opt|usr|mnt)\/)[^\s<>'"\]]+?\.(?:avif|bmp|gif|heic|jpe?g|png|svg|webp)(?=$|\s|[.,;:!?\]])/gi;
+  const hasImage = imageTagRe.test(text) || imagePathRe.test(text);
+
+  // Las expresiones con /g conservan lastIndex entre llamadas.
+  imageTagRe.lastIndex = 0;
+  attachmentRe.lastIndex = 0;
+  imagePathRe.lastIndex = 0;
+  const clean = text
+    .replace(imageTagRe, ' ')
+    .replace(attachmentRe, ' ')
+    .replace(imagePathRe, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  return (hasImage ? '🖼️ ' : '') + clean;
+}
+
 // Configura una fila del pin (botón) para que muestre `text` (recortado a
 // `limit`) y, al tocarla, salte a `el` con el mismo scrollIntoView+highlight
 // que usa el buscador.
 function setPinRow(btn, el, text, limit) {
-  const raw = text || '📎 Adjunto';
+  const raw = pinPreviewText(text) || '📎 Adjunto';
   const preview = raw.length > limit ? raw.slice(0, limit) + '…' : raw;
   btn.querySelector('.last-user-pin-text').textContent = preview;
   btn.title = text || 'Adjunto sin texto';
@@ -3366,6 +3446,14 @@ async function refreshCostBadge(convId) {
 $('cost-badge').onclick = () => toast($('cost-badge').title, 'info', 5000);
 
 // ── Select conversation ──
+function setConversationRepoChip(repoPath) {
+  const folderEl = $('conv-folder');
+  const dirName = (repoPath || '').split(/[\\/]/).filter(Boolean).pop();
+  folderEl.textContent = dirName || '';
+  folderEl.title = repoPath || '';
+  folderEl.hidden = !dirName;
+}
+
 async function selectConv(convId, name, model, lastModel, projectDir) {
   $('panel-chat').classList.remove('codex-chat-theme');
   if (codexStream) { codexStream.close(); codexStream = null; }
@@ -3383,11 +3471,7 @@ async function selectConv(convId, name, model, lastModel, projectDir) {
   autoResize($('input'));
   $('conv-title').textContent = name;
   $('model-select').value = model || 'sonnet';
-  const folderEl = $('conv-folder');
-  const dirName = (projectDir || '').split(/[\\/]/).filter(Boolean).pop();
-  folderEl.textContent = dirName || '';
-  folderEl.title = projectDir || '';
-  folderEl.hidden = !dirName;
+  setConversationRepoChip(projectDir);
   setBusy(false);
   clearAttachments();
   renderQueuedBar();
@@ -3430,6 +3514,11 @@ async function selectConv(convId, name, model, lastModel, projectDir) {
   await markReadPromise;
   openStream(convId);
   loadTree();
+  const repoParams = new URLSearchParams();
+  if (activeAccount) repoParams.set('account', activeAccount);
+  api(`/conversations/${convId}/repo?${repoParams}`).then(({ repo }) => {
+    if (currentConv === convId && repo) setConversationRepoChip(repo);
+  }).catch(() => {});
   refreshCostBadge(convId);
   // En mobile no autofocuseamos porque dispararía el teclado en pantalla apenas tocás la lista.
   if (!isMobile()) {
@@ -3988,13 +4077,13 @@ $('new-conv').onclick = async () => {
   const btn = $('new-conv');
   btn.disabled = true;
   try {
-    if (activePane === 2) {
+    if (activePane === 3) {
       // No crea la libreta acá — abre un borrador que recién se persiste en
       // ensureNotebookCreated() al mandar la primera nota (ver comentario ahí).
       openNotebookDraft();
       return;
     }
-    if (activePane === 4) {
+    if (activePane === 2) {
       await createCodexSharedConversation();
       $('input').focus();
       return;
@@ -4068,7 +4157,7 @@ function paneSwipeStart(clientX, clientY) {
   return true;
 }
 
-const PANE_COUNT = 5; // Chats/Archivado/Notas/Escáner/Codex.
+const PANE_COUNT = 4; // Chats/Archivado/Codex/Notas.
 
 function paneSwipeMove(clientX, clientY) {
   if (!paneDragging) return false;
@@ -4703,7 +4792,7 @@ function notebookIsVisible() {
 }
 
 function pollNotesPane() {
-  if (activePane !== 2) return;
+  if (activePane !== 3) return;
   // En mobile #notebook-view y la lista son mutuamente excluyentes (overlay),
   // así que alcanza con pollear la que esté a la vista. En desktop las dos
   // conviven en pantalla a la vez — si solo se pollea la que "está visible"

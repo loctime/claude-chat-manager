@@ -143,13 +143,13 @@ body.codex-list-theme #panel-list {
   line-height: 1.4;
 }
 #account-switch:hover { filter: brightness(1.1); }
-#search-btn, #new-conv, #refresh-btn, #settings-btn, #header-scan-btn {
+#search-btn, #new-conv, #refresh-btn, #settings-btn {
   background: none; border: none; color: var(--text2); cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   width: 36px; height: 36px; border-radius: 50%; transition: background .15s;
   touch-action: manipulation; -webkit-tap-highlight-color: transparent;
 }
-#search-btn:hover, #new-conv:hover, #refresh-btn:hover, #settings-btn:hover, #header-scan-btn:hover { background: var(--border); color: var(--text); }
+#search-btn:hover, #new-conv:hover, #refresh-btn:hover, #settings-btn:hover { background: var(--border); color: var(--text); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 #ptr-indicator {
@@ -211,8 +211,8 @@ body.codex-list-theme #panel-list {
   }
   .pane-tab:hover { color: var(--text); }
   .pane-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-  .pane-tab[data-pane="4"] { color: var(--codex-accent); }
-  .pane-tab[data-pane="4"].active { color: var(--codex-accent); border-bottom-color: var(--codex-accent); }
+  .pane-tab[data-pane="2"] { color: var(--codex-accent); }
+  .pane-tab[data-pane="2"].active { color: var(--codex-accent); border-bottom-color: var(--codex-accent); }
 }
 
 /* ── Barra de proyecto activo ── */
@@ -259,18 +259,20 @@ body.codex-list-theme #panel-list {
 }
 
 #tree-viewport { flex: 1; overflow: hidden; position: relative; }
+/* Carrusel móvil: Chats → Archivado → Codex → Notas (4 paneles — Escáner se
+   sacó de la navegación por swipe, ver commit de Diego "simplificar
+   navegación móvil"). */
 #tree-viewport-inner {
   display: flex;
-  width: 500%; /* Chats/Archivado/Notas/Escáner/Codex */
+  width: 400%;
   height: 100%;
   transition: transform .25s ease;
   touch-action: pan-y;
 }
-#tree-viewport-inner[data-pane="1"] { transform: translateX(-20%); }
-#tree-viewport-inner[data-pane="2"] { transform: translateX(-40%); }
-#tree-viewport-inner[data-pane="3"] { transform: translateX(-60%); }
-#tree-viewport-inner[data-pane="4"] { transform: translateX(-80%); }
-.tree-pane { width: 20%; flex: none; height: 100%; overflow-y: auto; }
+#tree-viewport-inner[data-pane="1"] { transform: translateX(-25%); }
+#tree-viewport-inner[data-pane="2"] { transform: translateX(-50%); }
+#tree-viewport-inner[data-pane="3"] { transform: translateX(-75%); }
+.tree-pane { width: 25%; flex: none; height: 100%; overflow-y: auto; }
 .tree-pane::-webkit-scrollbar { width: 4px; }
 .tree-pane::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
