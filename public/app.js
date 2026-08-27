@@ -9,6 +9,11 @@ let archivedTreeLimit = 100;
 let archivedTreeHasMore = false;
 let archivedTreeTotal = 0;
 let activePane = 0; // 0=chats 1=archived 2=notas 3=escaner 4=codex
+// Etiqueta de "proyecto" activa (filtro del sidebar) — '' = todos, '__none__' =
+// sin etiquetar, o el nombre elegido. Persiste entre recargas/dispositivos vía
+// localStorage porque es justo lo que resuelve "no veo dónde estoy parado".
+let activeProjectFilter = localStorage.getItem('ccm-active-project') || '';
+let knownProjects = []; // [{name, count}] — cache de GET /api/projects para el menú
 let notebookListLoaded = false;
 let notebooks = [];
 let currentNotebook = null; // {id, name} de la libreta abierta, o null si estamos en la lista
@@ -723,11 +728,21 @@ function convElement(c) {
     <div class="conv-avatar">${avatarChar(c.name)}</div>
     <div class="conv-body">
       <div class="name">${pin}${arch}${ai}<span class="conv-name-text"></span></div>
-      <div class="sub"><span class="conv-date"></span>${ctxHtml}</div>
+      <div class="sub"><span class="conv-project-tag"></span><span class="conv-date"></span>${ctxHtml}</div>
     </div>
     ${b}
   `;
   div.querySelector('.conv-name-text').textContent = c.name;
+  // Etiqueta de proyecto: solo se muestra si está asignada y no estamos ya
+  // filtrando por ella (si el filtro está activo, todas las filas serían el
+  // mismo chip — ruido sin información nueva).
+  const tagEl = div.querySelector('.conv-project-tag');
+  if (c.project && c.project !== activeProjectFilter) {
+    tagEl.textContent = c.project;
+    tagEl.hidden = false;
+  } else {
+    tagEl.hidden = true;
+  }
   div.querySelector('.conv-date').textContent = (c.lastActivity || '').slice(0, 16).replace('T', ' ');
   div._conv = c;
   div.onclick = () => selectConv(c.convId, c.name, c.model, c.lastModel, c.currentDir || c.projectDir, c.responseMode);
@@ -753,6 +768,7 @@ function buildTreePane(navEl, treeData) {
 async function loadTree() {
   const params = new URLSearchParams({ limit: String(treeLimit) });
   if (activeAccount) params.set('account', activeAccount);
+  if (activeProjectFilter) params.set('project', activeProjectFilter);
   const resp = await api('/tree?' + params);
   tree = resp.tree;
   treeHasMore = resp.hasMore;
@@ -785,6 +801,7 @@ async function loadTree() {
 async function loadArchivedTree() {
   const params = new URLSearchParams({ limit: String(archivedTreeLimit), archived: '1' });
   if (activeAccount) params.set('account', activeAccount);
+  if (activeProjectFilter) params.set('project', activeProjectFilter);
   const resp = await api('/tree?' + params);
   archivedTreeHasMore = resp.hasMore;
   archivedTreeTotal = resp.total;
@@ -1343,6 +1360,9 @@ async function goToPane(index) {
   // El acento identifica la pestaña visible, no el chat que haya quedado
   // abierto en el panel principal.
   document.body.classList.toggle('codex-list-theme', index === 4);
+  // El selector de proyecto solo aplica a conversaciones (Chats/Archivado) —
+  // Notas, Escáner y Codex son modelos de datos distintos, sin esta etiqueta.
+  $('project-bar').hidden = index !== 0 && index !== 1;
   $('tree-viewport-inner').dataset.pane = String(index);
   document.querySelectorAll('.pane-tab').forEach(t => {
     t.classList.toggle('active', t.dataset.pane === String(index));
@@ -1575,6 +1595,7 @@ function showConvMenu(x, y, conv) {
   menu.innerHTML = `
     <button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button>
     <button data-action="archive">${conv.archived ? '📂 Desarchivar' : '📁 Archivar'}</button>
+    <button data-action="project">🏷️ ${conv.project ? 'Cambiar proyecto…' : 'Asignar proyecto…'}</button>
     <button data-action="compact">🗜️ Compactar</button>
     <button data-action="hide" class="ctx-danger">🙈 Ocultar</button>
   `;
@@ -1603,6 +1624,11 @@ function showConvMenu(x, y, conv) {
         toast('Compactando… puede tardar, corre en background', 'info', 4000);
         refreshVisibleTrees();
       } catch (err) { toast('No se pudo compactar: ' + err.message); }
+      return;
+    }
+    if (action === 'project') {
+      await loadProjects().catch(() => {});
+      showAssignProjectMenu(x, y, conv);
       return;
     }
     if (action === 'hide') {
@@ -1658,6 +1684,194 @@ function showConvMenu(x, y, conv) {
     document.addEventListener('touchstart', dismiss, true);
   }, 350);
 }
+
+// ── Selector de "proyecto" (barra debajo de las pestañas Chats/Archivado) ──
+// Fernando trabaja 2-3 temas (FERZEP, Maximia, ControlApps...) en paralelo y
+// se pierde entre charlas — esto no agrupa por carpeta real (eso ya existe,
+// ver buildTreePane/projectDir), es una etiqueta de texto libre que él asigna
+// a mano para saber "en qué estoy parado" y filtrar la lista por eso.
+async function loadProjects() {
+  const params = new URLSearchParams();
+  if (activeAccount) params.set('account', activeAccount);
+  const resp = await api('/projects?' + params);
+  knownProjects = resp.projects || [];
+}
+
+function projectBarLabel(name) {
+  if (name === '__none__') return '📁 Sin proyecto';
+  if (name) return '📁 ' + name;
+  return '📁 Todos los proyectos';
+}
+
+function updateProjectBar() {
+  $('project-bar-label').textContent = projectBarLabel(activeProjectFilter);
+  $('project-bar').classList.toggle('filtered', !!activeProjectFilter);
+}
+
+// Da de alta la etiqueta en el registro persistido del server ANTES de
+// usarla — si no, "+ Nuevo proyecto…" en la barra de filtro (que solo cambia
+// el filtro activo, no etiqueta ninguna charla) desaparecía apenas se
+// navegaba a otro lado: no había ninguna conversación con esa etiqueta que
+// lo mantuviera vivo en /api/projects.
+async function createProject(name) {
+  try {
+    const resp = await api('/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(withAccountBody({ name })),
+    });
+    knownProjects = resp.projects || knownProjects;
+  } catch (err) {
+    toast('No se pudo crear el proyecto: ' + err.message);
+  }
+}
+
+function setActiveProject(name) {
+  activeProjectFilter = name || '';
+  localStorage.setItem('ccm-active-project', activeProjectFilter);
+  updateProjectBar();
+  // El filtro cambió: recargar la pestaña visible. Archivado se recarga solo
+  // si ya estaba abierta (si no, loadTree/goToPane la carga fresca cuando
+  // corresponda) — invalidamos su "loaded" para forzar el refetch la próxima vez.
+  archivedPaneLoaded = false;
+  safeLoadTree();
+  if (activePane === 1) safeLoadArchivedTree().then(() => { archivedPaneLoaded = true; });
+}
+
+function projectMenuItem(label, value, extra) {
+  const btn = document.createElement('button');
+  btn.textContent = (value === activeProjectFilter ? '✓ ' : '') + label;
+  if (extra) btn.dataset.action = extra;
+  else btn.dataset.project = value;
+  return btn;
+}
+
+function showProjectBarMenu() {
+  document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  menu.appendChild(projectMenuItem('Todos los proyectos', ''));
+  menu.appendChild(projectMenuItem('Sin proyecto', '__none__'));
+  if (knownProjects.length) {
+    const hr = document.createElement('hr');
+    menu.appendChild(hr);
+    for (const p of knownProjects) {
+      menu.appendChild(projectMenuItem(`${p.name} (${p.count})`, p.name));
+    }
+  }
+  const hr2 = document.createElement('hr');
+  menu.appendChild(hr2);
+  const newBtn = document.createElement('button');
+  newBtn.textContent = '+ Nuevo proyecto…';
+  newBtn.dataset.action = 'new-project';
+  menu.appendChild(newBtn);
+  document.body.appendChild(menu);
+  const rect = $('project-bar-btn').getBoundingClientRect();
+  const maxX = window.innerWidth - menu.offsetWidth - 8;
+  menu.style.left = Math.max(8, Math.min(rect.left, maxX)) + 'px';
+  menu.style.top = (rect.bottom + 4) + 'px';
+
+  menu.addEventListener('click', e => {
+    e.stopPropagation();
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    menu.remove();
+    if (btn.dataset.action === 'new-project') {
+      const name = (prompt('Nombre del proyecto (ej: FERZEP, Maximia, ControlApps):') || '').trim();
+      if (name) createProject(name).then(() => setActiveProject(name));
+      return;
+    }
+    if ('project' in btn.dataset) setActiveProject(btn.dataset.project);
+  });
+  function dismiss(e) {
+    if (menu.contains(e.target)) return;
+    menu.remove();
+    document.removeEventListener('click', dismiss, true);
+    document.removeEventListener('touchstart', dismiss, true);
+  }
+  // Delay para saltear el click sintético del touchend que abrió el menú.
+  setTimeout(() => {
+    document.addEventListener('click', dismiss, true);
+    document.addEventListener('touchstart', dismiss, true);
+  }, 350);
+}
+
+$('project-bar-btn').onclick = async () => {
+  await loadProjects().catch(err => toast('No se pudo cargar proyectos: ' + err.message));
+  showProjectBarMenu();
+};
+
+// Asignar/cambiar el proyecto de UNA conversación puntual, desde su menú
+// contextual (📌📁🏷️…). Reusa la lista de proyectos conocidos + opción de
+// escribir uno nuevo, igual que la barra de filtro.
+function showAssignProjectMenu(x, y, conv) {
+  document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  const noneBtn = document.createElement('button');
+  noneBtn.textContent = (!conv.project ? '✓ ' : '') + 'Sin proyecto';
+  noneBtn.dataset.project = '';
+  menu.appendChild(noneBtn);
+  if (knownProjects.length) {
+    const hr = document.createElement('hr');
+    menu.appendChild(hr);
+    for (const p of knownProjects) {
+      const btn = document.createElement('button');
+      btn.textContent = (conv.project === p.name ? '✓ ' : '') + p.name;
+      btn.dataset.project = p.name;
+      menu.appendChild(btn);
+    }
+  }
+  const hr2 = document.createElement('hr');
+  menu.appendChild(hr2);
+  const newBtn = document.createElement('button');
+  newBtn.textContent = '+ Nuevo proyecto…';
+  newBtn.dataset.action = 'new-project';
+  menu.appendChild(newBtn);
+  document.body.appendChild(menu);
+  const maxX = window.innerWidth - menu.offsetWidth - 8;
+  const maxY = window.innerHeight - menu.offsetHeight - 8;
+  menu.style.left = Math.min(x, maxX) + 'px';
+  menu.style.top = Math.min(y, maxY) + 'px';
+
+  async function assign(project) {
+    try {
+      await api(`/conversations/${conv.convId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(withAccountBody({ project })),
+      });
+      conv.project = project || undefined;
+      refreshVisibleTrees();
+      toast(project ? `Proyecto: ${project}` : 'Sin proyecto', 'info', 2000);
+    } catch (err) { toast('No se pudo asignar el proyecto: ' + err.message); }
+  }
+
+  menu.addEventListener('click', e => {
+    e.stopPropagation();
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    menu.remove();
+    if (btn.dataset.action === 'new-project') {
+      const name = (prompt('Nombre del proyecto (ej: FERZEP, Maximia, ControlApps):') || '').trim();
+      if (name) createProject(name).then(() => assign(name));
+      return;
+    }
+    if ('project' in btn.dataset) assign(btn.dataset.project);
+  });
+  function dismiss(e) {
+    if (menu.contains(e.target)) return;
+    menu.remove();
+    document.removeEventListener('click', dismiss, true);
+    document.removeEventListener('touchstart', dismiss, true);
+  }
+  setTimeout(() => {
+    document.addEventListener('click', dismiss, true);
+    document.addEventListener('touchstart', dismiss, true);
+  }, 350);
+}
+
+updateProjectBar();
 
 // ── Menú contextual de libretas (click derecho + long-press mobile) ──
 // A diferencia de attachRowGestures (chats), sin arrastre horizontal: las
@@ -3785,10 +3999,13 @@ $('new-conv').onclick = async () => {
       $('input').focus();
       return;
     }
+    // Si hay un proyecto filtrado en la barra, la charla nueva nace ya
+    // etiquetada con ese proyecto (evita el paso extra de asignarlo a mano).
+    const newConvProject = activeProjectFilter && activeProjectFilter !== '__none__' ? activeProjectFilter : undefined;
     const { convId, projectDir } = await api('/conversations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(withAccountBody({})),
+      body: JSON.stringify(withAccountBody({ project: newConvProject })),
     });
     await selectConv(convId, 'Nueva conversación', undefined, null, projectDir);
     // Crear conversación es una acción explícita (no un tap en la lista),

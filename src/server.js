@@ -1487,6 +1487,72 @@ app.post('/api/scan/pdf/:id/keep', (req, res) => {
 const DEFAULT_TREE_LIMIT = 100;
 const MAX_TREE_LIMIT = 500;
 
+// Lista de etiquetas de proyecto: unión de `data.projects` (registro
+// persistido — existe apenas se crea, aunque todavía no haya ninguna
+// conversación con esa etiqueta) + cualquier etiqueta que ya esté en uso en
+// una conversación pero no esté en el registro (auto-adopción, cubre datos
+// viejos o creados por otro cliente). El conteo sí se calcula al vuelo desde
+// las conversaciones — eso no se persiste aparte.
+// Da de alta una etiqueta en el registro si todavía no está (comparación sin
+// mayúsculas/minúsculas) — se llama cada vez que una conversación queda
+// etiquetada con un proyecto, así el registro nunca queda desincronizado con
+// lo que realmente se está usando, aunque el alta explícita por /api/projects
+// se haya salteado (ej. un cliente viejo que solo mande `project` en el PATCH).
+function registerProject(data, name) {
+  if (!name) return;
+  if (!Array.isArray(data.projects)) data.projects = [];
+  if (!data.projects.some(p => p.toLowerCase() === name.toLowerCase())) data.projects.push(name);
+}
+
+function projectsWithCounts(data) {
+  const counts = new Map();
+  for (const c of Object.values(data.conversations)) {
+    if (c.hidden || !c.project) continue;
+    counts.set(c.project, (counts.get(c.project) || 0) + 1);
+  }
+  const names = new Set([...(data.projects || []), ...counts.keys()]);
+  return [...names]
+    .map(name => ({ name, count: counts.get(name) || 0 }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'es'));
+}
+
+app.get('/api/projects', (req, res) => {
+  const acc = req.query.account || activeAccount;
+  const data = meta.load(accountMetaFile(acc));
+  res.json({ projects: projectsWithCounts(data) });
+});
+
+// Crea (o reactiva) una etiqueta de proyecto en el registro persistido, sin
+// necesidad de que ya exista una conversación con ese nombre — así "+ Nuevo
+// proyecto…" no desaparece la próxima vez que se abre el selector si todavía
+// no se etiquetó nada con él.
+app.post('/api/projects', (req, res) => {
+  const acc = req.body.account || activeAccount;
+  const name = (req.body.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'nombre vacío' });
+  const metaFile = accountMetaFile(acc);
+  const data = meta.load(metaFile);
+  if (!Array.isArray(data.projects)) data.projects = [];
+  // Sin duplicar por mayúsculas/minúsculas — "ferzep" y "FERZEP" son el mismo proyecto.
+  const exists = data.projects.some(p => p.toLowerCase() === name.toLowerCase());
+  if (!exists) {
+    data.projects.push(name);
+    meta.save(data, metaFile);
+  }
+  res.status(201).json({ projects: projectsWithCounts(data) });
+});
+
+// Saca un proyecto del registro (no desetiqueta conversaciones existentes —
+// esas mantienen la etiqueta vieja hasta que se reasignen a mano).
+app.delete('/api/projects/:name', (req, res) => {
+  const acc = req.query.account || activeAccount;
+  const metaFile = accountMetaFile(acc);
+  const data = meta.load(metaFile);
+  data.projects = (data.projects || []).filter(p => p !== req.params.name);
+  meta.save(data, metaFile);
+  res.json({ projects: projectsWithCounts(data) });
+});
+
 app.get('/api/tree', (req, res) => {
   const acc = req.query.account || activeAccount;
   const data = meta.load(accountMetaFile(acc));
@@ -1520,6 +1586,11 @@ app.get('/api/tree', (req, res) => {
       archived: !!c.archived,
       aiTitle: !!c.aiTitle,
       unread: !!c.unread,
+      // Etiqueta libre de "proyecto" (FERZEP, Maximia, ControlApps, etc.) —
+      // NO es una carpeta ni un cwd, es solo para que Fernando ubique con qué
+      // tema está trabajando cuando tiene 2-3 charlas abiertas a la vez. Ver
+      // /api/projects y el filtro ?project= más abajo.
+      project: c.project || null,
       contextPct: contextPctFor(s),
       status: convStatus(convId),
     });
@@ -1538,6 +1609,7 @@ app.get('/api/tree', (req, res) => {
       lastModel: s.lastModel || null,
       pinned: false,
       archived: false,
+      project: null,
       contextPct: contextPctFor(s),
       status: convStatus(s.sessionId),
     });
@@ -1545,7 +1617,17 @@ app.get('/api/tree', (req, res) => {
 
   const showArchived = req.query.archived === '1';
   const archivedTotal = convs.filter(c => c.archived).length;
-  const filtered = showArchived ? convs.filter(c => c.archived) : convs.filter(c => !c.archived);
+  let filtered = showArchived ? convs.filter(c => c.archived) : convs.filter(c => !c.archived);
+
+  // Filtro de proyecto: ?project=<etiqueta> muestra solo esas; ?project=__none__
+  // muestra las que todavía no tienen etiqueta asignada. Sin el parámetro, no
+  // filtra (comportamiento de siempre).
+  const projectFilter = req.query.project;
+  if (projectFilter) {
+    filtered = projectFilter === '__none__'
+      ? filtered.filter(c => !c.project)
+      : filtered.filter(c => c.project === projectFilter);
+  }
 
   // Sort: pinned primero, después lastActivity desc.
   filtered.sort((a, b) => {
@@ -1840,6 +1922,10 @@ app.post('/api/conversations/:id/rewind', (req, res) => {
 
 app.post('/api/conversations', (req, res) => {
   const { model } = req.body;
+  // Etiqueta de proyecto (texto libre, ver /api/projects) — NO es una carpeta,
+  // no toca projectDir/cwd. Si el selector de proyecto está activo en el
+  // front, la nueva charla nace ya clasificada ahí.
+  const project = (req.body.project || '').trim() || undefined;
   const acc = req.body.account || activeAccount;
   // No se elige carpeta por conversación — siempre arranca en la carpeta
   // configurada para esta cuenta (CCM_DEFAULT_PROJECT_DIR si está seteado,
@@ -1852,11 +1938,12 @@ app.post('/api/conversations', (req, res) => {
   const metaFile = accountMetaFile(acc);
   const convId = crypto.randomUUID();
   const data = meta.load(metaFile);
-  data.conversations[convId] = { currentSessionId: null, projectDir, model: model || undefined };
+  data.conversations[convId] = { currentSessionId: null, projectDir, model: model || undefined, project };
+  registerProject(data, project);
   meta.save(data, metaFile);
   // Conversación arranca vacía, sin mensaje inicial — el usuario escribe el
   // primero desde el composer como cualquier otro mensaje.
-  res.status(201).json({ convId, projectDir });
+  res.status(201).json({ convId, projectDir, project });
 });
 
 app.patch('/api/conversations/:id', (req, res) => {
@@ -1868,6 +1955,11 @@ app.patch('/api/conversations/:id', (req, res) => {
     conv.aiTitle = false;
   }
   if ('model' in req.body) conv.model = (req.body.model || '').trim() || undefined;
+  // Etiqueta de proyecto: string vacío/null la borra (vuelve a "Sin proyecto").
+  if ('project' in req.body) {
+    conv.project = (req.body.project || '').trim() || undefined;
+    registerProject(data, conv.project);
+  }
   if ('pinned' in req.body) conv.pinned = !!req.body.pinned;
   if ('archived' in req.body) conv.archived = !!req.body.archived;
   if ('unread' in req.body) conv.unread = !!req.body.unread;

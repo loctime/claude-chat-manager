@@ -3,7 +3,12 @@ const path = require('path');
 const os = require('os');
 
 const META_FILE = path.join(os.homedir(), '.claude', 'session-manager', 'meta.json');
-const EMPTY = () => ({ conversations: {}, superseded: [] });
+// projects: lista persistida de etiquetas de "proyecto" (ver /api/projects en
+// server.js) — existe independiente de si alguna conversación ya la usa, así
+// crear "+ Nuevo proyecto" no desaparece si todavía no se etiquetó ninguna
+// charla con ella. Campo nuevo (27/08/2026): archivos meta.json viejos no lo
+// tienen, por eso todo lector hace `data.projects || []`, nunca asume que existe.
+const EMPTY = () => ({ conversations: {}, superseded: [], projects: [] });
 
 function isValidShape(obj) {
   return obj

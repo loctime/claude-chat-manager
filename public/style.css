@@ -68,6 +68,7 @@ body.codex-list-theme #panel-list {
   body.sidebar-hidden #account-status,
   body.sidebar-hidden #ptr-indicator,
   body.sidebar-hidden #pane-tabs,
+  body.sidebar-hidden #project-bar,
   body.sidebar-hidden .project > summary,
   body.sidebar-hidden .conv-body {
     display: none;
@@ -212,6 +213,49 @@ body.codex-list-theme #panel-list {
   .pane-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
   .pane-tab[data-pane="4"] { color: var(--codex-accent); }
   .pane-tab[data-pane="4"].active { color: var(--codex-accent); border-bottom-color: var(--codex-accent); }
+}
+
+/* ── Barra de proyecto activo ── */
+/* A diferencia de #pane-tabs, visible también en mobile: es la respuesta a
+   "no veo dónde estoy parado" — tiene que estar siempre a la vista, no solo
+   en desktop donde hay pestañas visibles para orientarse. */
+#project-bar {
+  flex: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--header);
+}
+#project-bar-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text2);
+}
+#project-bar-btn:hover { color: var(--text); }
+#project-bar-btn svg { flex-shrink: 0; opacity: .7; }
+/* Con un proyecto (o "sin proyecto") filtrado, el acento marca que la lista
+   está recortada — mismo lenguaje visual que .pane-tab.active. */
+#project-bar.filtered #project-bar-btn { color: var(--accent); }
+
+/* Chip de proyecto en cada fila del chat — solo visible cuando el filtro NO
+   ya lo dice (ver convElement) */
+.conv-project-tag {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .3px;
+  color: var(--accent);
+  background: rgba(37, 211, 102, .12);
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-right: 6px;
 }
 
 #tree-viewport { flex: 1; overflow: hidden; position: relative; }
@@ -421,7 +465,15 @@ body.codex-list-theme #panel-list {
   user-select: none;
 }
 .conv:hover { background: var(--header); }
-.conv.active { background: #182229; }
+/* Tinte suave del color de acento + una barra a la izquierda — antes era un
+   gris (#182229) casi idéntico al fondo del panel, difícil de distinguir a
+   simple vista. Pedido de Fernando (27/08/2026): que se note claramente en
+   cuál charla está parado. */
+.conv.active {
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.conv.active:hover { background: color-mix(in srgb, var(--accent) 18%, var(--panel)); }
 
 /* Flash momentáneo al volver de un chat en mobile (swipe o botón atrás) — la
    lista queda tapada por #panel-chat mientras estás adentro del chat, así que
@@ -1605,6 +1657,7 @@ body.hide-tools details.tool { display: none !important; }
 .ctx-menu button:hover { background: var(--input-bg); }
 .ctx-menu .ctx-danger { color: #ff8a80; }
 .ctx-menu .ctx-danger:hover { background: rgba(255,138,128,.12); }
+.ctx-menu hr { border: none; border-top: 1px solid var(--border); margin: 4px 2px; }
 
 /* ── Copiar código / comandos ── */
 /* El wrapper existe porque el pre es su propio scroll horizontal: un absolute

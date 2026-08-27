@@ -9,7 +9,7 @@ const tmpMeta = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-meta-
 
 test('load devuelve estructura vacía si el archivo no existe', () => {
   const data = load('/no/existe/meta.json');
-  assert.deepEqual(data, { conversations: {}, superseded: [] });
+  assert.deepEqual(data, { conversations: {}, superseded: [], projects: [] });
 });
 
 test('save crea directorios y load lo lee de vuelta', () => {
@@ -45,7 +45,7 @@ test('load con JSON corrupto no lo pisa: hace backup y devuelve vacío', () => {
   fs.writeFileSync(file, '{ esto no es json }');
 
   const data = load(file);
-  assert.deepEqual(data, { conversations: {}, superseded: [] });
+  assert.deepEqual(data, { conversations: {}, superseded: [], projects: [] });
 
   // Debe existir al menos un backup meta.json.bak-*
   const dir = path.dirname(file);
@@ -61,7 +61,7 @@ test('load rechaza shape inválido y hace backup', () => {
   fs.writeFileSync(file, JSON.stringify({ wrong: 'shape' }));
 
   const data = load(file);
-  assert.deepEqual(data, { conversations: {}, superseded: [] });
+  assert.deepEqual(data, { conversations: {}, superseded: [], projects: [] });
 
   const backups = fs.readdirSync(path.dirname(file)).filter(f => f.startsWith('meta.json.bak-'));
   assert.ok(backups.length >= 1);
