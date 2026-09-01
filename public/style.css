@@ -211,8 +211,24 @@ body.codex-list-theme #panel-list {
   }
   .pane-tab:hover { color: var(--text); }
   .pane-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-  .pane-tab[data-pane="2"] { color: var(--codex-accent); }
+  .pane-tab.has-unread {
+    --pane-alert: var(--accent);
+    color: #bcebdd;
+    background: color-mix(in srgb, var(--pane-alert) 22%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pane-alert) 65%, transparent), 0 0 12px color-mix(in srgb, var(--pane-alert) 45%, transparent);
+    animation: pane-unread-glow 1.7s ease-in-out infinite;
+  }
+  .pane-tab[data-pane="2"] { order: 1; color: var(--codex-accent); }
   .pane-tab[data-pane="2"].active { color: var(--codex-accent); border-bottom-color: var(--codex-accent); }
+  .pane-tab[data-pane="2"].has-unread {
+    --pane-alert: var(--codex-accent);
+    color: color-mix(in srgb, var(--codex-accent) 35%, white);
+    background: color-mix(in srgb, var(--codex-accent) 22%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--codex-accent) 65%, transparent), 0 0 12px color-mix(in srgb, var(--codex-accent) 45%, transparent);
+  }
+  @keyframes pane-unread-glow {
+    50% { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pane-alert) 90%, transparent), 0 0 20px color-mix(in srgb, var(--pane-alert) 75%, transparent); }
+  }
 }
 
 /* ── Barra de proyecto activo ── */

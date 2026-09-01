@@ -844,7 +844,10 @@ codexRunner.on('status', s => {
     if (!hasViewer) {
       const data = meta.load(CODEX_META_FILE);
       const conv = data.conversations[s.convId];
-      if (conv) {
+      // Un borrador puede terminar/cancelarse antes de que Codex anuncie el
+      // thread.started. No es una respuesta para avisar y, si quedara marcado,
+      // haría brillar la pestaña para siempre.
+      if (conv && conv.currentSessionId) {
         conv.unread = true;
         meta.save(data, CODEX_META_FILE);
       }
@@ -1712,6 +1715,7 @@ app.get('/api/tree', (req, res) => {
 
   const showArchived = req.query.archived === '1';
   const archivedTotal = convs.filter(c => c.archived).length;
+  const unreadTotal = convs.filter(c => !c.archived && c.unread).length;
   let filtered = showArchived ? convs.filter(c => c.archived) : convs.filter(c => !c.archived);
 
   // Filtro de proyecto: ?project=<etiqueta> muestra solo esas; ?project=__none__
@@ -1745,7 +1749,7 @@ app.get('/api/tree', (req, res) => {
     projectDir,
     conversations,
   }));
-  res.json({ tree, hasMore, total, limit, archivedTotal, account: acc });
+  res.json({ tree, hasMore, total, limit, archivedTotal, unreadTotal, account: acc });
 });
 
 // ── Limpieza de sesiones ──
@@ -2200,7 +2204,13 @@ app.get('/api/codex/tree', async (req, res) => {
     if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
     return (b.lastActivity || '').localeCompare(a.lastActivity || '');
   });
-  res.json({ conversations: filtered, archivedTotal: convs.filter(c => c.archived).length });
+  res.json({
+    conversations: filtered,
+    archivedTotal: convs.filter(c => c.archived).length,
+    // Solo una sesión real puede tener una respuesta pendiente. Ignoramos
+    // flags huérfanos de borradores antiguos que nunca llegaron a iniciarse.
+    unreadTotal: convs.filter(c => !c.archived && c.currentSessionId && c.unread).length,
+  });
 });
 
 app.patch('/api/codex/conversations/:id', (req, res) => {

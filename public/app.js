@@ -264,6 +264,7 @@ async function ensureNotebookCreated() {
 
 let archivedPaneLoaded = false;
 let codexTreeLoaded = false;
+let codexTreeLoading = null;
 let codexAvailable = false;
 let activeAccount = null;
 const drafts = new Map();
@@ -795,6 +796,7 @@ async function loadTree() {
   treeHasMore = resp.hasMore;
   treeTotal = resp.total;
   archivedTotal = resp.archivedTotal || 0;
+  setPaneUnread('0', resp.unreadTotal > 0);
   const nav = $('tree');
   buildTreePane(nav, resp);
 
@@ -1114,6 +1116,14 @@ function codexProjectName(conv) {
   return repo ? repo.split(/[\\/]/).pop() : '';
 }
 
+// Las pestañas resumen el mismo estado "sin leer" que ya muestran las filas.
+// Se ilumina la pestaña completa (en vez de sumar otro punto) para avisar que
+// una respuesta terminÃ³ en un agente que no estabas mirando.
+function setPaneUnread(pane, hasUnread) {
+  const tab = document.querySelector(`.pane-tab[data-pane="${pane}"]`);
+  if (tab) tab.classList.toggle('has-unread', hasUnread);
+}
+
 function codexConversationLabel(conv) {
   const project = codexProjectName(conv);
   return project || 'Sin proyecto';
@@ -1136,15 +1146,28 @@ function codexSharedRow(c) {
 
 async function loadCodexSharedTree() {
   const nav = $('codex-pane');
-  nav.innerHTML = '';
+  // No vaciar el árbol antes del fetch: en desktop queda visible detrás del
+  // chat abierto y ese vacío momentáneo se percibía como un reinicio cada vez
+  // que seleccionabas o enviabas un mensaje a Codex.
   await loadCodexAvailability();
   if (!codexAvailable) {
     nav.innerHTML = '<div id="empty-state"><p>Codex no está configurado en esta instalación.</p><p>En la PC que ejecuta J.A.R.V.I.S, iniciá sesión con <code>codex login</code> y actualizá esta página.</p></div>';
     return false;
   }
-  const { conversations } = await codexApi('/tree');
-  if (!conversations.length) nav.insertAdjacentHTML('beforeend', '<div id="empty-state"><p>Sin conversaciones de Codex todavía</p></div>');
-  else conversations.forEach(c => nav.appendChild(codexSharedRow(c)));
+  const { conversations, unreadTotal } = await codexApi('/tree');
+  setPaneUnread('2', unreadTotal > 0);
+  const next = document.createDocumentFragment();
+  if (!conversations.length) {
+    const empty = document.createElement('div');
+    empty.id = 'empty-state';
+    empty.innerHTML = '<p>Sin conversaciones de Codex todavía</p>';
+    next.appendChild(empty);
+  } else {
+    conversations.forEach(c => next.appendChild(codexSharedRow(c)));
+  }
+  // El reemplazo es atómico desde el punto de vista visual: la lista anterior
+  // queda durante el request y la nueva aparece en el mismo frame.
+  nav.replaceChildren(next);
   return true;
 }
 
@@ -1208,7 +1231,7 @@ function showCodexConvMenu(x, y, conv) {
   document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
   const menu = document.createElement('div');
   menu.className = 'ctx-menu';
-  menu.innerHTML = `<button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button><button data-action="git-sync">⬆️ Git: commit + pull + push</button><button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`;
+  menu.innerHTML = `<button data-action="copy-conversation">📋 Copiar conversación</button><button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button><button data-action="git-sync">⬆️ Git: commit + pull + push</button><button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`;
   document.body.appendChild(menu);
   const rect = menu.getBoundingClientRect();
   menu.style.left = Math.min(x, window.innerWidth - rect.width - 8) + 'px';
@@ -1222,6 +1245,14 @@ function showCodexConvMenu(x, y, conv) {
     const action = e.target.dataset && e.target.dataset.action;
     if (!action) return;
     menu.remove(); document.removeEventListener('click', dismiss, true); document.removeEventListener('touchstart', dismiss, true);
+    if (action === 'copy-conversation') {
+      try {
+        await copyConversationMessages(() => codexApi(`/conversations/${conv.convId}/messages`));
+      } catch (err) {
+        toast('No se pudo copiar la conversación: ' + err.message);
+      }
+      return;
+    }
     if (action === 'git-sync') {
       if (!confirm('Sincronizar Git en el repo de esta conversación?\n\nEjecuta directo: commit de cambios pendientes, pull con rebase y push. No hace force push ni descarta cambios.')) return;
       try {
@@ -1398,12 +1429,14 @@ async function goToPane(index) {
     }
   }
   if (index === 2 && !codexTreeLoaded) {
-    try {
-      codexTreeLoaded = await loadCodexSharedTree();
-    } catch (err) {
-      toast('No se pudo cargar Codex: ' + err.message);
-      if (myGeneration === paneNavGeneration) paneNavTarget = activePane;
-      return;
+    // A diferencia de Archivado/Notas, entrar a Codex primero verifica el CLI
+    // y puede demorar bastante en un teléfono nuevo. La navegación no debe
+    // esperar ese trabajo: el carrusel se mueve ya y el árbol llega después.
+    if (!codexTreeLoading) {
+      codexTreeLoading = loadCodexSharedTree()
+        .then(loaded => { codexTreeLoaded = loaded; })
+        .catch(err => toast('No se pudo cargar Codex: ' + err.message))
+        .finally(() => { codexTreeLoading = null; });
     }
   }
   if (myGeneration !== paneNavGeneration) return; // otra navegación más nueva ya tomó el control
@@ -1638,6 +1671,7 @@ function showConvMenu(x, y, conv) {
   const menu = document.createElement('div');
   menu.className = 'ctx-menu';
   menu.innerHTML = `
+    <button data-action="copy-conversation">📋 Copiar conversación</button>
     <button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button>
     <button data-action="archive">${conv.archived ? '📂 Desarchivar' : '📁 Archivar'}</button>
     <button data-action="project">🏷️ ${conv.project ? 'Cambiar proyecto…' : 'Asignar proyecto…'}</button>
@@ -1656,6 +1690,14 @@ function showConvMenu(x, y, conv) {
     menu.remove();
     document.removeEventListener('click', dismiss, true);
     document.removeEventListener('touchstart', dismiss, true);
+    if (action === 'copy-conversation') {
+      try {
+        await copyConversationMessages(() => api(withAccount(`/conversations/${conv.convId}/messages`)));
+      } catch (err) {
+        toast('No se pudo copiar la conversación: ' + err.message);
+      }
+      return;
+    }
     if (action === 'git-sync') {
       if (!confirm('Sincronizar Git en el repo de esta conversación?\n\nEjecuta directo: commit de cambios pendientes, pull con rebase y push. No hace force push ni descarta cambios.')) return;
       try {
@@ -1929,6 +1971,21 @@ function showAssignProjectMenu(x, y, conv) {
 
 updateProjectBar();
 
+// Copia un historial legible, pero deja afuera las tools y los marcadores del
+// sistema: son parte de la ejecución, no de la conversación entre vos y el
+// agente. Se comparte entre los chats de Claude y los de Codex.
+async function copyConversationMessages(load) {
+  const messages = await load();
+  const conversation = messages.filter(m => m.role === 'user' || m.role === 'assistant');
+  if (!conversation.length) {
+    toast('La conversación no tiene mensajes para copiar', 'info', 2500);
+    return;
+  }
+  const text = conversation
+    .map(m => `${m.role === 'user' ? USER_NAME : APP_NAME}:\n${m.text || ''}`)
+    .join('\n\n');
+  await copyToClipboard(text);
+}
 // ── Menú contextual de libretas (click derecho + long-press mobile) ──
 // A diferencia de attachRowGestures (chats), sin arrastre horizontal: las
 // libretas no se archivan, solo se ocultan desde el menú — así el gesto no
@@ -4230,6 +4287,9 @@ async function safeLoadTree() {
 function pollTrees() {
   safeLoadTree();
   if (archivedPaneLoaded) safeLoadArchivedTree();
+  // Codex puede responder mientras estÃ¡s en Chats/Notas. Consultamos su
+  // metadata liviana para encender el aviso de su pestaÃ±a sin abrirla.
+  codexApi('/tree').then(({ unreadTotal }) => setPaneUnread('2', unreadTotal > 0)).catch(() => {});
 }
 loadAccounts().then(() => safeLoadTree());
 loadCodexAvailability();
