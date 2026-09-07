@@ -4233,7 +4233,20 @@ function pollTrees() {
 }
 loadAccounts().then(() => safeLoadTree());
 loadCodexAvailability();
-setInterval(pollTrees, 15000);
+let treePollTimer = setInterval(pollTrees, 15000);
+// En segundo plano (celu minimizado, pantalla bloqueada) no tiene sentido
+// seguir pinchando el server cada 15s — cada poll despierta la antena y el
+// navegador solo lo throttlea eventualmente, sin garantía. Lo frenamos a
+// mano al ocultarse y, al volver, un poll inmediato pone la lista al día
+// antes de retomar el intervalo normal.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearInterval(treePollTimer);
+  } else {
+    pollTrees();
+    treePollTimer = setInterval(pollTrees, 15000);
+  }
+});
 
 // Aviso pendiente de un reinicio anterior (ej. "se saltó git pull porque
 // había cambios sin commitear") — el server lo guarda una sola vez y lo
@@ -4803,7 +4816,16 @@ function pollNotesPane() {
   if (!isMobile() || !notebookIsVisible()) safeLoadNotebookList();
 }
 
-setInterval(pollNotesPane, 5000);
+// Mismo criterio que treePollTimer arriba: en segundo plano no tiene sentido
+// seguir pinchando cada 5s, aunque el trabajo real esté gateado por
+// activePane — el poll en sí (y el eventual fetch si estás en Notas) sigue
+// siendo un despertar de red evitable con la pantalla apagada.
+let notesPollTimer = setInterval(pollNotesPane, 5000);
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) pollNotesPane();
+  if (document.hidden) {
+    clearInterval(notesPollTimer);
+  } else {
+    pollNotesPane();
+    notesPollTimer = setInterval(pollNotesPane, 5000);
+  }
 });
