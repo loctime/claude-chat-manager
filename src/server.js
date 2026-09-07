@@ -810,7 +810,10 @@ runner.on('status', s => {
       const metaFile = accountMetaFile(s.account || activeAccount);
       const data = meta.load(metaFile);
       const conv = data.conversations[s.convId];
-      if (conv) {
+      // Igual que Codex: un borrador que nunca llegó a crear sesión no puede
+      // tener una respuesta pendiente. Marcarlo hacía brillar Chats para
+      // siempre y ocultaba visualmente los avisos reales de Codex.
+      if (conv && conv.currentSessionId) {
         conv.unread = true;
         meta.save(data, metaFile);
       }
@@ -1675,14 +1678,21 @@ app.get('/api/tree', (req, res) => {
       currentDir: s.cwd || c.projectDir,
       name: c.name || s.snippet || '(nueva conversación)',
       snippet: s.snippet || '',
-      lastActivity: s.lastActivity || null,
+      // Fallback a lastMessageAt (seteado al mandar el mensaje, ver POST
+      // .../message) mientras el CLI todavía no escribió el .jsonl real —
+      // sin esto, una charla recién mandada/en cola ordena al fondo de la
+      // lista hasta que arranca a procesar. Una vez que s.lastActivity
+      // existe (el CLI ya está escribiendo), gana esa por ser más reciente.
+      lastActivity: s.lastActivity || c.lastMessageAt || null,
       messageCount: s.messageCount || 0,
       model: c.model || null,
       lastModel: s.lastModel || null,
       pinned: !!c.pinned,
       archived: !!c.archived,
       aiTitle: !!c.aiTitle,
-      unread: !!c.unread,
+      // Los flags viejos de borradores sin sesión pueden seguir en meta.json,
+      // pero no representan una respuesta que el usuario pueda leer.
+      unread: !!c.currentSessionId && !!c.unread,
       // Etiqueta libre de "proyecto" (FERZEP, Maximia, ControlApps, etc.) —
       // NO es una carpeta ni un cwd, es solo para que Fernando ubique con qué
       // tema está trabajando cuando tiene 2-3 charlas abiertas a la vez. Ver
@@ -1913,6 +1923,14 @@ app.post('/api/conversations/:id/message', async (req, res) => {
     const inferredRepo = await inferRepoFromMessage(text);
     if (inferredRepo) conv.gitRepo = inferredRepo;
   }
+  // El primer mensaje de una charla nueva (o cualquiera que quede en cola
+  // detrás de las `maxConcurrent` que ya están corriendo) no tiene todavía
+  // sesión ni archivo .jsonl — s.lastActivity en /tree queda null hasta que
+  // el CLI arranca de verdad. Sin este fallback, /tree ordena por
+  // lastActivity desc y la charla se va al fondo de la lista (después de
+  // TODAS las demás, con actividad real) mientras espera turno: para el
+  // usuario "no aparece" hasta que se libera un slot y el proceso arranca.
+  conv.lastMessageAt = new Date().toISOString();
   meta.save(data, metaFile);
   // Las conversaciones "VPS: <proyecto>" no tienen una carpeta local real —
   // conv.projectDir ahí es solo metadata para agrupar/mostrar, no un cwd válido.

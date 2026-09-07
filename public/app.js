@@ -552,7 +552,20 @@ initChatSwipe();
 history.replaceState({ view: 'list' }, '');
 for (let i = 0; i < 3; i++) history.pushState({ view: 'list-guard' }, '');
 
-let _lastBackPress = 0;
+// _exitArmed reemplaza a una versión vieja basada en "los dos atrás tienen que
+// ser dentro de 600ms" (Date.now() diff) — Diego reportó que a veces el
+// segundo atrás, aunque esperara varios segundos, igual cerraba la app sin
+// mostrar el aviso: esa ventana de tiempo era una fuente más de
+// inconsistencia (se suma a que Android a veces ni le pasa el evento a este
+// handler — el gesto "atrás predictivo" de Android 13+ decide si va a cerrar
+// la app ANTES de que termine el gesto, no después como esperaría este truco
+// de pushState/popstate; eso es un límite real del navegador, no arreglable
+// desde acá). Ahora no hay ventana de tiempo: el primer atrás en Chats con
+// todo cerrado avisa y "arma" la salida; el que sigue, sea inmediato o un
+// minuto después, cierra directo. _exitArmed se desarma solo si mientras
+// tanto pasó otra cosa (se abrió un chat, se cambió de pestaña) — un atrás
+// suelto mucho después de haber hecho otra cosa no debería cerrar de sorpresa.
+let _exitArmed = false;
 let _exiting = false;
 // El swipe hacia la derecha (initChatSwipe, más arriba) ya cierra el panel y
 // dispara el flash por su cuenta antes de llamar a history.back() — solo para
@@ -560,42 +573,56 @@ let _exiting = false;
 // Android no queda "un paso atrasado"). Sin esta bandera, el popstate que
 // dispara ese history.back() volvería a entrar al branch de abajo y, como ya
 // no encuentra la clase 'open' (la sacamos nosotros), lo tomaría como si ya
-// estuviéramos en la lista raíz — pisando el conteo de "doble atrás para salir".
+// estuviéramos en la lista raíz — pisando el estado de "atrás para salir".
 let chatClosedBySwipe = false;
 window.addEventListener('popstate', (e) => {
   if (_exiting) return; // salida en curso — dejamos que el browser cierre
   if (chatClosedBySwipe) { chatClosedBySwipe = false; return; } // ya lo resolvimos nosotros, solo faltaba este pop
-  // Si estábamos en chat: cerrar y re-armar guarda
-  if ($('panel-chat').classList.contains('open')) {
-    $('panel-chat').classList.remove('open');
-    flashConvRow(currentConv);
-    history.pushState({ view: 'list-guard' }, '');
-    return;
-  }
-  // Si hay algún menú/dialog abierto, cerrar y consumir el back
+  // Si hay algún menú/dialog abierto, cerrar y consumir el back — antes de
+  // tocar el chat: un menú de mensaje (click derecho/long-press en una
+  // burbuja) vive DENTRO de un chat abierto, así que tiene que cerrarse
+  // solo a él primero, sin arrastrar también el chat de atrás.
   const searchDlg = $('search-dialog');
   if (searchDlg.open) { searchDlg.close(); history.pushState({ view: 'list-guard' }, ''); return; }
   const ctxMenu = document.querySelector('.ctx-menu');
   if (ctxMenu) { ctxMenu.remove(); history.pushState({ view: 'list-guard' }, ''); return; }
-  // Si estamos en Archivado o Notas: volver a Chats en vez de ofrecer salir
-  if (activePane !== 0) {
-    goToPane(0);
+  // Si había un chat abierto (de Claude, Codex o una libreta de Notas):
+  // cerrarlo y volver a la lista de ESA MISMA pestaña, sin saltar a Chats.
+  // Vuelta atrás del cambio del mismo día: la primera versión saltaba
+  // directo a Chats en un solo paso desde cualquier lado, pero Diego pidió
+  // que estando DENTRO de una charla de Codex, el primer atrás te deje en la
+  // lista de Codex (no en Chats) — recién el atrás siguiente, ya en esa
+  // lista sin nada abierto, pasa a Chats (rama de abajo).
+  if ($('panel-chat').classList.contains('open')) {
+    $('panel-chat').classList.remove('open');
+    flashConvRow(currentConv);
+    _exitArmed = false; // veníamos de otro lado — no cuenta como el "segundo atrás" de salir
     history.pushState({ view: 'list-guard' }, '');
     return;
   }
-  // Estamos en la lista raíz de chats: doble click atrás para salir
-  const now = Date.now();
-  const DOUBLE_CLICK_MS = 600;
-  if (now - _lastBackPress < DOUBLE_CLICK_MS) {
-    // 2do press rápido — salir. Blastear a través de todas las guardas hasta 'list'
+  // Si estamos en Archivado/Codex/Notas sin nada abierto: volver a Chats.
+  if (activePane !== 0) {
+    goToPane(0);
+    _exitArmed = false;
+    history.pushState({ view: 'list-guard' }, '');
+    return;
+  }
+  // Estamos en Chats con nada abierto.
+  if (_exitArmed) {
+    // Ya avisamos la vez pasada — este es el atrás que confirma, sin
+    // ventana de tiempo. Blastear a través de todas las guardas hasta 'list'
     // y dejar que el próximo back (o el mismo, si el browser lo agrupa) cierre el PWA.
     _exiting = true;
     setTimeout(() => { try { history.go(-10); } catch {} }, 0);
+    // Red de seguridad: si por lo que sea esta instancia de JS sigue viva
+    // (Android no cerró la app de verdad — no debería pasar, pero si pasa no
+    // queremos dejar el botón atrás muerto para el resto de la sesión).
+    setTimeout(() => { _exiting = false; _exitArmed = false; }, 2000);
     return;
   }
-  _lastBackPress = now;
+  _exitArmed = true;
   history.pushState({ view: 'list-guard' }, '');
-  toast('Doble click atrás para salir', 'info', 1200);
+  toast('Apretá atrás de nuevo para salir', 'info', 2000);
 });
 
 // ── API ──
@@ -1144,13 +1171,13 @@ function codexSharedRow(c) {
   return div;
 }
 
-async function loadCodexSharedTree() {
+async function loadCodexSharedTree({ skipAvailability = false } = {}) {
   const nav = $('codex-pane');
   // No vaciar el árbol antes del fetch: en desktop queda visible detrás del
   // chat abierto y ese vacío momentáneo se percibía como un reinicio cada vez
   // que seleccionabas o enviabas un mensaje a Codex.
-  await loadCodexAvailability();
-  if (!codexAvailable) {
+  if (!skipAvailability) await loadCodexAvailability();
+  if (!skipAvailability && !codexAvailable) {
     nav.innerHTML = '<div id="empty-state"><p>Codex no está configurado en esta instalación.</p><p>En la PC que ejecuta J.A.R.V.I.S, iniciá sesión con <code>codex login</code> y actualizá esta página.</p></div>';
     return false;
   }
@@ -1341,7 +1368,15 @@ async function selectCodexShared(convId, name, projectDir = '') {
   $('cost-badge').hidden = true;
   $('mic-btn').hidden = true;
   $('attach-btn').hidden = false;
-  $('file-input').accept = 'image/*,text/*,application/*';
+  // Sin audio/video acá, un .mp3 no aparecía ni seleccionable en la galería
+  // del celu — aunque el server (multer, sin fileFilter) y el render de
+  // mensajes (makeFileCard) ya aceptan cualquier extensión desde la
+  // generalización del 2026-08-13, este `accept` seguía filtrando ANTES de
+  // llegar a elegir el archivo. Diego lo pidió para adjuntar un mp3 solo
+  // para guardarlo, no para transcribirlo (eso es /api/transcribe, un flujo
+  // aparte). Mismo `accept` repetido en selectConv() y
+  // createCodexSharedConversation() — 2026-09-07.
+  $('file-input').accept = 'image/*,text/*,application/*,audio/*,video/*';
   clearAttachments();
   $('queued-bar').hidden = true;
   $('last-user-pin').hidden = true;
@@ -1383,7 +1418,7 @@ async function createCodexSharedConversation() {
   $('cost-badge').hidden = true;
   $('mic-btn').hidden = true;
   $('attach-btn').hidden = false;
-  $('file-input').accept = 'image/*,text/*,application/*';
+  $('file-input').accept = 'image/*,text/*,application/*,audio/*,video/*';
   clearAttachments();
   $('queued-bar').hidden = true;
   $('last-user-pin').hidden = true;
@@ -2105,11 +2140,23 @@ async function copyToClipboard(text) {
 
 // Cita el texto en el composer estilo chat: "> línea" por línea, tope de 500
 // caracteres para no inundar el input con una respuesta larga de Claude.
-function quoteIntoComposer(text) {
+// El "> " por sí solo es puro formato visual — nada le decía a Claude que ese
+// bloque es una cita literal de un turno anterior (ni de quién). Se apoyaba
+// en que Claude adivinara por convención de markdown + que el texto coincide
+// con algo real de su propio historial resumido (--resume): funcionaba la
+// mayoría de las veces pero no era una señal explícita. Se agrega una
+// etiqueta entre corchetes (mismo patrón mecánico que ya usa el server para
+// avisos de contexto — ver pendingRewindNotice/compactedSummary en
+// server.js), distinguiendo si se cita algo que dijo Claude o algo que dijo
+// el propio usuario antes. Diego, 2026-09-07.
+function quoteIntoComposer(text, role) {
   const input = $('input');
   let t = text.trim();
   if (t.length > 500) t = t.slice(0, 500) + '…';
-  const quoted = t.split('\n').map(l => '> ' + l).join('\n') + '\n\n';
+  const label = role === 'assistant'
+    ? '[El usuario está citando algo que dijiste vos antes en esta conversación]'
+    : '[El usuario está citando su propio mensaje anterior en esta conversación]';
+  const quoted = label + '\n' + t.split('\n').map(l => '> ' + l).join('\n') + '\n\n';
   input.value = quoted + input.value;
   autoResize(input);
   if (currentConv) drafts.set(currentConv, input.value);
@@ -2168,9 +2215,35 @@ function enterSelectionMode(el) {
     sel.addRange(range);
   } catch { /* Selection API no disponible: igual queda seleccionable a mano */ }
 
+  // Si arrastrás un handle nativo hasta que el otro extremo de la selección
+  // queda fuera de la pantalla (scrolleando para seguir el dedo), a veces el
+  // navegador "pierde" ese ancla y reconstruye la selección desde otro punto
+  // — llegó a agarrar mensajes anteriores enteros en vez de solo esta burbuja
+  // (reportado por Diego, 2026-09-07). Como el diseño ya obliga a que la
+  // selección quede adentro de UNA sola burbuja (las demás tienen
+  // user-select:none), lo forzamos: si algún extremo se escapa de textEl, lo
+  // recortamos de vuelta al borde de textEl más cercano.
+  const clampSelection = () => {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const range = sel.getRangeAt(0);
+    const startOut = !textEl.contains(range.startContainer);
+    const endOut = !textEl.contains(range.endContainer);
+    if (!startOut && !endOut) return;
+    const clamped = document.createRange();
+    if (startOut) clamped.setStart(textEl, 0);
+    else clamped.setStart(range.startContainer, range.startOffset);
+    if (endOut) clamped.setEnd(textEl, textEl.childNodes.length);
+    else clamped.setEnd(range.endContainer, range.endOffset);
+    sel.removeAllRanges();
+    sel.addRange(clamped);
+  };
+  document.addEventListener('selectionchange', clampSelection);
+
   const exit = () => {
     el.classList.remove('selecting');
     document.removeEventListener('pointerdown', onOutside, true);
+    document.removeEventListener('selectionchange', clampSelection);
     if (_endSelectionMode === exit) _endSelectionMode = null;
   };
   // Tocar fuera de la burbuja sale del modo selección. Adentro no: así se
@@ -2205,7 +2278,7 @@ function showMsgMenu(x, y, ctx) {
     if (action === 'copy') copyToClipboard(ctx.text);
     else if (action === 'select') enterSelectionMode(ctx.el);
     else if (action === 'multiselect') enterMultiSelectMode(ctx.el);
-    else if (action === 'quote') quoteIntoComposer(ctx.text);
+    else if (action === 'quote') quoteIntoComposer(ctx.text, ctx.role);
     else if (action === 'rewind') doRewind(ctx);
   };
 
@@ -3440,16 +3513,31 @@ function openStream(convId) {
 // mientras no mirabas. Solo si estuvo oculta un rato, para no recargar el
 // historial cada vez que cambiás de ventana en la compu.
 let hiddenSince = 0;
+// loadMessages() ya sabe preservar el scroll (prevTop, ver su definición) —
+// el problema reportado por Diego es que, en un cambio de app largo, el
+// navegador puede resetear messagesEl.scrollTop solo (layout invalidado de
+// una pestaña en background) ANTES de que este handler llegue a leerlo, así
+// que loadMessages() terminaba "preservando" fielmente un 0 que ya venía
+// mal. Guardamos el scroll real al ocultarnos (todavía no se corrompió) y lo
+// reponemos al volver, justo antes de que loadMessages() lea su propio
+// prevTop — así lee el valor bueno en vez del que el navegador haya dejado.
+let hiddenScrollTop = null;
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') { hiddenSince = Date.now(); return; }
+  if (document.visibilityState === 'hidden') {
+    hiddenSince = Date.now();
+    hiddenScrollTop = currentConv ? messagesEl.scrollTop : null;
+    return;
+  }
   const wasHiddenFor = hiddenSince ? Date.now() - hiddenSince : 0;
   hiddenSince = 0;
-  if (wasHiddenFor < 3000) return;
+  if (wasHiddenFor < 3000) { hiddenScrollTop = null; return; }
   if (currentConv) {
+    if (hiddenScrollTop != null) messagesEl.scrollTop = hiddenScrollTop;
     openStream(currentConv);
     loadMessages(currentConv);
     refreshVisibleTrees();
   }
+  hiddenScrollTop = null;
   // Mismo mecanismo que arriba pero para la pestaña Codex — mismo problema de
   // stream/túnel muerto al volver del background.
   if (currentCodexConv && currentCodexConv.id) {
@@ -3520,7 +3608,7 @@ async function selectConv(convId, name, model, lastModel, projectDir) {
   $('model-select').hidden = false;
   $('mic-btn').hidden = false;
   $('attach-btn').hidden = false;
-  $('file-input').accept = 'image/*,text/*,application/*';
+  $('file-input').accept = 'image/*,text/*,application/*,audio/*,video/*';
   exitMultiSelectMode(); // los elementos marcados quedan del chat anterior, no tiene sentido arrastrarlos
   if (currentConv) drafts.set(currentConv, $('input').value);
   currentConv = convId;
@@ -4287,9 +4375,15 @@ async function safeLoadTree() {
 function pollTrees() {
   safeLoadTree();
   if (archivedPaneLoaded) safeLoadArchivedTree();
-  // Codex puede responder mientras estÃ¡s en Chats/Notas. Consultamos su
-  // metadata liviana para encender el aviso de su pestaÃ±a sin abrirla.
-  codexApi('/tree').then(({ unreadTotal }) => setPaneUnread('2', unreadTotal > 0)).catch(() => {});
+  // Si ya se cargó Codex, también refrescamos sus filas. Antes solo se
+  // consultaba unreadTotal: el ping-dot quedaba congelado en el DOM aunque el
+  // backend hubiese pasado la conversación a idle y marcado unread.
+  if (codexTreeLoaded) {
+    loadCodexSharedTree({ skipAvailability: true }).catch(() => {});
+  } else {
+    // Todavía no se abrió la pestaña: alcanza con encender su aviso liviano.
+    codexApi('/tree').then(({ unreadTotal }) => setPaneUnread('2', unreadTotal > 0)).catch(() => {});
+  }
 }
 loadAccounts().then(() => safeLoadTree());
 loadCodexAvailability();
