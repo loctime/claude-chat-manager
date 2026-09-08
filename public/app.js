@@ -14,7 +14,7 @@ let archivedTotal = 0;
 let archivedTreeLimit = 100;
 let archivedTreeHasMore = false;
 let archivedTreeTotal = 0;
-let activePane = 0; // 0=chats 1=archived 2=codex 3=notas
+let activePane = 0; // 0=chats 1=archived 2=codex 3=notas 4=sala
 // Etiqueta de "proyecto" activa (filtro del sidebar) — '' = todos, '__none__' =
 // sin etiquetar, o el nombre elegido. Persiste entre recargas/dispositivos vía
 // localStorage porque es justo lo que resuelve "no veo dónde estoy parado".
@@ -24,6 +24,14 @@ let notebookListLoaded = false;
 let notebooks = [];
 let currentNotebook = null; // {id, name} de la libreta abierta, o null si estamos en la lista
 let notesData = [];
+let roomListLoaded = false;
+let rooms = [];
+let currentRoom = null; // {id, name} de la sala abierta, o null si estamos en la lista
+let roomMessages = [];
+// Refleja si la última llamada a /api/sala/* funcionó — controla el banner
+// "sin conexión con la sala" y si se puede mandar un mensaje. Arranca en
+// true (optimista) para no mostrar el banner antes de la primera carga.
+let salaOnline = true;
 
 function noteTimeLabel(ts) {
   return new Date(ts).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
@@ -227,6 +235,126 @@ async function openNotebook(id, name) {
   openChat();
   try { await loadNotes(); }
   catch (err) { toast('No se pudieron cargar las notas: ' + err.message); }
+}
+
+// ── Sala: lista de salas ──
+function roomElement(room) {
+  const div = document.createElement('div');
+  div.className = 'conv notebook-row';
+  div.innerHTML = `
+    <div class="conv-avatar">${avatarChar(room.name)}</div>
+    <div class="conv-body">
+      <div class="name"><span class="conv-name-text"></span></div>
+      <div class="sub"><span class="conv-date"></span></div>
+    </div>
+  `;
+  div.querySelector('.conv-name-text').textContent = room.name;
+  div.querySelector('.conv-date').textContent = room.lastActivity
+    ? new Date(room.lastActivity).toLocaleString('es', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+    : 'Sin mensajes todavía';
+  div.onclick = () => openRoom(room.id, room.name);
+  return div;
+}
+
+function renderRoomList() {
+  const nav = $('room-list');
+  nav.innerHTML = '';
+  if (rooms.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'notes-empty';
+    empty.textContent = 'No hay salas todavía — creá una con el botón + de arriba.';
+    nav.appendChild(empty);
+    return;
+  }
+  for (const room of rooms) nav.appendChild(roomElement(room));
+}
+
+async function loadRoomList() {
+  const { rooms: list } = await api('/sala/rooms');
+  rooms = list;
+  renderRoomList();
+}
+
+async function safeLoadRoomList() {
+  try { await loadRoomList(); }
+  catch { /* noop: polling de fondo, se autocura en el próximo tick */ }
+}
+
+// ── Sala: abrir/cerrar una sala, reusando el panel/overlay del chat ──
+function showSalaView(show) {
+  $('chat-header').hidden = show;
+  $('messages-wrap').hidden = show;
+  $('composer-attachments').hidden = show;
+  $('composer').hidden = show;
+  $('sala-view').hidden = !show;
+}
+
+function setSalaOnline(online) {
+  salaOnline = online;
+  $('sala-offline-banner').hidden = online;
+  $('sala-send').disabled = !online;
+}
+
+function renderRoomMessages() {
+  const wrap = $('sala-messages');
+  wrap.innerHTML = '';
+  for (const m of roomMessages) {
+    const div = document.createElement('div');
+    div.className = 'note-entry'; // reusa el estilo ya definido para entradas de Notas
+    div.innerHTML = `<div class="note-author"></div><div class="note-text"></div>`;
+    div.querySelector('.note-author').textContent = m.author;
+    div.querySelector('.note-text').textContent = m.text;
+    wrap.appendChild(div);
+  }
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+async function loadRoomMessages() {
+  const { messages } = await api(`/sala/rooms/${currentRoom.id}/messages`);
+  roomMessages = messages;
+  renderRoomMessages();
+}
+
+async function safeLoadRoomMessages() {
+  if (!currentRoom) return;
+  try { await loadRoomMessages(); setSalaOnline(true); }
+  // Falla silenciosa en el toast (es polling de fondo) pero SÍ actualiza el
+  // banner — a diferencia de las notas, acá "no se pudo" bloquea mandar
+  // mensajes (mandar sin el contexto de lo que dijeron los demás no tiene
+  // sentido, ver spec sección 4).
+  catch { setSalaOnline(false); }
+}
+
+async function openRoom(id, name) {
+  currentRoom = { id, name };
+  $('sala-title').textContent = name;
+  roomMessages = [];
+  renderRoomMessages();
+  showSalaView(true);
+  openChat();
+  try { await loadRoomMessages(); setSalaOnline(true); }
+  catch (err) { setSalaOnline(false); toast('No se pudieron cargar los mensajes de la sala: ' + err.message); }
+}
+
+async function sendRoomMessage() {
+  if (!salaOnline) return; // el botón ya está disabled, pero Enter en el textarea igual dispara este handler
+  const input = $('sala-input');
+  const text = input.value.trim();
+  if (!text || !currentRoom) return;
+  input.value = '';
+  autoResize(input);
+  try {
+    await api(`/sala/rooms/${currentRoom.id}/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    await loadRoomMessages();
+  } catch (err) {
+    toast('No se pudo mandar el mensaje: ' + err.message);
+    input.value = text; // no perder lo escrito si falló
+    autoResize(input);
+  }
 }
 
 // El botón "+" ya no crea la libreta al toque — abre este borrador (mismo
@@ -1459,6 +1587,16 @@ async function goToPane(index) {
       notebookListLoaded = true;
     } catch (err) {
       toast('No se pudieron cargar las libretas: ' + err.message);
+      if (myGeneration === paneNavGeneration) paneNavTarget = activePane;
+      return;
+    }
+  }
+  if (index === 4 && !roomListLoaded) {
+    try {
+      await loadRoomList();
+      roomListLoaded = true;
+    } catch (err) {
+      toast('No se pudieron cargar las salas: ' + err.message);
       if (myGeneration === paneNavGeneration) paneNavTarget = activePane;
       return;
     }
@@ -4233,6 +4371,22 @@ $('new-conv').onclick = async () => {
       $('input').focus();
       return;
     }
+    if (activePane === 4) {
+      // A diferencia de Notas (libreta anónima con auto-nombre), una sala
+      // necesita nombre para existir en el servicio del VPS — no hay
+      // concepto de "sala sin nombre" que crear después.
+      const name = (prompt('Nombre de la sala:') || '').trim();
+      if (!name) return;
+      const room = await api('/sala/rooms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      rooms.push(room);
+      renderRoomList();
+      await openRoom(room.id, room.name);
+      return;
+    }
     // Si hay un proyecto filtrado en la barra, la charla nueva nace ya
     // etiquetada con ese proyecto (evita el paso extra de asignarlo a mano).
     const newConvProject = activeProjectFilter && activeProjectFilter !== '__none__' ? activeProjectFilter : undefined;
@@ -4886,6 +5040,24 @@ $('notes-composer').addEventListener('submit', async e => {
   }
 });
 
+// ── Sala: composer, back y polling ──
+$('sala-back-btn').onclick = closeChat;
+
+$('sala-input').addEventListener('input', () => autoResize($('sala-input')));
+$('sala-input').addEventListener('keydown', e => {
+  if (isTouchDevice) return;
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    $('sala-composer').requestSubmit();
+  }
+});
+
+$('sala-composer').addEventListener('submit', e => {
+  e.preventDefault();
+  if ($('sala-view').hidden) return; // en la lista, nada que mandar
+  sendRoomMessage();
+});
+
 // ── Notas: adjuntar archivos ──
 // Mismo problema ya resuelto para el composer de chat y para la v1 de Notas:
 // un File que sale del picker de galería del celu es un handle a content://
@@ -4981,5 +5153,22 @@ document.addEventListener('visibilitychange', () => {
   } else {
     pollNotesPane();
     notesPollTimer = setInterval(pollNotesPane, 5000);
+  }
+});
+
+// ── Sala: polling — mismo criterio que pollNotesPane/notesPollTimer arriba ──
+function pollSalaPane() {
+  if (activePane !== 4) return;
+  safeLoadRoomList();
+  safeLoadRoomMessages(); // no-op si no hay sala abierta (currentRoom null)
+}
+
+let salaPollTimer = setInterval(pollSalaPane, 5000);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearInterval(salaPollTimer);
+  } else {
+    pollSalaPane();
+    salaPollTimer = setInterval(pollSalaPane, 5000);
   }
 });
