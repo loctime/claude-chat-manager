@@ -22,6 +22,8 @@ const codexScanner = require('./codex-scanner');
 const searchIndex = require('./search-index');
 const { getReplySuggestions } = require('./groq-suggest');
 const gitSync = require('./git-sync');
+const salaClient = require('./sala-client');
+const { buildContextBlock } = require('./sala-context');
 
 const IS_WIN = process.platform === 'win32';
 // WSL: Linux corriendo dentro de Windows (kernel expone "microsoft" en
@@ -69,6 +71,20 @@ function getUserName() {
 function getGroqApiKey() {
   const key = (config.load().groqApiKey || '').trim();
   return key || process.env.GROQ_API_KEY || '';
+}
+
+// URL y token del servicio sala-jarvis (VPS) — mismo patrón de prioridad que
+// getGroqApiKey(): config guardada en Configuración > env var > vacío. Sin
+// salaUrl configurada, la pestaña Sala se muestra pero avisa que falta
+// configurar (ver /api/sala/rooms más abajo).
+function getSalaUrl() {
+  const url = (config.load().salaUrl || '').trim();
+  return url || process.env.SALA_URL || '';
+}
+
+function getSalaToken() {
+  const token = (config.load().salaToken || '').trim();
+  return token || process.env.SALA_TOKEN || '';
 }
 
 // Versión mostrada en la pantalla de Configuración. Se lee de package.json
@@ -270,6 +286,8 @@ app.get('/api/accounts', (req, res) => {
     appColor: getAppColor(),
     userName: getUserName(),
     groqApiKeySet: !!getGroqApiKey(),
+    salaUrl: getSalaUrl(),
+    salaTokenSet: !!getSalaToken(),
   });
 });
 
@@ -427,6 +445,16 @@ app.patch('/api/config', (req, res) => {
     if (key) cfg.groqApiKey = key;
     else delete cfg.groqApiKey; // vacío = apagar la feature de sugerencias
   }
+  if ('salaUrl' in req.body) {
+    const url = (req.body.salaUrl || '').trim();
+    if (url) cfg.salaUrl = url;
+    else delete cfg.salaUrl;
+  }
+  if ('salaToken' in req.body) {
+    const token = (req.body.salaToken || '').trim();
+    if (token) cfg.salaToken = token;
+    else delete cfg.salaToken; // vacío = desconfigurar (la pestaña Sala avisa)
+  }
   config.save(cfg);
   const appColor = getAppColor();
   const iconOk = ('appColor' in req.body) ? regenerateIconsSafe(appColor) : true;
@@ -437,6 +465,8 @@ app.patch('/api/config', (req, res) => {
     iconOk,
     userName: getUserName(),
     groqApiKeySet: !!getGroqApiKey(),
+    salaUrl: getSalaUrl(),
+    salaTokenSet: !!getSalaToken(),
   });
 });
 
