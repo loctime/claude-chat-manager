@@ -10,3 +10,5 @@ CLAUDE.local.md
 /test/e2e/.e2e-state.json
 /.playwright-cli/
 .worktrees/
+sala-jarvis/node_modules/
+sala-jarvis/data/
