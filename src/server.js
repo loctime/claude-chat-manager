@@ -689,6 +689,7 @@ const runner = new Runner({ selfHost: HOST, selfPort: PORT });
 const sseClients = new Map(); // convId → Set<res>
 
 const CODEX_META_FILE = path.join(os.homedir(), '.claude', 'session-manager', 'codex-meta.json');
+const SALA_META_FILE = path.join(os.homedir(), '.claude', 'session-manager', 'sala-meta.json');
 const codexRunner = new CodexRunner({ selfHost: HOST, selfPort: PORT });
 const codexSseClients = new Map(); // convId → Set<res>
 const CODEX_TTS_SCRIPT = path.join(os.homedir(), '.claude', 'scripts', 'speak-response.py');
@@ -2359,6 +2360,108 @@ app.get('/api/codex/conversations/:id/stream', (req, res) => {
     set.delete(res);
     if (set.size === 0) codexSseClients.delete(convId);
   });
+});
+
+// ── Sala compartida (Jarvis ↔ FerStark) ──
+// Cada "sala" es una conversación de Claude local normal (mismo runner,
+// mismo --resume) — lo único distinto es que antes de cada turno se le
+// antepone lo que se dijo en la sala compartida desde la última vez que
+// esta instancia miró, y al terminar se publica la respuesta de vuelta.
+// Ver docs/superpowers/specs/2026-09-07-sala-compartida-design.md.
+
+// Une el convId local (una sesión de Claude de ESTA instancia) con el
+// roomId remoto (la sala en el VPS, compartida). 1 sala ↔ 1 conv local por
+// instancia — se crea la primera vez que se manda un mensaje a esa sala.
+function resolveOrCreateSalaConv(roomId) {
+  const data = meta.load(SALA_META_FILE);
+  let convId = Object.keys(data.conversations).find(id => data.conversations[id].roomId === roomId);
+  if (!convId) {
+    convId = crypto.randomUUID();
+    data.conversations[convId] = { roomId, contextCursor: 0, createdAt: new Date().toISOString() };
+    meta.save(data, SALA_META_FILE);
+  }
+  return { convId, conv: data.conversations[convId] };
+}
+
+app.get('/api/sala/rooms', async (req, res) => {
+  const salaUrl = getSalaUrl(), salaToken = getSalaToken();
+  if (!salaUrl || !salaToken) return res.status(400).json({ error: 'sala no configurada — completá la URL y el token en Configuración' });
+  try {
+    const rooms = await salaClient.listRooms({ baseUrl: salaUrl, token: salaToken });
+    const data = meta.load(SALA_META_FILE);
+    const withConv = rooms.map(r => {
+      const convId = Object.keys(data.conversations).find(id => data.conversations[id].roomId === r.id) || null;
+      return { ...r, convId };
+    });
+    res.json({ rooms: withConv });
+  } catch (err) {
+    res.status(502).json({ error: 'no se pudo contactar la sala: ' + err.message });
+  }
+});
+
+app.post('/api/sala/rooms', async (req, res) => {
+  const salaUrl = getSalaUrl(), salaToken = getSalaToken();
+  if (!salaUrl || !salaToken) return res.status(400).json({ error: 'sala no configurada — completá la URL y el token en Configuración' });
+  const name = (req.body.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'nombre vacío' });
+  try {
+    const room = await salaClient.createRoom({ baseUrl: salaUrl, token: salaToken, name });
+    res.status(201).json(room);
+  } catch (err) {
+    res.status(502).json({ error: 'no se pudo crear la sala: ' + err.message });
+  }
+});
+
+app.get('/api/sala/rooms/:id/messages', async (req, res) => {
+  const salaUrl = getSalaUrl(), salaToken = getSalaToken();
+  if (!salaUrl || !salaToken) return res.status(400).json({ error: 'sala no configurada — completá la URL y el token en Configuración' });
+  try {
+    // Para MOSTRARLE la sala al humano siempre se trae desde el principio
+    // (since=0) — es una lectura completa para renderizar, independiente
+    // del contextCursor que trackea qué ya se le dio de comer a Claude.
+    const { messages } = await salaClient.fetchMessages({ baseUrl: salaUrl, token: salaToken, roomId: req.params.id, since: 0 });
+    res.json({ messages });
+  } catch (err) {
+    res.status(502).json({ error: 'no se pudo leer la sala: ' + err.message });
+  }
+});
+
+app.post('/api/sala/rooms/:id/message', async (req, res) => {
+  const salaUrl = getSalaUrl(), salaToken = getSalaToken();
+  if (!salaUrl || !salaToken) return res.status(400).json({ error: 'sala no configurada — completá la URL y el token en Configuración' });
+  const text = (req.body.text || '').trim();
+  if (!text) return res.status(400).json({ error: 'mensaje vacío' });
+  const roomId = req.params.id;
+  const { convId, conv } = resolveOrCreateSalaConv(roomId);
+  if (runner.isBusy(convId)) return res.status(409).json({ error: 'esa sala ya está procesando un mensaje' });
+
+  try {
+    // 1. Traer lo nuevo que se dijeron los demás desde la última vez.
+    const { messages: newFromOthers, nextCursor } = await salaClient.fetchMessages({
+      baseUrl: salaUrl, token: salaToken, roomId, since: conv.contextCursor,
+    });
+    // 2. Publicar YA el mensaje del humano en la sala, para que el otro lado
+    //    lo vea aunque esta instancia tarde en responder.
+    const { total: totalAfterOwn } = await salaClient.postMessage({
+      baseUrl: salaUrl, token: salaToken, roomId, text: `${getUserName()}: ${text}`,
+    });
+    // 3. El cursor avanza más allá de lo leído en (1) Y de lo que uno mismo
+    //    acaba de publicar en (2) — nada de eso hay que re-inyectárselo a
+    //    Claude la próxima vez, ya está en su sesión local vía --resume.
+    const data = meta.load(SALA_META_FILE);
+    data.conversations[convId].contextCursor = Math.max(nextCursor, totalAfterOwn);
+    meta.save(data, SALA_META_FILE);
+
+    const contextBlock = buildContextBlock(newFromOthers);
+    const outgoing = contextBlock
+      ? `${contextBlock}\n\n[Mensaje actual de ${getUserName()}]\n${text}`
+      : text;
+
+    runner.send({ convId, sessionId: conv.currentSessionId, cwd: accountHomeDir(activeAccount), text: outgoing, account: activeAccount });
+    res.status(202).json({ queued: true });
+  } catch (err) {
+    res.status(502).json({ error: 'no se pudo publicar en la sala: ' + err.message });
+  }
 });
 
 const server = app.listen(PORT, HOST, () => {
