@@ -809,6 +809,14 @@ runner.on('event', ({ convId, event, account }) => {
     if (data.conversations[convId] && data.conversations[convId].currentSessionId !== sid) {
       meta.advanceSession(data, convId, sid);
       meta.save(data, metaFile);
+    } else {
+      // No está en el store de la cuenta — puede ser una conversación de
+      // Sala, que vive en SALA_META_FILE en vez de accountMetaFile.
+      const salaData = meta.load(SALA_META_FILE);
+      if (salaData.conversations[convId] && salaData.conversations[convId].currentSessionId !== sid) {
+        meta.advanceSession(salaData, convId, sid);
+        meta.save(salaData, SALA_META_FILE);
+      }
     }
   }
   // Línea final del job — a veces trae rate_limits de regalo (ver
@@ -821,6 +829,35 @@ runner.on('event', ({ convId, event, account }) => {
   }
   broadcast(convId, { kind: 'claude', event });
 });
+
+// Si el turno que acaba de terminar era una conversación de Sala, publica
+// la respuesta final de vuelta al VPS y avanza el cursor local — así la
+// próxima vez que ESTA instancia hable no se re-inyecta a sí misma lo que
+// acaba de decir. No hace nada (silencioso, solo un log) si el convId no es
+// de Sala, si el turno fue cancelado, o si sala no está configurada — mismo
+// criterio de "nunca romper el chat normal" que ya usa maybeGenerateTitle.
+async function publishSalaReplyIfNeeded(convId, account, cancelled) {
+  if (cancelled) return;
+  const data = meta.load(SALA_META_FILE);
+  const conv = data.conversations[convId];
+  if (!conv) return; // no es una conversación de Sala
+  const salaUrl = getSalaUrl(), salaToken = getSalaToken();
+  if (!salaUrl || !salaToken) return;
+  if (!conv.currentSessionId) return; // el turno no llegó a generar sesión (raro, pero posible si falló antes de arrancar)
+
+  const file = scanner.findSessionFile(conv.currentSessionId, accountProjectsDir(account));
+  if (!file) return;
+  const messages = scanner.getMessagesIncremental(file).filter(m => m.role === 'assistant');
+  const last = messages[messages.length - 1];
+  if (!last || !last.text) return;
+
+  const { total } = await salaClient.postMessage({ baseUrl: salaUrl, token: salaToken, roomId: conv.roomId, text: `${getAppName()}: ${last.text}` });
+  const fresh = meta.load(SALA_META_FILE);
+  if (fresh.conversations[convId]) {
+    fresh.conversations[convId].contextCursor = Math.max(fresh.conversations[convId].contextCursor || 0, total);
+    meta.save(fresh, SALA_META_FILE);
+  }
+}
 
 runner.on('status', s => {
   broadcast(s.convId, { kind: 'status', ...s });
@@ -849,6 +886,10 @@ runner.on('status', s => {
         meta.save(data, metaFile);
       }
     }
+  }
+  if (s.status === 'idle' && s.code === 0) {
+    publishSalaReplyIfNeeded(s.convId, s.account || activeAccount, s.cancelled)
+      .catch(err => console.error('[sala] no se pudo publicar la respuesta:', err.message));
   }
 });
 
