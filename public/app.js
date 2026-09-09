@@ -534,6 +534,28 @@ function setSalaOnline(online) {
 // sus propios nombres. Es una heurística de texto, no un campo del
 // protocolo — si un mensaje real arrancara con "Algo: " se malinterpreta
 // el label, pero el contenido no se pierde (caso raro para 2 personas).
+// Un color fijo por persona (no por instancia/rol) — así Diego, Fernando,
+// Jarvis y FerStark se distinguen a simple vista aunque los cuatro terminen
+// mezclados en la misma sala. Se asigna por orden de PRIMERA aparición
+// dentro del historial de la sala (no por hash del nombre — con solo 4
+// colores y 4 nombres reales, un hash mod 4 choca demasiado seguido, ~91%
+// de probabilidad con el paradojo del cumpleaños). Diego y Fernando ven
+// SIEMPRE el mismo color para la misma persona sin coordinar nada entre
+// las dos instancias, porque los dos calculan esto sobre el MISMO
+// historial ordenado que devuelve el servicio del VPS. Si algún día hay
+// más de 4 voces en una sala, el 5to nombre reusa el color del 1ro — la
+// sala está pensada para 2 personas + sus 2 agentes, no para más.
+const ROOM_AUTHOR_COLORS = ['#f2b134', '#4dabf7', '#f472b6', '#a78bfa'];
+function assignAuthorColors(messages) {
+  const map = new Map();
+  for (const m of messages) {
+    const match = m.text.match(/^([^:\n]{1,40}): /);
+    const author = match ? match[1] : m.author;
+    if (!map.has(author)) map.set(author, ROOM_AUTHOR_COLORS[map.size % ROOM_AUTHOR_COLORS.length]);
+  }
+  return map;
+}
+
 function roomMessageBubble(m) {
   const match = m.text.match(/^([^:\n]{1,40}): ([\s\S]*)$/);
   const author = match ? match[1] : m.author;
@@ -552,9 +574,10 @@ function renderRoomMessages() {
     wrap.appendChild(empty);
     return;
   }
+  const colors = assignAuthorColors(roomMessages);
   for (const m of roomMessages) {
     const { author, text, role } = roomMessageBubble(m);
-    addMsg(role, text, { container: wrap, composerId: 'sala-input', author, ts: m.ts });
+    addMsg(role, text, { container: wrap, composerId: 'sala-input', author, authorColor: colors.get(author), ts: m.ts });
   }
 }
 
@@ -3512,6 +3535,7 @@ function addMsg(role, text, opts = {}) {
       const authorEl = document.createElement('div');
       authorEl.className = 'msg-author';
       authorEl.textContent = opts.author;
+      if (opts.authorColor) authorEl.style.color = opts.authorColor;
       div.appendChild(authorEl);
     }
 
