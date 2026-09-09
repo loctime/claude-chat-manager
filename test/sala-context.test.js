@@ -22,6 +22,30 @@ test('varios mensajes quedan uno debajo del otro, en orden', () => {
   );
 });
 
+test('usa el nombre real del prefijo "Nombre: texto", no el author (que es la instancia, no quién habló)', () => {
+  // Diego reportó el bug real: Fernando (humano) y FerStark (agente) publican
+  // los dos con author:"FerStark" (misma instancia/token) — sin esto, a
+  // Claude le llegaban ambos como "[FerStark dijo:]", indistinguibles.
+  const block = buildContextBlock([
+    { author: 'FerStark', text: 'Vos: hola aca estamos con ferstark!', ts: 1, kind: 'human' },
+    { author: 'FerStark', text: 'FerStark: ¡Hola! ¿En qué te ayudo?', ts: 2, kind: 'agent' },
+  ]);
+  assert.equal(
+    block,
+    '[Vos (persona) dijo:]\nhola aca estamos con ferstark!\n\n[FerStark (agente de IA) dijo:]\n¡Hola! ¿En qué te ayudo?'
+  );
+});
+
+test('sin kind (mensajes viejos, de antes de que existiera el campo) no agrega la aclaración de rol', () => {
+  const block = buildContextBlock([{ author: 'Jarvis', text: 'Diego: hola', ts: 1 }]);
+  assert.equal(block, '[Diego dijo:]\nhola');
+});
+
+test('si el texto no tiene el prefijo "Nombre: " (formato viejo o roto), cae al author tal cual', () => {
+  const block = buildContextBlock([{ author: 'FerStark', text: 'texto sin prefijo de nombre', ts: 1, kind: 'human' }]);
+  assert.equal(block, '[FerStark (persona) dijo:]\ntexto sin prefijo de nombre');
+});
+
 // ── normalizeMentionName / extractMentions / isMentioned ──
 
 test('normalizeMentionName reduce a minúsculas y saca todo lo que no sea letra/número', () => {

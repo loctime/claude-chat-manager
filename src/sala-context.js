@@ -4,10 +4,26 @@
 // las etiquetas de "Citar" en app.js): instrucciones/contexto de tono se
 // pierden en el system prompt, pero un marcador mecánico tipo "[Fernando
 // dijo:]" se respeta. Ver CLAUDE.local.md, "Modos de respuesta".
+//
+// m.author (quién lo publicó en sala-jarvis, según el token) identifica la
+// INSTANCIA — "Jarvis" o "FerStark" — NO a quién habló de verdad: un
+// mensaje humano y la respuesta del agente de ESA MISMA instancia comparten
+// el mismo author. Por eso acá se extrae el nombre real del prefijo
+// mecánico "Nombre: texto" que ya viene en el texto (mismo que arma
+// server.js al publicar) — sin esto, Fernando y FerStark le llegaban a
+// Claude con la MISMA etiqueta "[FerStark dijo:]" y no había forma de
+// distinguir a la persona del agente. De paso, se aclara el rol (persona/
+// agente de IA) usando kind cuando está disponible.
 function buildContextBlock(messages) {
   if (!messages || messages.length === 0) return '';
   return messages
-    .map(m => `[${m.author} dijo:]\n${m.text}`)
+    .map(m => {
+      const match = m.text.match(/^([^:\n]{1,40}): ([\s\S]*)$/);
+      const speaker = match ? match[1] : m.author;
+      const text = match ? match[2] : m.text;
+      const role = m.kind === 'human' ? ' (persona)' : m.kind === 'agent' ? ' (agente de IA)' : '';
+      return `[${speaker}${role} dijo:]\n${text}`;
+    })
     .join('\n\n');
 }
 
