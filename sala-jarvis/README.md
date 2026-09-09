@@ -32,7 +32,7 @@ diseño completo en `../docs/superpowers/specs/2026-09-07-sala-compartida-design
    ```
    sala.controlapps.ar {
        encode gzip
-       reverse_proxy localhost:3410
+       reverse_proxy localhost:3420
        log { output file /var/log/caddy/sala.controlapps.ar.log }
    }
    ```
