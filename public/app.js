@@ -637,6 +637,10 @@ let USER_NAME = 'Vos';
 // Si hay una API key de Groq guardada en el server (nunca se manda la key en
 // sí al cliente, solo este booleano — ver /api/accounts y /api/config).
 let GROQ_KEY_SET = false;
+// Sala compartida: la URL no es secreta (se muestra tal cual, como appName),
+// el token sí (mismo patrón que GROQ_KEY_SET — nunca vuelve del server).
+let SALA_URL = '';
+let SALA_TOKEN_SET = false;
 
 const $ = id => document.getElementById(id);
 const messagesEl = $('messages');
@@ -645,12 +649,14 @@ const messagesEl = $('messages');
 async function loadAccounts() {
   try {
     const r = await fetch('/api/accounts');
-    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName, appColor, userName, groqApiKeySet } = await r.json();
+    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName, appColor, userName, groqApiKeySet, salaUrl, salaTokenSet } = await r.json();
     activeAccount = active;
     if (appName) { APP_NAME = appName; updateGlobalBusyIndicator(); }
     if (appColor) APP_COLOR = appColor;
     if (userName) USER_NAME = userName;
     GROQ_KEY_SET = !!groqApiKeySet;
+    SALA_URL = salaUrl || '';
+    SALA_TOKEN_SET = !!salaTokenSet;
     // Botón "ir a la otra instancia": elige URL local si estamos en 127.0.0.1/localhost,
     // pública en cualquier otro caso (celu vía Cloudflare tunnel).
     const sw = $('account-switch');
@@ -5070,6 +5076,9 @@ function openSettings() {
   // accidente, y updateGroqKeyStatus() avisa si ya hay una guardada.
   $('cfg-groq-key').value = '';
   updateGroqKeyStatus();
+  $('cfg-sala-url').value = SALA_URL;
+  $('cfg-sala-token').value = '';
+  updateSalaTokenStatus();
   $('settings-dialog').showModal();
 }
 
@@ -5079,6 +5088,11 @@ function openSettings() {
 function updateGroqKeyStatus() {
   $('cfg-groq-key').placeholder = GROQ_KEY_SET ? '•••••••• (guardada)' : 'gsk_...';
   $('cfg-groq-key-status').hidden = !GROQ_KEY_SET;
+}
+
+function updateSalaTokenStatus() {
+  $('cfg-sala-token').placeholder = SALA_TOKEN_SET ? '•••••••• (guardado)' : '•••';
+  $('cfg-sala-token-status').hidden = !SALA_TOKEN_SET;
 }
 
 $('settings-btn').onclick = openSettings;
@@ -5149,6 +5163,40 @@ $('cfg-groq-key').onchange = async e => {
     toast(GROQ_KEY_SET ? 'Key guardada' : 'Key borrada — respuestas sugeridas apagadas', 'info', 2500);
   } catch (err) {
     toast('No se pudo guardar la key de Groq: ' + err.message);
+  }
+};
+
+// Sala compartida: URL + token, mismo patrón server-side que appName/groqApiKey.
+$('cfg-sala-url').onchange = async e => {
+  const url = e.target.value.trim();
+  try {
+    const { salaUrl } = await api('/config', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ salaUrl: url }),
+    });
+    SALA_URL = salaUrl || '';
+    e.target.value = SALA_URL;
+    toast('URL de la sala guardada', 'info', 2000);
+  } catch (err) {
+    toast('No se pudo guardar la URL de la sala: ' + err.message);
+  }
+};
+
+$('cfg-sala-token').onchange = async e => {
+  const token = e.target.value.trim();
+  try {
+    const { salaTokenSet } = await api('/config', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ salaToken: token }),
+    });
+    SALA_TOKEN_SET = !!salaTokenSet;
+    e.target.value = '';
+    updateSalaTokenStatus();
+    toast(SALA_TOKEN_SET ? 'Token guardado' : 'Token borrado — la Sala queda sin configurar', 'info', 2500);
+  } catch (err) {
+    toast('No se pudo guardar el token de la sala: ' + err.message);
   }
 };
 

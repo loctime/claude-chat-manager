@@ -382,6 +382,19 @@
         </section>
 
         <section class="settings-section">
+          <h3 class="settings-section-label">Sala compartida</h3>
+          <div class="settings-grid">
+            <label>URL de la sala
+              <input type="text" id="cfg-sala-url" placeholder="https://sala.controlapps.ar" autocomplete="off">
+            </label>
+            <label>Token de esta instancia <span id="cfg-sala-token-status" class="settings-key-status" hidden>✓ Configurado</span>
+              <input type="password" id="cfg-sala-token" placeholder="•••" maxlength="200" autocomplete="off">
+            </label>
+          </div>
+          <span class="settings-hint">Datos del servicio sala-jarvis (VPS) para la pestaña 💬 Sala — pedíselos a quien lo deployó. Sin esto configurado, la pestaña avisa que falta completarlo.</span>
+        </section>
+
+        <section class="settings-section">
           <h3 class="settings-section-label">Almacenamiento</h3>
           <div class="settings-server">
             <button type="button" id="settings-cleanup-btn">🧹 Limpiar sesiones</button>
