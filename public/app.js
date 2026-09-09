@@ -487,7 +487,105 @@ function roomElement(room) {
     ? new Date(room.lastActivity).toLocaleString('es', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
     : 'Sin mensajes todavía';
   div.onclick = () => openRoom(room.id, room.name);
+  attachRoomGestures(div, room);
   return div;
+}
+
+// Click derecho / long-press en una fila de sala → 🙈 Ocultar. Mismo patrón
+// que attachNotebookGestures/showNotebookMenu (sin arrastre horizontal, la
+// sala no se archiva). "Ocultar" es una preferencia LOCAL de esta instancia
+// (ver comentario en server.js, GET /api/sala/rooms) — no borra ni afecta la
+// sala compartida del VPS, ni lo que ve Fernando/FerStark del otro lado.
+function attachRoomGestures(el, room) {
+  let touchTimer = null;
+  let longPressed = false;
+  let startX = 0, startY = 0;
+
+  el.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    showRoomMenu(e.clientX, e.clientY, room);
+  });
+
+  el.addEventListener('touchstart', e => {
+    longPressed = false;
+    const t = e.touches[0];
+    startX = t.clientX; startY = t.clientY;
+    touchTimer = setTimeout(() => {
+      longPressed = true;
+      touchTimer = null;
+      showRoomMenu(startX, startY, room);
+      if (navigator.vibrate) { try { navigator.vibrate(30); } catch {} }
+    }, 500);
+  }, { passive: true });
+
+  el.addEventListener('touchmove', e => {
+    if (!touchTimer) return;
+    const t = e.touches[0];
+    if (Math.abs(t.clientX - startX) > 10 || Math.abs(t.clientY - startY) > 10) {
+      clearTimeout(touchTimer); touchTimer = null;
+    }
+  }, { passive: true });
+
+  el.addEventListener('touchend', () => {
+    if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
+  });
+
+  el.addEventListener('click', e => {
+    if (longPressed) {
+      longPressed = false;
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }, { capture: true });
+}
+
+function showRoomMenu(x, y, room) {
+  document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  menu.innerHTML = `<button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`;
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  const maxX = window.innerWidth - rect.width - 8;
+  const maxY = window.innerHeight - rect.height - 8;
+  menu.style.left = Math.min(x, maxX) + 'px';
+  menu.style.top = Math.min(y, maxY) + 'px';
+
+  const doAction = async (action) => {
+    menu.remove();
+    document.removeEventListener('click', dismiss, true);
+    document.removeEventListener('touchstart', dismiss, true);
+    if (action !== 'hide') return;
+    try {
+      await api(`/sala/rooms/${room.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hidden: true }),
+      });
+      rooms = rooms.filter(r => r.id !== room.id);
+      renderRoomList();
+      if (currentRoom && currentRoom.id === room.id) closeChat();
+      toast('Sala ocultada', 'info', 2500);
+    } catch (err) { toast('No se pudo ocultar: ' + err.message); }
+  };
+
+  menu.addEventListener('click', e => {
+    e.stopPropagation();
+    const action = e.target.dataset && e.target.dataset.action;
+    if (action) doAction(action);
+  });
+  menu.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+  function dismiss(e) {
+    if (menu.contains(e.target)) return;
+    menu.remove();
+    document.removeEventListener('click', dismiss, true);
+    document.removeEventListener('touchstart', dismiss, true);
+  }
+  setTimeout(() => {
+    document.addEventListener('click', dismiss, true);
+    document.addEventListener('touchstart', dismiss, true);
+  }, 350);
 }
 
 function renderRoomList() {
@@ -536,12 +634,18 @@ function showSalaView(show) {
   $('composer-attachments').hidden = show;
   $('composer').hidden = show;
   $('sala-view').hidden = !show;
+  if (!show) closeSalaStream(); // se cierra el stream en vivo (ver más abajo) — no tiene sentido seguir suscripto a una sala que no se está mirando
+}
+
+let salaBusy = false;
+function updateSalaComposerLock() {
+  $('sala-send').disabled = !salaOnline || salaBusy;
 }
 
 function setSalaOnline(online) {
   salaOnline = online;
   $('sala-offline-banner').hidden = online;
-  $('sala-send').disabled = !online;
+  updateSalaComposerLock();
 }
 
 // El texto de cada mensaje de sala llega con un prefijo mecánico "Autor:
@@ -604,16 +708,24 @@ function renderRoomMessages() {
 }
 
 function setSalaBusy(busy) {
+  salaBusy = busy;
   const el = $('sala-busy');
   el.innerHTML = busy ? badge('running') : '';
   el.hidden = !busy;
+  $('sala-cancel-btn').hidden = !busy;
+  updateSalaComposerLock();
 }
 
 async function loadRoomMessages() {
-  const { messages, busy } = await api(`/sala/rooms/${currentRoom.id}/messages`);
+  const { messages, busy, convId } = await api(`/sala/rooms/${currentRoom.id}/messages`);
   roomMessages = messages;
   renderRoomMessages();
   setSalaBusy(busy);
+  if (currentRoom) currentRoom.convId = convId;
+  // convId recién existe después del primer turno local en esta sala — se
+  // engancha el stream en vivo apenas aparece (antes de eso solo hay busy,
+  // sin detalle de qué se está haciendo). Ver openSalaStream() más abajo.
+  if (convId) openSalaStream(convId);
 }
 
 async function safeLoadRoomMessages() {
@@ -627,11 +739,12 @@ async function safeLoadRoomMessages() {
 }
 
 async function openRoom(id, name) {
-  currentRoom = { id, name };
+  currentRoom = { id, name, convId: null };
   $('sala-title').textContent = name;
   roomMessages = [];
   renderRoomMessages();
   setSalaBusy(false); // se actualiza de verdad con lo que traiga el primer loadRoomMessages() de abajo — evita mostrar el estado de la sala anterior mientras carga
+  closeSalaStream(); // por si venía de otra sala con un stream abierto — el de esta se reengancha solo dentro de loadRoomMessages() de abajo
   closeSalaMentionMenu(); // si venía abierto de otra sala, no tiene sentido acá
   showNotebookView(false); // si había una libreta abierta, se cierra — mismo bug que reportó Diego, en la otra dirección
   showSalaView(true);
@@ -639,6 +752,62 @@ async function openRoom(id, name) {
   try { await loadRoomMessages(); setSalaOnline(true); }
   catch (err) { setSalaOnline(false); toast('No se pudieron cargar los mensajes de la sala: ' + err.message); }
 }
+
+// ── Sala: stream en vivo (tarjetas Read/Bash/Edit) + cancelar ──
+// Deliberadamente más chico que openStream() (Chats): Sala no tiene cola de
+// mensajes ni badge de costo, así que no hace falta replicar esa parte —
+// solo mostrar lo que ESTA instancia está haciendo ahora mismo mientras
+// arma la respuesta, y poder cancelarla. Al terminar el turno (status:
+// 'idle') se recarga el log real de la sala (loadRoomMessages) — las
+// tarjetas transitorias quedan reemplazadas por el mensaje final publicado,
+// mismo criterio que "recargar antes de mostrar el resultado" de Chats.
+let salaEventSource = null;
+let salaStreamConvId = null; // convId al que está suscripto ahora mismo, o null
+
+function closeSalaStream() {
+  if (salaEventSource) { salaEventSource.close(); salaEventSource = null; }
+  salaStreamConvId = null;
+}
+
+function openSalaStream(convId) {
+  if (salaStreamConvId === convId) return; // ya suscripto a este mismo turno/sala
+  closeSalaStream();
+  salaStreamConvId = convId;
+  const roomId = currentRoom ? currentRoom.id : null;
+  salaEventSource = new EventSource(`/api/conversations/${convId}/stream`);
+  salaEventSource.onmessage = e => {
+    // La sala pudo cambiar (o cerrarse) mientras este stream seguía
+    // conectado — mismo guard que openStream() hace con currentConv.
+    if (!currentRoom || currentRoom.id !== roomId || salaStreamConvId !== convId) return;
+    const payload = JSON.parse(e.data);
+    if (payload.kind === 'claude') {
+      const ev = payload.event;
+      if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
+        const wrap = $('sala-messages');
+        for (const b of ev.message.content) {
+          if (b.type === 'text' && b.text.trim()) addMsg('assistant', b.text, { container: wrap, composerId: 'sala-input' });
+          else if (b.type === 'tool_use') addTool(b.name, b.input, '', { container: wrap });
+        }
+      }
+    } else if (payload.kind === 'status') {
+      setSalaBusy(payload.status !== 'idle');
+      if (payload.status === 'idle') loadRoomMessages().catch(() => {});
+    }
+  };
+  salaEventSource.onerror = () => {
+    // El túnel de Cloudflare puede cortar el SSE en turnos largos — EventSource
+    // reconecta solo pero cualquier evento emitido durante el corte se pierde;
+    // mismo criterio que openStream(): refrescar por las dudas al reconectar.
+    if (!currentRoom || currentRoom.id !== roomId) return;
+    setTimeout(() => { if (currentRoom && currentRoom.id === roomId) loadRoomMessages().catch(() => {}); }, 1500);
+  };
+}
+
+$('sala-cancel-btn').onclick = async () => {
+  if (!currentRoom || !currentRoom.convId) return;
+  try { await api(`/conversations/${currentRoom.convId}/message`, { method: 'DELETE' }); }
+  catch (err) { toast('No se pudo cancelar: ' + err.message); }
+};
 
 async function sendRoomMessage() {
   if (!salaOnline) return; // el botón ya está disabled, pero Enter en el textarea igual dispara este handler

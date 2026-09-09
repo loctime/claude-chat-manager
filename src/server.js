@@ -2677,12 +2677,29 @@ app.get('/api/sala/rooms', async (req, res) => {
       // un turno para esa sala ahora mismo — mismo criterio que el ping-dot
       // de Chats/Codex (runner.isBusy), no hay forma de saber si el OTRO
       // agente está procesando, eso vive en su propia PC.
-      return { ...r, convId, busy: convId ? runner.isBusy(convId) : false };
+      return { ...r, convId, busy: convId ? runner.isBusy(convId) : false, hidden: convId ? !!data.conversations[convId].hidden : false };
     });
-    res.json({ rooms: withConv });
+    // "Ocultar" (menú contextual, ver PATCH .../rooms/:id abajo) es una
+    // preferencia LOCAL de esta instancia — vive en SALA_META_FILE, no en la
+    // sala compartida del VPS — así que ocultar acá no le saca la sala a
+    // Fernando/FerStark del lado de él. Mismo patrón que notes.listNotebooks().
+    res.json({ rooms: withConv.filter(r => !r.hidden) });
   } catch (err) {
     res.status(502).json({ error: 'no se pudo contactar la sala: ' + err.message });
   }
+});
+
+// Ocultar/mostrar una sala — preferencia local (ver comentario en GET
+// /api/sala/rooms de arriba). resolveOrCreateSalaConv garantiza que exista
+// la entrada aunque esta instancia nunca haya hablado ahí todavía (el
+// auto-descubrimiento del poller de menciones normalmente ya la creó, esto
+// es solo una red de seguridad).
+app.patch('/api/sala/rooms/:id', (req, res) => {
+  const { convId } = resolveOrCreateSalaConv(req.params.id);
+  const data = meta.load(SALA_META_FILE);
+  data.conversations[convId].hidden = !!req.body.hidden;
+  meta.save(data, SALA_META_FILE);
+  res.json({ ok: true });
 });
 
 // Nombres de instancia configurados (Jarvis/FerStark) — lo usa el
@@ -2725,7 +2742,12 @@ app.get('/api/sala/rooms/:id/messages', async (req, res) => {
     // en SALA_META_FILE, no crea la conv si todavía no existe.
     const data = meta.load(SALA_META_FILE);
     const convId = Object.keys(data.conversations).find(id => data.conversations[id].roomId === req.params.id) || null;
-    res.json({ messages, busy: convId ? runner.isBusy(convId) : false });
+    // convId también viaja acá (no solo en GET /api/sala/rooms) — el cliente
+    // lo necesita para poder abrir /api/conversations/:id/stream y mostrar
+    // las tarjetas de herramienta (Read/Bash/Edit) en vivo mientras esta
+    // instancia arma la respuesta; null si esta sala todavía no tiene ningún
+    // turno local (recién se crea al primer mensaje/mención).
+    res.json({ messages, busy: convId ? runner.isBusy(convId) : false, convId });
   } catch (err) {
     res.status(502).json({ error: 'no se pudo leer la sala: ' + err.message });
   }

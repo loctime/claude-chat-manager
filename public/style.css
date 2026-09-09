@@ -939,7 +939,7 @@ body.codex-list-theme #panel-list {
 #input::placeholder { color: var(--text2); }
 #input::-webkit-scrollbar { width: 3px; }
 
-#send, #cancel-btn, #mic-btn, #attach-btn {
+#send, #cancel-btn, #mic-btn, #attach-btn, #sala-cancel-btn {
   border-radius: 50%; border: none; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0; transition: transform .1s, background .15s;
@@ -952,8 +952,8 @@ body.codex-list-theme #panel-list {
 #send:active { transform: scale(.92); }
 #send:disabled { background: var(--border); opacity: .5; cursor: default; transform: none; }
 
-#cancel-btn { background: #3d1a1d; color: var(--danger); width: 44px; height: 44px; }
-#cancel-btn:hover { background: #5a1f24; }
+#cancel-btn, #sala-cancel-btn { background: #3d1a1d; color: var(--danger); width: 44px; height: 44px; }
+#cancel-btn:hover, #sala-cancel-btn:hover { background: #5a1f24; }
 
 #mic-btn, #attach-btn {
   background: none; color: var(--text2);
