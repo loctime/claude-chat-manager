@@ -44,6 +44,15 @@ app.get('/rooms', (req, res) => {
   res.json({ rooms: rooms.listRooms(indexFile, roomsDir) });
 });
 
+// Nombres de las instancias configuradas (Jarvis/FerStark), sin los
+// tokens — lo usa el autocompletar de @menciones del lado del cliente.
+// A diferencia de listRooms(), esto NO depende de que alguien ya haya
+// hablado en una sala puntual: es justo el caso que más importa (mencionar
+// a alguien que todavía no participó, para que se sume).
+app.get('/identities', (req, res) => {
+  res.json({ identities: [...new Set(TOKENS.values())] });
+});
+
 app.post('/rooms', (req, res) => {
   const name = (req.body.name || '').trim();
   if (!name) return res.status(400).json({ error: 'nombre vacío' });

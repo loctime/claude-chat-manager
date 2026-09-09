@@ -107,6 +107,14 @@ test('kind con un valor arbitrario se ignora (no cualquier string pasa)', async 
   server.close();
 });
 
+test('GET /identities devuelve los nombres configurados en SALA_TOKENS, sin los tokens', async () => {
+  const server = await listen(app);
+  const { port } = server.address();
+  const res = await fetch(`http://127.0.0.1:${port}/identities`, { headers: { Authorization: 'Bearer tok-diego' } }).then(r => r.json());
+  assert.deepEqual(res.identities.sort(), ['FerStark', 'Jarvis']);
+  server.close();
+});
+
 test('sala inexistente devuelve 404 tanto en GET como en POST de mensajes', async () => {
   const server = await listen(app);
   const { port } = server.address();

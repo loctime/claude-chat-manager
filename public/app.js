@@ -507,6 +507,21 @@ async function safeLoadRoomList() {
   catch { /* noop: polling de fondo, se autocura en el próximo tick */ }
 }
 
+// Identidades configuradas en el servicio (Jarvis/FerStark) — no depende de
+// que nadie haya hablado en ninguna sala todavía, a diferencia de
+// salaMentionCandidates() (que arma sugerencias del historial). Se pide una
+// sola vez por sesión: no cambia salvo que alguien reconfigure tokens en el
+// VPS, no tiene sentido pollearlo cada 5s como la lista de salas.
+let salaIdentities = null;
+async function ensureSalaIdentities() {
+  if (salaIdentities) return salaIdentities;
+  try {
+    const { identities } = await api('/sala/identities');
+    salaIdentities = identities;
+  } catch { salaIdentities = []; } // sala no configurada, o el VPS no respondió — el autocompletar sigue andando con lo que haya en el historial
+  return salaIdentities;
+}
+
 // ── Sala: abrir/cerrar una sala, reusando el panel/overlay del chat ──
 function showSalaView(show) {
   $('chat-header').hidden = show;
@@ -1900,6 +1915,7 @@ async function goToPane(index) {
     try {
       await loadRoomList();
       roomListLoaded = true;
+      ensureSalaIdentities(); // sin esperar — el autocompletar tolera que llegue tarde, no bloquea la navegación
     } catch (err) {
       toast('No se pudieron cargar las salas: ' + err.message);
       if (myGeneration === paneNavGeneration) paneNavTarget = activePane;
@@ -5403,8 +5419,17 @@ $('sala-back-btn').onclick = closeChat;
 // nombres conocidos") — se arma solo con lo que ya se habló, mismo parseo
 // de "Autor: texto" que ya usa roomMessageBubble para las burbujas, así no
 // hace falta guardar en ningún lado quién es cada uno.
+// Combina las identidades configuradas del servicio (Jarvis/FerStark — el
+// caso que importa: mencionar a alguien que TODAVÍA no habló en esta sala,
+// justo para que se sume) con lo que ya se vio en el historial (fallback si
+// /sala/identities no cargó, o alguien más nuevo que aparezca ahí). En
+// ambos casos se excluye a uno mismo — mencionarte a vos mismo no dispara
+// nada, ya sos vos quien está escribiendo.
 function salaMentionCandidates() {
   const seen = new Set();
+  for (const name of (salaIdentities || [])) {
+    if (name !== USER_NAME && name !== APP_NAME) seen.add(name);
+  }
   for (const m of roomMessages) {
     const match = m.text.match(/^([^:\n]{1,40}): /);
     const author = match ? match[1] : m.author;

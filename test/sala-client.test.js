@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { listRooms, createRoom, fetchMessages, postMessage } = require('../src/sala-client');
+const { listRooms, createRoom, fetchMessages, postMessage, listIdentities } = require('../src/sala-client');
 
 const OPTS = { baseUrl: 'https://sala.controlapps.ar', token: 'tok-x' };
 
@@ -61,6 +61,18 @@ test('postMessage manda kind en el body cuando se lo pasan, lo omite si no', asy
 
   await postMessage({ ...OPTS, roomId: 'r1', text: 'hola', fetchImpl });
   assert.deepEqual(JSON.parse(seenOpts.body), { text: 'hola' });
+});
+
+test('listIdentities pega a GET /identities con el bearer token', async () => {
+  let seenUrl, seenOpts;
+  const fetchImpl = async (url, opts) => {
+    seenUrl = url; seenOpts = opts;
+    return { ok: true, json: async () => ({ identities: ['Jarvis', 'FerStark'] }) };
+  };
+  const identities = await listIdentities({ ...OPTS, fetchImpl });
+  assert.equal(seenUrl, 'https://sala.controlapps.ar/identities');
+  assert.equal(seenOpts.headers.Authorization, 'Bearer tok-x');
+  assert.deepEqual(identities, ['Jarvis', 'FerStark']);
 });
 
 test('una respuesta no-ok tira un Error con el mensaje del body', async () => {

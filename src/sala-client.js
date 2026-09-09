@@ -30,6 +30,14 @@ async function listRooms({ baseUrl, token, fetchImpl }) {
   return data.rooms;
 }
 
+// Nombres de instancia configurados en el servicio (Jarvis/FerStark), no
+// atado al historial de ninguna sala puntual — lo usa el autocompletar de
+// @menciones para poder sugerir a alguien que todavía no habló ahí.
+async function listIdentities({ baseUrl, token, fetchImpl }) {
+  const data = await request(`${baseUrl}/identities`, { token, fetchImpl });
+  return data.identities;
+}
+
 async function createRoom({ baseUrl, token, name, fetchImpl }) {
   return request(`${baseUrl}/rooms`, { method: 'POST', token, body: { name }, fetchImpl });
 }
@@ -47,4 +55,4 @@ async function postMessage({ baseUrl, token, roomId, text, kind, fetchImpl }) {
   return request(`${baseUrl}/rooms/${roomId}/messages`, { method: 'POST', token, body, fetchImpl });
 }
 
-module.exports = { listRooms, createRoom, fetchMessages, postMessage };
+module.exports = { listRooms, createRoom, fetchMessages, postMessage, listIdentities };

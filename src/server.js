@@ -2615,6 +2615,20 @@ app.get('/api/sala/rooms', async (req, res) => {
   }
 });
 
+// Nombres de instancia configurados (Jarvis/FerStark) — lo usa el
+// autocompletar de @menciones del cliente, sin depender del historial de
+// ninguna sala puntual (ver sala-jarvis/src/server.js GET /identities).
+app.get('/api/sala/identities', async (req, res) => {
+  const salaUrl = getSalaUrl(), salaToken = getSalaToken();
+  if (!salaUrl || !salaToken) return res.status(400).json({ error: 'sala no configurada — completá la URL y el token en Configuración' });
+  try {
+    const identities = await salaClient.listIdentities({ baseUrl: salaUrl, token: salaToken });
+    res.json({ identities });
+  } catch (err) {
+    res.status(502).json({ error: 'no se pudo contactar la sala: ' + err.message });
+  }
+});
+
 app.post('/api/sala/rooms', async (req, res) => {
   const salaUrl = getSalaUrl(), salaToken = getSalaToken();
   if (!salaUrl || !salaToken) return res.status(400).json({ error: 'sala no configurada — completá la URL y el token en Configuración' });
