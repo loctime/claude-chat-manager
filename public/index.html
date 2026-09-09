@@ -235,7 +235,10 @@
         <div id="sala-offline-banner" class="notes-empty" hidden>Sin conexión con la sala — mostrando lo último que se pudo cargar.</div>
         <div id="sala-messages" class="notes-messages"></div>
         <form id="sala-composer" class="notes-composer">
-          <textarea id="sala-input" rows="1" placeholder="Escribí acá..."></textarea>
+          <!-- Autocompletar @menciones — ver app.js, updateSalaMentionMenu().
+               Posicionado arriba del textarea (position:relative en el form). -->
+          <div id="sala-mention-menu" class="mention-menu" hidden></div>
+          <textarea id="sala-input" rows="1" placeholder="Escribí acá... (@ para mencionar)"></textarea>
           <button id="sala-send" type="submit" aria-label="Enviar">
             <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
           </button>

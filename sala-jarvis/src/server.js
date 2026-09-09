@@ -60,7 +60,8 @@ app.post('/rooms/:id/messages', (req, res) => {
   if (!rooms.getRoom(req.params.id, indexFile)) return res.status(404).json({ error: 'sala no encontrada' });
   const text = (req.body.text || '').trim();
   if (!text) return res.status(400).json({ error: 'texto vacío' });
-  res.status(201).json(rooms.appendMessage(req.params.id, req.senderName, text, roomsDir));
+  const kind = req.body.kind === 'human' || req.body.kind === 'agent' ? req.body.kind : undefined;
+  res.status(201).json(rooms.appendMessage(req.params.id, req.senderName, text, roomsDir, kind));
 });
 
 if (require.main === module) {

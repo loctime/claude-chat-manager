@@ -38,8 +38,13 @@ async function fetchMessages({ baseUrl, token, roomId, since, fetchImpl }) {
   return request(`${baseUrl}/rooms/${roomId}/messages?since=${since}`, { token, fetchImpl });
 }
 
-async function postMessage({ baseUrl, token, roomId, text, fetchImpl }) {
-  return request(`${baseUrl}/rooms/${roomId}/messages`, { method: 'POST', token, body: { text }, fetchImpl });
+// kind ('human'|'agent'): quién escribió de verdad, no de qué instancia
+// vino — lo usa el poller de menciones (@FerStark/@Jarvis) para no
+// reaccionar a la mención que un agente cite en su propia respuesta, solo
+// a la de una persona. Opcional — omitido, sala-jarvis no guarda el campo.
+async function postMessage({ baseUrl, token, roomId, text, kind, fetchImpl }) {
+  const body = kind ? { text, kind } : { text };
+  return request(`${baseUrl}/rooms/${roomId}/messages`, { method: 'POST', token, body, fetchImpl });
 }
 
 module.exports = { listRooms, createRoom, fetchMessages, postMessage };

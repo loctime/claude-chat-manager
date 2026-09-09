@@ -602,6 +602,7 @@ async function openRoom(id, name) {
   $('sala-title').textContent = name;
   roomMessages = [];
   renderRoomMessages();
+  closeSalaMentionMenu(); // si venía abierto de otra sala, no tiene sentido acá
   showNotebookView(false); // si había una libreta abierta, se cierra — mismo bug que reportó Diego, en la otra dirección
   showSalaView(true);
   openChat();
@@ -616,6 +617,7 @@ async function sendRoomMessage() {
   if (!text || !currentRoom) return;
   input.value = '';
   autoResize(input);
+  closeSalaMentionMenu();
   try {
     await api(`/sala/rooms/${currentRoom.id}/message`, {
       method: 'POST',
@@ -5396,8 +5398,104 @@ $('notes-composer').addEventListener('submit', async e => {
 // ── Sala: composer, back y polling ──
 $('sala-back-btn').onclick = closeChat;
 
-$('sala-input').addEventListener('input', () => autoResize($('sala-input')));
+// ── Sala: autocompletar @menciones ──
+// Sugiere autores ya vistos en ESTA sala (no una lista fija de "los 4
+// nombres conocidos") — se arma solo con lo que ya se habló, mismo parseo
+// de "Autor: texto" que ya usa roomMessageBubble para las burbujas, así no
+// hace falta guardar en ningún lado quién es cada uno.
+function salaMentionCandidates() {
+  const seen = new Set();
+  for (const m of roomMessages) {
+    const match = m.text.match(/^([^:\n]{1,40}): /);
+    const author = match ? match[1] : m.author;
+    if (author !== USER_NAME && author !== APP_NAME) seen.add(author);
+  }
+  return [...seen];
+}
+
+const salaMention = { active: false, start: -1, items: [], highlighted: 0 };
+
+function closeSalaMentionMenu() {
+  salaMention.active = false;
+  $('sala-mention-menu').hidden = true;
+  $('sala-mention-menu').innerHTML = '';
+}
+
+function renderSalaMentionMenu() {
+  const menu = $('sala-mention-menu');
+  menu.innerHTML = '';
+  salaMention.items.forEach((name, i) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = '@' + name;
+    btn.className = i === salaMention.highlighted ? 'active' : '';
+    btn.onclick = () => selectSalaMention(name);
+    menu.appendChild(btn);
+  });
+  menu.hidden = salaMention.items.length === 0;
+}
+
+// Se llama en cada input del composer — busca un "@algo" pegado al cursor
+// (sin espacio en el medio) y arma la lista de sugerencias que matchean lo
+// tipeado hasta ahora. Sin "@" activo, o sin candidatos que matcheen, el
+// menú se cierra solo.
+function updateSalaMentionMenu() {
+  const input = $('sala-input');
+  const upToCursor = input.value.slice(0, input.selectionStart);
+  const match = upToCursor.match(/(?:^|\s)@(\w*)$/);
+  if (!match) { closeSalaMentionMenu(); return; }
+  const query = match[1].toLowerCase();
+  const all = salaMentionCandidates();
+  const items = query ? all.filter(n => n.toLowerCase().includes(query)) : all;
+  salaMention.active = items.length > 0;
+  salaMention.start = upToCursor.length - match[1].length - 1; // posición del "@"
+  salaMention.items = items;
+  salaMention.highlighted = 0;
+  if (!salaMention.active) { closeSalaMentionMenu(); return; }
+  renderSalaMentionMenu();
+}
+
+function selectSalaMention(name) {
+  const input = $('sala-input');
+  const before = input.value.slice(0, salaMention.start);
+  const after = input.value.slice(input.selectionStart);
+  input.value = `${before}@${name} ${after}`;
+  const caret = before.length + name.length + 2;
+  input.focus();
+  input.selectionStart = input.selectionEnd = caret;
+  autoResize(input);
+  closeSalaMentionMenu();
+}
+
+$('sala-input').addEventListener('input', () => {
+  autoResize($('sala-input'));
+  updateSalaMentionMenu();
+});
 $('sala-input').addEventListener('keydown', e => {
+  if (salaMention.active) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      salaMention.highlighted = (salaMention.highlighted + 1) % salaMention.items.length;
+      renderSalaMentionMenu();
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      salaMention.highlighted = (salaMention.highlighted - 1 + salaMention.items.length) % salaMention.items.length;
+      renderSalaMentionMenu();
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      selectSalaMention(salaMention.items[salaMention.highlighted]);
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeSalaMentionMenu();
+      return;
+    }
+  }
   if (isTouchDevice) return;
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();

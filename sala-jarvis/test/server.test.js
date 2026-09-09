@@ -68,6 +68,45 @@ test('flujo completo: crear sala, postear mensajes de los dos, leer desde un cur
   server.close();
 });
 
+test('kind viaja del body a la respuesta, y a las lecturas posteriores; sin kind no queda el campo', async () => {
+  const server = await listen(app);
+  const { port } = server.address();
+  const base = `http://127.0.0.1:${port}`;
+  const headers = { 'Content-Type': 'application/json', Authorization: 'Bearer tok-diego' };
+  const created = await fetch(`${base}/rooms`, { method: 'POST', headers, body: JSON.stringify({ name: 'X' }) }).then(r => r.json());
+
+  const withKind = await fetch(`${base}/rooms/${created.id}/messages`, {
+    method: 'POST', headers, body: JSON.stringify({ text: 'humano habló', kind: 'human' }),
+  }).then(r => r.json());
+  assert.equal(withKind.message.kind, 'human');
+
+  const withoutKind = await fetch(`${base}/rooms/${created.id}/messages`, {
+    method: 'POST', headers, body: JSON.stringify({ text: 'sin kind' }),
+  }).then(r => r.json());
+  assert.equal('kind' in withoutKind.message, false);
+
+  const read = await fetch(`${base}/rooms/${created.id}/messages?since=0`, { headers }).then(r => r.json());
+  assert.equal(read.messages[0].kind, 'human');
+  assert.equal('kind' in read.messages[1], false);
+
+  server.close();
+});
+
+test('kind con un valor arbitrario se ignora (no cualquier string pasa)', async () => {
+  const server = await listen(app);
+  const { port } = server.address();
+  const base = `http://127.0.0.1:${port}`;
+  const headers = { 'Content-Type': 'application/json', Authorization: 'Bearer tok-diego' };
+  const created = await fetch(`${base}/rooms`, { method: 'POST', headers, body: JSON.stringify({ name: 'X' }) }).then(r => r.json());
+
+  const posted = await fetch(`${base}/rooms/${created.id}/messages`, {
+    method: 'POST', headers, body: JSON.stringify({ text: 'x', kind: 'lo-que-sea' }),
+  }).then(r => r.json());
+  assert.equal('kind' in posted.message, false);
+
+  server.close();
+});
+
 test('sala inexistente devuelve 404 tanto en GET como en POST de mensajes', async () => {
   const server = await listen(app);
   const { port } = server.address();

@@ -25,7 +25,7 @@ const searchIndex = require('./search-index');
 const { getReplySuggestions } = require('./groq-suggest');
 const gitSync = require('./git-sync');
 const salaClient = require('./sala-client');
-const { buildContextBlock } = require('./sala-context');
+const { buildContextBlock, isMentioned, mentionNotice } = require('./sala-context');
 
 const IS_WIN = process.platform === 'win32';
 // WSL: Linux corriendo dentro de Windows (kernel expone "microsoft" en
@@ -249,6 +249,9 @@ async function syncSearchIndex(acc, { reason = 'timer' } = {}) {
 }
 
 const SEARCH_SYNC_MS = 60_000;
+// Más seguido que el índice de búsqueda a propósito — una mención quiere
+// sentirse como "el otro te contestó al toque", no como background sync.
+const SALA_MENTION_POLL_MS = 20_000;
 
 const upload = multer({ dest: UPLOAD_DIR, limits: { fileSize: 50 * 1024 * 1024 } });
 
@@ -864,11 +867,59 @@ async function publishSalaReplyIfNeeded(convId, account, cancelled) {
   const last = messages[messages.length - 1];
   if (!last || !last.text) return;
 
-  const { total } = await salaClient.postMessage({ baseUrl: salaUrl, token: salaToken, roomId: conv.roomId, text: `${getAppName()}: ${last.text}` });
+  const { total } = await salaClient.postMessage({ baseUrl: salaUrl, token: salaToken, roomId: conv.roomId, text: `${getAppName()}: ${last.text}`, kind: 'agent' });
   const fresh = meta.load(SALA_META_FILE);
   if (fresh.conversations[convId]) {
     fresh.conversations[convId].contextCursor = Math.max(fresh.conversations[convId].contextCursor || 0, total);
     meta.save(fresh, SALA_META_FILE);
+  }
+}
+
+// Poll de fondo: revisa las salas donde esta instancia ya participó (viven
+// en SALA_META_FILE) buscando si alguien la mencionó con @<su appName>
+// desde la última vez que le tocó hablar — y si es así, dispara un turno
+// SOLO, sin que su propio humano haya escrito nada. Es lo que permite
+// "@FerStark" desde el lado de Diego sin que Fernando toque nada.
+//
+// Solo reacciona a menciones con kind:'human' — un mensaje kind:'agent'
+// (la respuesta de un agente) puede perfectamente citar "@FerStark" de
+// vuelta sin que eso dispare nada; sin este filtro, dos agentes que se
+// mencionan en sus propias respuestas podrían quedar respondiéndose en
+// bucle para siempre. También corre gateado por runner.isBusy(convId), como
+// cualquier otro disparador de turno en este archivo — evita pisarse con un
+// turno humano en curso en la misma sala.
+//
+// No usa un cursor aparte: reusa contextCursor (el mismo que mueve el envío
+// humano) — si esta pasada NO encuentra mención, no lo toca, así los
+// mensajes siguen "pendientes" para la próxima vez que alguien (humano o
+// mención) sí dispare un turno real. Si lo encuentra, el turno consume
+// exactamente lo que ya se había leído para detectarla — no hace falta un
+// segundo fetch.
+async function checkSalaMentions() {
+  const salaUrl = getSalaUrl(), salaToken = getSalaToken();
+  if (!salaUrl || !salaToken) return;
+  const data = meta.load(SALA_META_FILE);
+  for (const [convId, conv] of Object.entries(data.conversations)) {
+    if (runner.isBusy(convId)) continue;
+    try {
+      const { messages, nextCursor } = await salaClient.fetchMessages({
+        baseUrl: salaUrl, token: salaToken, roomId: conv.roomId, since: conv.contextCursor,
+      });
+      if (messages.length === 0) continue;
+      const mentioned = messages.some(m => m.kind === 'human' && isMentioned(m.text, getAppName()));
+      if (!mentioned) continue;
+
+      const outgoing = `${buildContextBlock(messages)}\n\n${mentionNotice(getAppName())}`;
+      runner.send({ convId, sessionId: conv.currentSessionId, cwd: accountHomeDir(activeAccount), text: outgoing, account: activeAccount });
+
+      const fresh = meta.load(SALA_META_FILE);
+      if (fresh.conversations[convId]) {
+        fresh.conversations[convId].contextCursor = Math.max(fresh.conversations[convId].contextCursor || 0, nextCursor);
+        meta.save(fresh, SALA_META_FILE);
+      }
+    } catch (err) {
+      console.error(`[sala] no se pudo chequear menciones en la sala ${conv.roomId}:`, err.message);
+    }
   }
 }
 
@@ -2608,7 +2659,7 @@ app.post('/api/sala/rooms/:id/message', async (req, res) => {
     // 2. Publicar YA el mensaje del humano en la sala, para que el otro lado
     //    lo vea aunque esta instancia tarde en responder.
     const { total: totalAfterOwn } = await salaClient.postMessage({
-      baseUrl: salaUrl, token: salaToken, roomId, text: `${getUserName()}: ${text}`,
+      baseUrl: salaUrl, token: salaToken, roomId, text: `${getUserName()}: ${text}`, kind: 'human',
     });
     // 3. El cursor avanza más allá de lo leído en (1) Y de lo que uno mismo
     //    acaba de publicar en (2) — nada de eso hay que re-inyectárselo a
@@ -2638,6 +2689,7 @@ const server = app.listen(PORT, HOST, () => {
     syncSearchIndex(activeAccount, { reason: 'arranque' });
     setInterval(() => syncSearchIndex(activeAccount), SEARCH_SYNC_MS).unref();
   }
+  setInterval(() => checkSalaMentions().catch(err => console.error('[sala] error en el poll de menciones:', err.message)), SALA_MENTION_POLL_MS).unref();
 });
 
 // Cloudflare Tunnel mantiene conexiones al origin en su pool y las reutiliza

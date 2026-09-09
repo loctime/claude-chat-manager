@@ -38,6 +38,18 @@ test('getRoom devuelve null si no existe', () => {
   assert.equal(getRoom('no-existe', tmpIndexFile()), null);
 });
 
+test('appendMessage guarda kind cuando se lo pasan, lo omite si no', () => {
+  const indexFile = tmpIndexFile();
+  const roomsDir = tmpRoomsDir();
+  const room = createRoom('Test kind', indexFile);
+
+  const { message: withKind } = appendMessage(room.id, 'Jarvis', 'hola', roomsDir, 'agent');
+  assert.equal(withKind.kind, 'agent');
+
+  const { message: withoutKind } = appendMessage(room.id, 'Jarvis', 'hola de nuevo', roomsDir);
+  assert.equal('kind' in withoutKind, false);
+});
+
 test('appendMessage acumula y readMessagesSince respeta el cursor', () => {
   const indexFile = tmpIndexFile();
   const roomsDir = tmpRoomsDir();

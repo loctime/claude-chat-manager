@@ -50,6 +50,19 @@ test('postMessage pega a POST /rooms/:id/messages con el texto', async () => {
   assert.equal(result.message.author, 'Jarvis');
 });
 
+test('postMessage manda kind en el body cuando se lo pasan, lo omite si no', async () => {
+  let seenOpts;
+  const fetchImpl = async (url, opts) => {
+    seenOpts = opts;
+    return { ok: true, json: async () => ({ message: { author: 'Jarvis', text: 'hola', ts: 1, kind: 'agent' }, total: 1 }) };
+  };
+  await postMessage({ ...OPTS, roomId: 'r1', text: 'hola', kind: 'agent', fetchImpl });
+  assert.deepEqual(JSON.parse(seenOpts.body), { text: 'hola', kind: 'agent' });
+
+  await postMessage({ ...OPTS, roomId: 'r1', text: 'hola', fetchImpl });
+  assert.deepEqual(JSON.parse(seenOpts.body), { text: 'hola' });
+});
+
 test('una respuesta no-ok tira un Error con el mensaje del body', async () => {
   const fetchImpl = async () => ({ ok: false, status: 401, json: async () => ({ error: 'token inválido' }) });
   await assert.rejects(() => listRooms({ ...OPTS, fetchImpl }), /token inválido/);

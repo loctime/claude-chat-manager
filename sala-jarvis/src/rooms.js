@@ -62,10 +62,17 @@ function getRoom(id, indexFile = ROOMS_INDEX_FILE) {
   return readIndex(indexFile).find(r => r.id === id) || null;
 }
 
-function appendMessage(id, author, text, roomsDir = ROOMS_DIR) {
+// kind ('human'|'agent'): quién escribió DE VERDAD, no de qué instancia
+// vino — un agente necesita esto para saber si una mención le llegó de una
+// persona (dispara una respuesta autónoma) o de la respuesta de otro
+// agente (no dispara nada, corta cadenas @Jarvis↔@FerStark infinitas). Es
+// metadata de presentación/lógica, no de seguridad — a diferencia de
+// `author` (que sale del token), `kind` lo declara el caller tal cual.
+function appendMessage(id, author, text, roomsDir = ROOMS_DIR, kind) {
   const file = roomMessagesFile(id, roomsDir);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const message = { author, text, ts: Date.now() };
+  if (kind) message.kind = kind;
   fs.appendFileSync(file, JSON.stringify(message) + '\n');
   const total = readAllMessages(file).length;
   return { message, total };
