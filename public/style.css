@@ -10,6 +10,14 @@
   --bubble-ai: #2f3f4a;
   --accent:    #25d366;
   --codex-accent: #10a37f;
+  /* Brillo de "no leído" en las pestañas (#pane-tabs) — variable propia, NO
+     --accent: #pane-tabs vive adentro de #panel-list, y body.codex-list-theme
+     redefine --accent ahí (más abajo) para teñir de teal la pestaña Codex
+     mientras la mirás. Si el brillo de las OTRAS pestañas (Chats, Sala...)
+     usara --accent, se pintaría teal por error cada vez que estás parado en
+     Codex — el bug real que reportó Diego ("el brillo respeta el color de
+     quien habla, pero siempre en la pestaña Chats"). */
+  --tab-alert: #25d366;
   --text:      #e9edef;
   --text2:     #8696a0;
   --border:    #2a3942;
@@ -212,7 +220,7 @@ body.codex-list-theme #panel-list {
   .pane-tab:hover { color: var(--text); }
   .pane-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
   .pane-tab.has-unread {
-    --pane-alert: var(--accent);
+    --pane-alert: var(--tab-alert);
     color: #bcebdd;
     background: color-mix(in srgb, var(--pane-alert) 22%, transparent);
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pane-alert) 65%, transparent), 0 0 12px color-mix(in srgb, var(--pane-alert) 45%, transparent);

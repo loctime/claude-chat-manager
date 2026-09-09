@@ -974,6 +974,19 @@ runner.on('status', s => {
       if (conv && conv.currentSessionId) {
         conv.unread = true;
         meta.save(data, metaFile);
+      } else {
+        // No está en el store de la cuenta — puede ser una conversación de
+        // Sala (vive en SALA_META_FILE, no en accountMetaFile, mismo caso ya
+        // resuelto para el evento 'session_id' más arriba). Sin esto, la
+        // pestaña "Sala" nunca se enteraba de que FerStark/Jarvis contestó
+        // mientras nadie miraba — Diego reportó "siempre brilla Chats" y
+        // ESTA era la mitad real del bug: Sala directamente nunca brillaba.
+        const salaData = meta.load(SALA_META_FILE);
+        const salaConv = salaData.conversations[s.convId];
+        if (salaConv) {
+          salaConv.unread = true;
+          meta.save(salaData, SALA_META_FILE);
+        }
       }
     }
   }
@@ -2677,7 +2690,16 @@ app.get('/api/sala/rooms', async (req, res) => {
       // un turno para esa sala ahora mismo — mismo criterio que el ping-dot
       // de Chats/Codex (runner.isBusy), no hay forma de saber si el OTRO
       // agente está procesando, eso vive en su propia PC.
-      return { ...r, convId, busy: convId ? runner.isBusy(convId) : false, hidden: convId ? !!data.conversations[convId].hidden : false };
+      // unread = un turno de ESTA instancia terminó en esta sala mientras
+      // nadie la miraba (runner.on('status', ...), mismo criterio que Chats/
+      // Codex) — se prende la pestaña "Sala" y se apaga sola al abrir la sala
+      // (ver PATCH .../rooms/:id, llamado desde openRoom() en el cliente).
+      return {
+        ...r, convId,
+        busy: convId ? runner.isBusy(convId) : false,
+        hidden: convId ? !!data.conversations[convId].hidden : false,
+        unread: convId ? !!data.conversations[convId].unread : false,
+      };
     });
     // "Ocultar" (menú contextual, ver PATCH .../rooms/:id abajo) es una
     // preferencia LOCAL de esta instancia — vive en SALA_META_FILE, no en la
@@ -2689,15 +2711,16 @@ app.get('/api/sala/rooms', async (req, res) => {
   }
 });
 
-// Ocultar/mostrar una sala — preferencia local (ver comentario en GET
-// /api/sala/rooms de arriba). resolveOrCreateSalaConv garantiza que exista
-// la entrada aunque esta instancia nunca haya hablado ahí todavía (el
-// auto-descubrimiento del poller de menciones normalmente ya la creó, esto
-// es solo una red de seguridad).
+// Ocultar/mostrar una sala, y/o marcarla leída — preferencias locales (ver
+// comentario en GET /api/sala/rooms de arriba). resolveOrCreateSalaConv
+// garantiza que exista la entrada aunque esta instancia nunca haya hablado
+// ahí todavía (el auto-descubrimiento del poller de menciones normalmente ya
+// la creó, esto es solo una red de seguridad).
 app.patch('/api/sala/rooms/:id', (req, res) => {
   const { convId } = resolveOrCreateSalaConv(req.params.id);
   const data = meta.load(SALA_META_FILE);
-  data.conversations[convId].hidden = !!req.body.hidden;
+  if ('hidden' in req.body) data.conversations[convId].hidden = !!req.body.hidden;
+  if ('unread' in req.body) data.conversations[convId].unread = !!req.body.unread;
   meta.save(data, SALA_META_FILE);
   res.json({ ok: true });
 });

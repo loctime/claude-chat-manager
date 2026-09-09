@@ -472,7 +472,10 @@ function roomElement(room) {
   // lista de Chats (badge()), así se ve desde la lista sin tener que abrir
   // la sala. No hay forma de saber si el OTRO agente (del otro lado) está
   // procesando, eso vive en su propia PC.
-  const b = badge(room.busy ? 'running' : null);
+  // Mismo criterio que convElement(): el badge de "procesando" tiene
+  // prioridad visual sobre el punto de "no leído" (mientras corre, "no
+  // leído" todavía no aplica).
+  const b = badge(room.busy ? 'running' : null) || (room.unread ? '<span class="unread-dot" title="Sin leer"></span>' : '');
   const div = document.createElement('div');
   div.className = 'conv notebook-row';
   div.innerHTML = `
@@ -606,6 +609,11 @@ async function loadRoomList() {
   const { rooms: list } = await api('/sala/rooms');
   rooms = list;
   renderRoomList();
+  // Prende/apaga la pestaña "Sala" en la barra de arriba (mismo mecanismo
+  // que Chats/Codex, ver setPaneUnread) — se llama tanto desde acá (sala
+  // abierta) como desde el poll liviano global (pollTrees), así se entera
+  // aunque nunca hayas entrado a la pestaña.
+  setPaneUnread('5', list.some(r => r.unread));
 }
 
 async function safeLoadRoomList() {
@@ -750,6 +758,21 @@ async function openRoom(id, name) {
   showNotebookView(false); // si había una libreta abierta, se cierra — mismo bug que reportó Diego, en la otra dirección
   showSalaView(true);
   openChat();
+  // Marcar leída — mismo criterio que selectConv() con conv.unread: se
+  // dispara al abrir, sin esperar (no tiene sentido bloquear la apertura de
+  // la sala por esto). Actualiza el estado local ya mismo (no hay que
+  // esperar el próximo poll) y reevalúa si la pestaña sigue teniendo que
+  // brillar por OTRA sala.
+  const roomRef = rooms.find(r => r.id === id);
+  if (roomRef && roomRef.unread) {
+    roomRef.unread = false;
+    setPaneUnread('5', rooms.some(r => r.unread));
+  }
+  api(`/sala/rooms/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ unread: false }),
+  }).catch(() => {});
   try { await loadRoomMessages(); setSalaOnline(true); }
   catch (err) { setSalaOnline(false); toast('No se pudieron cargar los mensajes de la sala: ' + err.message); }
 }
@@ -5060,6 +5083,13 @@ function pollTrees() {
     // Todavía no se abrió la pestaña: alcanza con encender su aviso liviano.
     codexApi('/tree').then(({ unreadTotal }) => setPaneUnread('2', unreadTotal > 0)).catch(() => {});
   }
+  // Sala: mismo criterio liviano de arriba — si el pane ya está abierto,
+  // pollSalaPane (más abajo) ya trae la lista completa cada 5s (que también
+  // prende/apaga el aviso, ver loadRoomList); esto solo cubre el caso de
+  // nunca haber entrado a la pestaña, igual que la rama de Codex. Sin esto
+  // Sala no se enteraba NUNCA de que llegó una respuesta mientras no la
+  // mirabas — era la otra mitad real del bug que reportó Diego.
+  api('/sala/rooms').then(({ rooms: list }) => setPaneUnread('5', list.some(r => r.unread))).catch(() => {});
 }
 loadAccounts().then(() => safeLoadTree());
 loadCodexAvailability();
