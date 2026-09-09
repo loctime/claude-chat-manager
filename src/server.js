@@ -1416,6 +1416,27 @@ app.post('/api/agenda/:id/done', (req, res) => {
   res.json(result);
 });
 
+// "🎓 Aprender rutina nueva" — Fernando enseña una tarea recurrente sin tocar
+// código. Se guarda en agenda.json, no en el catálogo fijo (ver agenda.js).
+app.post('/api/agenda/tasks', (req, res) => {
+  const title = (req.body.title || '').trim();
+  if (!title) return res.status(400).json({ error: 'falta el título' });
+  const task = agenda.addCustomTask({
+    title,
+    group: (req.body.group || '').trim() || undefined,
+    day: req.body.day,
+    kind: req.body.kind,
+    insumoNota: (req.body.insumoNota || '').trim() || undefined,
+  });
+  res.status(201).json(task);
+});
+
+app.delete('/api/agenda/tasks/:id', (req, res) => {
+  const ok = agenda.removeCustomTask(req.params.id);
+  if (!ok) return res.status(404).json({ error: 'tarea no encontrada' });
+  res.json({ ok: true });
+});
+
 const MACARENA_EMAIL = 'macarena.schwindt@maximia.com.ar';
 
 function macarenaTemplateText() {

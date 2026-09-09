@@ -307,10 +307,13 @@ body.codex-list-theme #panel-list {
 .agenda-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
 .agenda-dot.verde { background: #2ecc71; }
 .agenda-dot.amarillo { background: #f1c40f; }
+.agenda-dot.naranja { background: #e67e22; }
 .agenda-dot.rojo { background: #e74c3c; }
 .agenda-dot.esperando { background: #3498db; }
 .agenda-title { font-weight: 600; font-size: 14px; flex: 1; }
 .agenda-meta { font-size: 12px; color: var(--text2); }
+.agenda-checklist { margin: 2px 0 0; padding-left: 18px; font-size: 12px; color: var(--text2); }
+.agenda-checklist li { margin: 2px 0; }
 .agenda-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
 .agenda-actions button {
   font-size: 12px; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--border);
@@ -325,6 +328,24 @@ body.codex-list-theme #panel-list {
   color: var(--text); font-family: var(--chat-font); font-size: 13px; box-sizing: border-box;
 }
 .agenda-warning { font-size: 12px; color: #e67e22; }
+.agenda-header { padding: 2px 2px 8px; }
+.agenda-header button {
+  width: 100%; font-size: 13px; padding: 8px 10px; border-radius: var(--radius);
+  border: 1px dashed var(--border); background: none; color: var(--text); cursor: pointer;
+}
+.agenda-header button:hover { background: var(--input-bg); }
+.agenda-delete-btn { background: none; border: none; color: var(--text2); cursor: pointer; font-size: 14px; padding: 0 2px; margin-left: auto; }
+.agenda-delete-btn:hover { color: #e74c3c; }
+
+/* Badge de la pestaña "Agenda" — visible desde cualquier otra sección (Chats,
+   Notas, etc.) sin tener que entrar, cuenta las tareas en rojo (vencidas). */
+.pane-tab { position: relative; }
+.tab-badge {
+  position: absolute; top: 2px; right: 2px; min-width: 15px; height: 15px; padding: 0 3px;
+  border-radius: 999px; background: #e74c3c; color: #fff; font-size: 10px; font-weight: 700;
+  line-height: 15px; text-align: center;
+}
+.tab-badge.tab-badge-naranja { background: #e67e22; }
 
 
 /* ── Escáner de documentos (tipo CamScanner) ── */
