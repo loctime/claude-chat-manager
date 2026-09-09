@@ -855,6 +855,10 @@ body.codex-list-theme #panel-list {
 .msg-date-today { color: #53bdeb; }
 .msg-date-recent { color: rgba(233,237,239,.75); }
 .msg-date-old { color: var(--danger); }
+/* Autor de la burbuja — solo lo usa Sala (hasta 4 voces por sala, a
+   diferencia de Chats/Codex que son vos+un agente). Mismo tono apagado que
+   .msg-date/.msg-time. */
+.msg-author { font-size: 11px; font-weight: 600; opacity: .7; margin-bottom: 2px; }
 /* Barra arriba de la burbuja: copiar a un lado, escuchar al otro. */
 .msg-toolbar-top {
   display: flex; justify-content: space-between; align-items: center;

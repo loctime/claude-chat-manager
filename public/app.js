@@ -521,18 +521,40 @@ function setSalaOnline(online) {
   $('sala-send').disabled = !online;
 }
 
+// El texto de cada mensaje de sala llega con un prefijo mecánico "Autor:
+// texto" (server.js, ver POST /api/sala/rooms/:id/message y
+// publishSalaReplyIfNeeded) — m.author del servicio VPS identifica la
+// INSTANCIA (Jarvis/FerStark), no quién de los dos habló dentro de ella.
+// Acá se separa el prefijo para no mostrarlo duplicado (una vez como
+// etiqueta, otra adentro del texto) y se decide de qué lado va la burbuja
+// comparando contra USER_NAME/APP_NAME de ESTA instancia — simétrico: en
+// el Jarvis de Diego, "Diego"/"J.A.R.V.I.S" son "mías" (burbuja derecha,
+// role user); en el FerStark de Fernando, exactamente lo mismo pero con
+// sus propios nombres. Es una heurística de texto, no un campo del
+// protocolo — si un mensaje real arrancara con "Algo: " se malinterpreta
+// el label, pero el contenido no se pierde (caso raro para 2 personas).
+function roomMessageBubble(m) {
+  const match = m.text.match(/^([^:\n]{1,40}): ([\s\S]*)$/);
+  const author = match ? match[1] : m.author;
+  const text = match ? match[2] : m.text;
+  const mine = author === USER_NAME || author === APP_NAME;
+  return { author, text, role: mine ? 'user' : 'assistant' };
+}
+
 function renderRoomMessages() {
   const wrap = $('sala-messages');
   wrap.innerHTML = '';
-  for (const m of roomMessages) {
-    const div = document.createElement('div');
-    div.className = 'note-entry'; // reusa el estilo ya definido para entradas de Notas
-    div.innerHTML = `<div class="note-author"></div><div class="note-text"></div>`;
-    div.querySelector('.note-author').textContent = m.author;
-    div.querySelector('.note-text').textContent = m.text;
-    wrap.appendChild(div);
+  if (roomMessages.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'notes-empty';
+    empty.textContent = 'Sin mensajes todavía — escribí algo para arrancar.';
+    wrap.appendChild(empty);
+    return;
   }
-  wrap.scrollTop = wrap.scrollHeight;
+  for (const m of roomMessages) {
+    const { author, text, role } = roomMessageBubble(m);
+    addMsg(role, text, { container: wrap, composerId: 'sala-input', author, ts: m.ts });
+  }
 }
 
 async function loadRoomMessages() {
@@ -1441,7 +1463,7 @@ async function codexCancel() {
 }
 
 async function codexPerformSend(convId, text, imagePath) {
-  addMsg('user', text, { container: $('codex-messages') });
+  addMsg('user', text, { container: $('codex-messages'), composerId: 'codex-composer-text' });
   setCodexBusy(true);
   try {
     await codexApi(`/conversations/${convId}/message`, {
@@ -2529,8 +2551,12 @@ async function copyToClipboard(text) {
 // avisos de contexto — ver pendingRewindNotice/compactedSummary en
 // server.js), distinguiendo si se cita algo que dijo Claude o algo que dijo
 // el propio usuario antes. Diego, 2026-09-07.
-function quoteIntoComposer(text, role) {
-  const input = $('input');
+// composerId: a qué composer va la cita — antes esto asumía siempre el
+// chat principal (#input), lo cual era un bug latente para Codex (mismo
+// addMsg/attachMsgGestures, citar ahí también habría prefillado el
+// composer equivocado) — ver ctx.composerId en attachMsgGestures/addMsg.
+function quoteIntoComposer(text, role, composerId = 'input') {
+  const input = $(composerId);
   let t = text.trim();
   if (t.length > 500) t = t.slice(0, 500) + '…';
   const label = role === 'assistant'
@@ -2539,7 +2565,7 @@ function quoteIntoComposer(text, role) {
   const quoted = label + '\n' + t.split('\n').map(l => '> ' + l).join('\n') + '\n\n';
   input.value = quoted + input.value;
   autoResize(input);
-  if (currentConv) drafts.set(currentConv, input.value);
+  if (composerId === 'input' && currentConv) drafts.set(currentConv, input.value);
   input.focus();
   input.selectionStart = input.selectionEnd = input.value.length;
 }
@@ -2658,7 +2684,7 @@ function showMsgMenu(x, y, ctx) {
     if (action === 'copy') copyToClipboard(ctx.text);
     else if (action === 'select') enterSelectionMode(ctx.el);
     else if (action === 'multiselect') enterMultiSelectMode(ctx.el);
-    else if (action === 'quote') quoteIntoComposer(ctx.text, ctx.role);
+    else if (action === 'quote') quoteIntoComposer(ctx.text, ctx.role, ctx.composerId);
     else if (action === 'rewind') doRewind(ctx);
   };
 
@@ -3473,6 +3499,17 @@ function addMsg(role, text, opts = {}) {
   if (role !== 'error') {
     const kind = role === 'user' ? 'user' : 'assistant';
 
+    // Autor visible arriba de la burbuja — solo lo usa Sala (hasta 4 voces
+    // distintas por sala, a diferencia de Chats/Codex que son vos+un agente
+    // y no lo necesitan). opts.author ausente = no se agrega nada, cero
+    // cambio visual para los llamadores existentes.
+    if (opts.author) {
+      const authorEl = document.createElement('div');
+      authorEl.className = 'msg-author';
+      authorEl.textContent = opts.author;
+      div.appendChild(authorEl);
+    }
+
     // Barra arriba: copiar + escuchar, uno en cada punta.
     const topBar = document.createElement('div');
     topBar.className = 'msg-toolbar-top';
@@ -3510,7 +3547,7 @@ function addMsg(role, text, opts = {}) {
     div.appendChild(topBar);
     div.appendChild(span);
     div.appendChild(bottomBar);
-    attachMsgGestures(div, { role, text, uuid: opts.uuid, compacted: !!opts.compacted });
+    attachMsgGestures(div, { role, text, uuid: opts.uuid, compacted: !!opts.compacted, composerId: opts.composerId });
   } else {
     div.textContent = text;
   }
