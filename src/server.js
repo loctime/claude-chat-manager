@@ -2538,6 +2538,12 @@ app.get('/api/codex/tree', async (req, res) => {
       pinned: !!c.pinned,
       archived: !!c.archived,
       unread: !!c.unread,
+      // currentSessionId: NO se manda en la respuesta (el cliente no lo usa),
+      // pero hace falta acá adentro — el filtro de unreadTotal más abajo lo
+      // exige, y como nunca se agregaba a este objeto, esa condición daba
+      // falso SIEMPRE: la pestaña Codex jamás se prendía, para ninguna
+      // conversación, desde que existe esta función. Bug real, no de caché.
+      currentSessionId: c.currentSessionId || null,
       status: codexConvStatus(convId),
     });
   }
