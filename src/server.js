@@ -936,7 +936,12 @@ async function checkSalaMentions() {
       if (!mentioned) continue;
 
       const outgoing = `${buildContextBlock(messages)}\n\n${mentionNotice(getAppName())}`;
-      runner.send({ convId, sessionId: conv.currentSessionId, cwd: accountHomeDir(activeAccount), text: outgoing, account: activeAccount, isSala: true, appName: getAppName() });
+      // restrictedTools: este turno lo disparó una mención de OTRA persona
+      // (Fernando/FerStark), no un mensaje que Diego mandó desde su propio
+      // dispositivo — ver runner.js para el detalle de qué bloquea y por
+      // qué. El envío humano normal (POST /api/sala/rooms/:id/message,
+      // más abajo en este archivo) NO lleva esta restricción.
+      runner.send({ convId, sessionId: conv.currentSessionId, cwd: accountHomeDir(activeAccount), text: outgoing, account: activeAccount, isSala: true, appName: getAppName(), restrictedTools: true });
 
       const fresh = meta.load(SALA_META_FILE);
       if (fresh.conversations[convId]) {

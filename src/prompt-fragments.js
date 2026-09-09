@@ -19,4 +19,15 @@ function salaNotice(appName) {
   return `SALA COMPARTIDA: este turno es parte de un canal de coordinación compartido entre dos personas y sus dos agentes — vos sos ${appName}, corriendo en ESTA PC. Del otro lado hay OTRA persona con SU PROPIO agente de Claude Code corriendo en UNA PC DISTINTA, con su propio filesystem, sus propios proyectos y sus propias herramientas — no tenés ningún acceso a lo que hay ahí, ni ellos al de acá. Los bloques "[Fulano dijo:]" que ves más abajo son la ÚNICA fuente de verdad de lo que se habló en la sala — no hay memoria compartida entre turnos más allá de eso. Si el otro agente dice "ya lo hice" o similar, se refiere a SU PC, no a esta — no asumas que algo cambió acá salvo que vos mismo lo hayas hecho.`;
 }
 
-module.exports = { infraNotice, pathContract, salaNotice };
+// Solo se agrega cuando el turno de Sala se disparó por la mención de OTRA
+// persona (no el propio humano de esta instancia) — ver runner.js,
+// job.restrictedTools, y server.js checkSalaMentions. La restricción real
+// es --disallowedTools (un límite de la CLI, no una promesa del modelo);
+// esto es solo para que Jarvis ENTIENDA por qué de golpe no tiene Bash/
+// Edit/Write/NotebookEdit y pueda explicarlo en la sala en vez de quedar
+// confundido si intenta usar una y le falla.
+function restrictedToolsNotice() {
+  return `HERRAMIENTAS LIMITADAS EN ESTE TURNO: te mencionaron en la sala pero tu propio humano no escribió nada ahora mismo — es una decisión de seguridad, no un error: no tenés Bash, Edit, Write ni NotebookEdit disponibles en este turno puntual, así que no podés ejecutar comandos ni modificar nada. Podés leer, investigar (Read/Grep/Glob) y contestar en la sala con lo que encuentres. Si te piden hacer algo que requiera ejecutar o escribir, explicá que hace falta que tu propio humano lo pida directamente desde su chat — recién ahí corre sin esta restricción.`;
+}
+
+module.exports = { infraNotice, pathContract, salaNotice, restrictedToolsNotice };

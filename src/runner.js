@@ -2,7 +2,7 @@ const { spawn, execFileSync } = require('child_process');
 const { EventEmitter } = require('events');
 const os = require('os');
 const { CLAUDE_CMD } = require('./claude-cmd');
-const { infraNotice, pathContract, salaNotice } = require('./prompt-fragments');
+const { infraNotice, pathContract, salaNotice, restrictedToolsNotice } = require('./prompt-fragments');
 
 const CURRENT_USER = os.userInfo().username;
 const IS_WIN = process.platform === 'win32';
@@ -73,9 +73,22 @@ class Runner extends EventEmitter {
     // agente) — no depende de selfPort, así que se agrega también en
     // instalaciones sin panel propio expuesto (igual corre siempre acá).
     if (job.isSala) promptFragments.push(salaNotice(job.appName || 'este agente'));
+    if (job.restrictedTools) promptFragments.push(restrictedToolsNotice());
     if (promptFragments.length > 0) {
       args.push('--append-system-prompt', promptFragments.join('\n\n'));
     }
+    // job.restrictedTools: seteado por server.js SOLO en el poller de
+    // menciones de Sala (checkSalaMentions) — el turno se disparó porque
+    // OTRA persona (no el humano de esta instancia) mencionó a este agente,
+    // sin que su propio humano escribiera nada en ese momento. A diferencia
+    // de --dangerously-skip-permissions (que solo salta la confirmación,
+    // sigue dejando ejecutar cualquier cosa), esto es un límite real de la
+    // CLI: aunque el modelo "decida" actuar, la herramienta ni existe para
+    // él. Puede leer/investigar (Read/Grep/Glob/Task) y contestar en la
+    // sala, pero no puede ejecutar comandos ni tocar archivos hasta que su
+    // propio humano mande un mensaje real (ese turno sí corre sin esta
+    // restricción, como cualquier mensaje humano de siempre).
+    if (job.restrictedTools) args.push('--disallowedTools', 'Bash,Edit,Write,NotebookEdit');
     if (job.sessionId) args.push('--resume', job.sessionId);
     if (job.model) args.push('--model', job.model);
     const account = job.account || CURRENT_USER;

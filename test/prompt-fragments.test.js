@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { infraNotice, pathContract, salaNotice } = require('../src/prompt-fragments');
+const { infraNotice, pathContract, salaNotice, restrictedToolsNotice } = require('../src/prompt-fragments');
 
 test('infraNotice incluye host:puerto y menciona el riesgo de auto-matarse', () => {
   const s = infraNotice('127.0.0.1', 3777);
@@ -20,4 +20,11 @@ test('salaNotice incluye el nombre de la instancia y aclara que el otro agente c
   assert.match(s, /vos sos Jarvis/);
   assert.match(s, /PC DISTINTA/);
   assert.match(s, /no asumas que algo cambió acá/);
+});
+
+test('restrictedToolsNotice explica la limitación sin sonar a error', () => {
+  const s = restrictedToolsNotice();
+  assert.match(s, /Bash, Edit, Write ni NotebookEdit/);
+  assert.match(s, /no un error/);
+  assert.match(s, /tu propio humano/);
 });

@@ -110,6 +110,27 @@ test('sin job.isSala no se agrega el aviso de Sala', () => {
   assert.doesNotMatch(spawned[0].args[i + 1], /SALA COMPARTIDA/);
 });
 
+test('job.restrictedTools bloquea Bash/Edit/Write/NotebookEdit vía --disallowedTools', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  r.send({ convId: 'c1', sessionId: 's1', cwd: '/t', text: 'a', isSala: true, appName: 'Jarvis', restrictedTools: true });
+  const i = spawned[0].args.indexOf('--disallowedTools');
+  assert.ok(i >= 0);
+  assert.equal(spawned[0].args[i + 1], 'Bash,Edit,Write,NotebookEdit');
+  // El límite real (--disallowedTools) va acompañado del aviso — así Jarvis
+  // entiende por qué de golpe no tiene esas herramientas, en vez de quedar
+  // confundido si intenta usar una y le falla.
+  const j = spawned[0].args.indexOf('--append-system-prompt');
+  assert.match(spawned[0].args[j + 1], /HERRAMIENTAS LIMITADAS EN ESTE TURNO/);
+});
+
+test('sin job.restrictedTools no se agrega --disallowedTools (mensaje humano normal en Sala)', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  r.send({ convId: 'c1', sessionId: 's1', cwd: '/t', text: 'a', isSala: true, appName: 'Jarvis' });
+  assert.ok(!spawned[0].args.includes('--disallowedTools'));
+});
+
 test('con selfPort configurado, el --append-system-prompt incluye el contrato de rutas', () => {
   const spawned = [];
   const r = new Runner({
