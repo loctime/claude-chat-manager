@@ -268,7 +268,13 @@ function openIndex(dbPath) {
     return { indexed, skipped, removed: known.size };
   }
 
-  function chatItems(projectsDir) {
+  // excludeSessionIds: sesiones que técnicamente viven en el mismo
+  // projectsDir (mismo runner de Claude Code, mismo cwd) pero no son un
+  // chat normal — hoy solo las de Sala (ver SALA_META_FILE en server.js).
+  // Sala corre por fuera de accountMetaFile a propósito, así que a nivel
+  // archivo son indistinguibles de un chat cualquiera; el caller es quien
+  // sabe cuáles excluir.
+  function chatItems(projectsDir, excludeSessionIds = new Set()) {
     const items = [];
     let dirs;
     try { dirs = fs.readdirSync(projectsDir); } catch { return items; }
@@ -278,6 +284,7 @@ function openIndex(dbPath) {
       try { files = fs.readdirSync(dirPath); } catch { continue; }
       for (const f of files) {
         if (!f.endsWith('.jsonl')) continue;
+        if (excludeSessionIds.has(f.slice(0, -'.jsonl'.length))) continue;
         const file = path.join(dirPath, f);
         items.push({ file, build: () => chatDocs(file) });
       }
@@ -288,8 +295,8 @@ function openIndex(dbPath) {
   return {
     db,
 
-    syncChats(projectsDir, account, { onProgress } = {}) {
-      return syncSources('chat', account, chatItems(projectsDir), onProgress);
+    syncChats(projectsDir, account, { onProgress, excludeSessionIds } = {}) {
+      return syncSources('chat', account, chatItems(projectsDir, excludeSessionIds), onProgress);
     },
 
     // `notebooks` = [{ id, name, file }] — lo arma el caller desde el módulo de

@@ -248,6 +248,38 @@ test('saca del índice las sesiones borradas del disco', async () => {
   idx.close();
 });
 
+// ── excludeSessionIds (Sala corre con el mismo runner/cwd que un chat
+// normal — a nivel archivo es indistinguible, así que sin esto su
+// contenido se indexaría como si fuera un chat cualquiera) ──
+
+test('excludeSessionIds no indexa la sesión, aunque viva en el mismo projectsDir que un chat normal', async () => {
+  const base = makeProjects({
+    p: {
+      'chat-normal.jsonl': [userEntry('mensaje de un chat común')],
+      'sala-general.jsonl': [userEntry('mensaje adentro de una sala')],
+    },
+  });
+  const idx = openIndex(':memory:');
+  const res = await idx.syncChats(base, 'locti', { excludeSessionIds: new Set(['sala-general']) });
+
+  assert.equal(res.indexed, 1, 'solo se indexa el chat normal');
+  assert.equal(idx.search('chat común', { kind: 'chat', account: 'locti' }).length, 1);
+  assert.equal(idx.search('adentro de una sala', { kind: 'chat', account: 'locti' }).length, 0);
+  idx.close();
+});
+
+test('una sesión ya indexada se saca del índice si un sync posterior la excluye', async () => {
+  const base = makeProjects({ p: { 'sala-general.jsonl': [userEntry('mensaje de sala ya indexado antes del fix')] } });
+  const idx = openIndex(':memory:');
+  await idx.syncChats(base, 'locti'); // sin exclusión — como quedó antes de este fix
+  assert.equal(idx.search('indexado', { kind: 'chat', account: 'locti' }).length, 1);
+
+  const res = await idx.syncChats(base, 'locti', { excludeSessionIds: new Set(['sala-general']) });
+  assert.equal(res.removed, 1);
+  assert.equal(idx.search('indexado', { kind: 'chat', account: 'locti' }).length, 0);
+  idx.close();
+});
+
 // ── Notas ──
 
 test('indexa notas y las devuelve con su libreta', async () => {

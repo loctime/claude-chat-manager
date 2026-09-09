@@ -220,7 +220,18 @@ async function syncSearchIndex(acc, { reason = 'timer' } = {}) {
   syncing.add(acc);
   const t0 = Date.now();
   try {
-    const chats = await index.syncChats(accountProjectsDir(acc), acc);
+    // Las sesiones de Sala corren con el mismo runner y el mismo cwd que un
+    // chat normal (ver /api/sala/rooms/:id/message) — a nivel archivo son
+    // indistinguibles, así que sin esto su contenido aparecería en la
+    // Búsqueda como si fuera un chat cualquiera. Viven en SALA_META_FILE,
+    // no en accountMetaFile, a propósito (ver docs/superpowers/specs/
+    // 2026-09-07-sala-compartida-design.md).
+    const salaSessionIds = new Set(
+      Object.values(meta.load(SALA_META_FILE).conversations)
+        .map(c => c.currentSessionId)
+        .filter(Boolean)
+    );
+    const chats = await index.syncChats(accountProjectsDir(acc), acc, { excludeSessionIds: salaSessionIds });
     const notebooks = notes.listNotebooks().map(nb => ({
       id: nb.id, name: nb.name, file: notes.notebookNotesFile(nb.id),
     }));
@@ -1950,9 +1961,14 @@ app.get('/api/tree', (req, res) => {
 app.get('/api/cleanup/sessions', (req, res) => {
   const acc = req.query.account || activeAccount;
   const data = meta.load(accountMetaFile(acc));
+  // Sin esto, una sesión de Sala (vive en SALA_META_FILE, no en
+  // accountMetaFile) se clasifica como "orphan" — nada la referencia desde
+  // el punto de vista de este endpoint — y queda ofrecida para borrar como
+  // si fuera basura, cuando en realidad es la sesión activa de una sala.
+  const salaConversations = meta.load(SALA_META_FILE).conversations;
   const report = scanner.buildCleanupReport(
     accountProjectsDir(acc),
-    data.conversations,
+    { ...data.conversations, ...salaConversations },
     convId => convStatus(convId) !== 'idle',
     data.superseded,
   );
