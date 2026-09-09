@@ -1,3 +1,4 @@
+const $ = id => document.getElementById(id);
 let currentConv = null;
 function gitSyncToast(result) {
   const repo = (result.repo || '').split(/[\\/]/).filter(Boolean).pop() || 'repo';
@@ -891,7 +892,6 @@ let GROQ_KEY_SET = false;
 let SALA_URL = '';
 let SALA_TOKEN_SET = false;
 
-const $ = id => document.getElementById(id);
 const messagesEl = $('messages');
 
 // ── Selector de cuentas ──
