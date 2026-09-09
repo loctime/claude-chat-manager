@@ -699,8 +699,19 @@ function roomMessageBubble(m) {
   return { author, text, role: mine ? 'user' : 'assistant' };
 }
 
+// Se llama en cada refresco (poll cada 5s de la sala abierta + fin de turno
+// vía el stream en vivo) — sin cuidado, cada addMsg() de más abajo fuerza
+// wrap.scrollTop al fondo (mismo comportamiento ya documentado y resuelto
+// para Chats en loadMessages(), ver ahí el comentario) y te saca de donde
+// estabas leyendo en medio de la sala. Mismo criterio: si ya estabas pegado
+// al fondo (margen de 48px, para no exigir el pixel exacto) se sigue
+// auto-scrolleando solo con cada mensaje nuevo; si no, se vuelve al lugar
+// exacto de antes del refresco.
 function renderRoomMessages() {
   const wrap = $('sala-messages');
+  const STICK_THRESHOLD = 48;
+  const wasStuck = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < STICK_THRESHOLD;
+  const prevTop = wrap.scrollTop;
   wrap.innerHTML = '';
   if (roomMessages.length === 0) {
     const empty = document.createElement('div');
@@ -714,6 +725,7 @@ function renderRoomMessages() {
     const { author, text, role } = roomMessageBubble(m);
     addMsg(role, text, { container: wrap, composerId: 'sala-input', author, authorColor: colors.get(author), ts: m.ts });
   }
+  wrap.scrollTop = wasStuck ? wrap.scrollHeight : prevTop;
 }
 
 function setSalaBusy(busy) {
