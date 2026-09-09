@@ -10,6 +10,8 @@ const archiver = require('archiver');
 const { PDFDocument } = require('pdf-lib');
 const scanner = require('./scanner');
 const notes = require('./notes');
+const agenda = require('./agenda');
+const outlookClassic = require('./outlook-classic');
 const meta = require('./meta');
 const config = require('./config');
 const icon = require('./icon');
@@ -1473,6 +1475,112 @@ app.post('/api/notebooks/:id/notes/upload', notesUpload.single('file'), (req, re
   notes.append(entry, notes.notebookNotesFile(req.params.id));
   syncSearchIndex(activeAccount, { reason: 'nota' });
   res.status(201).json({ entry, notebook: nb });
+});
+
+// ── Agenda (semáforo de tareas recurrentes mensuales) ──
+// Ver charla con Fernando 07/09/2026: catálogo fijo en agenda.js, el envío
+// real de mails pasa por Outlook clásico vía COM/MAPI (outlook-classic.js,
+// portado de maximia-mail-tasks) — sin Graph, sin Azure, sin SMTP. Esta
+// sesión NUNCA aprieta "Enviar": arma el texto, lo muestra, y recién cuando
+// el usuario confirma abre la ventana de Outlook para que la mande él mismo.
+app.get('/api/agenda', (req, res) => {
+  res.json({ tasks: agenda.list(), macarena: agenda.getMacarena() });
+});
+
+app.post('/api/agenda/:id/done', (req, res) => {
+  const done = req.body.done !== false;
+  const result = agenda.markDone(req.params.id, done);
+  if (!result) return res.status(404).json({ error: 'tarea no encontrada' });
+  res.json(result);
+});
+
+// "🎓 Aprender rutina nueva" — Fernando enseña una tarea recurrente sin tocar
+// código. Se guarda en agenda.json, no en el catálogo fijo (ver agenda.js).
+app.post('/api/agenda/tasks', (req, res) => {
+  const title = (req.body.title || '').trim();
+  if (!title) return res.status(400).json({ error: 'falta el título' });
+  const task = agenda.addCustomTask({
+    title,
+    group: (req.body.group || '').trim() || undefined,
+    day: req.body.day,
+    kind: req.body.kind,
+    insumoNota: (req.body.insumoNota || '').trim() || undefined,
+  });
+  res.status(201).json(task);
+});
+
+app.delete('/api/agenda/tasks/:id', (req, res) => {
+  const ok = agenda.removeCustomTask(req.params.id);
+  if (!ok) return res.status(404).json({ error: 'tarea no encontrada' });
+  res.json({ ok: true });
+});
+
+const MACARENA_EMAIL = 'macarena.schwindt@maximia.com.ar';
+
+function macarenaTemplateText() {
+  const meses = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+  const now = new Date();
+  const mesActual = meses[now.getMonth()];
+  return `Hola Maca, ¿cómo estás? Te pido si podés pasarme la nómina de personal actualizada por operación, para armar el estadístico de contratista de ${mesActual}.\n\nMuchas gracias!`;
+}
+
+// Busca el último mail de Maca en el hilo de nómina — sirve tanto para armar
+// el "Preparar pedido" (reply-to) como para el chequeo de respuesta.
+async function findMacarenaThread() {
+  return outlookClassic.findLatest('30d', { fromContains: MACARENA_EMAIL, subjectContains: 'nomina' });
+}
+
+// Arma el texto propuesto y lo devuelve para que el usuario lo revise/edite
+// en el front ANTES de tocar Outlook. No abre nada todavía.
+app.post('/api/agenda/macarena/prepare', async (req, res) => {
+  try {
+    const last = await findMacarenaThread();
+    res.json({
+      entryId: last ? last.id : null,
+      subject: last ? last.subject : null,
+      receivedDateTime: last ? last.receivedDateTime : null,
+      proposedText: macarenaTemplateText(),
+      warning: last ? null : 'No encontré un mail previo de Maca en los últimos 30 días con "nomina" en el asunto — revisar a mano.',
+    });
+  } catch (err) {
+    console.error('[api/agenda/macarena/prepare]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Recién acá se toca Outlook: abre la respuesta con el texto YA confirmado
+// por el usuario, mostrada en la ventana de Outlook — no manda nada, el
+// "Enviar" lo aprieta Fernando.
+app.post('/api/agenda/macarena/send', async (req, res) => {
+  const { entryId, text } = req.body;
+  if (!entryId || !text) return res.status(400).json({ error: 'falta entryId o text' });
+  try {
+    await outlookClassic.openReplyDraft(entryId, text);
+    const macarena = agenda.updateMacarena({ lastRequestedAt: Date.now(), lastRequestEntryId: entryId, threadEntryId: entryId, lastReplyAt: null });
+    agenda.setWaiting('estadistico_contratista');
+    res.json({ ok: true, macarena });
+  } catch (err) {
+    console.error('[api/agenda/macarena/send]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Chequeo liviano — sin LLM, solo lee Outlook por COM. Si hay un mail de
+// Maca más nuevo que el último pedido, la tarea deja de estar "esperando".
+app.post('/api/agenda/macarena/check', async (req, res) => {
+  try {
+    const macarena = agenda.getMacarena();
+    const last = await findMacarenaThread();
+    const replied = !!(last && macarena.lastRequestedAt && new Date(last.receivedDateTime).getTime() > macarena.lastRequestedAt);
+    const updated = agenda.updateMacarena({
+      lastCheckedAt: Date.now(),
+      lastReplyAt: replied ? new Date(last.receivedDateTime).getTime() : macarena.lastReplyAt,
+    });
+    res.json({ replied, lastEntry: last, macarena: updated });
+  } catch (err) {
+    console.error('[api/agenda/macarena/check]', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── Escáner de documentos (tipo CamScanner) ──
