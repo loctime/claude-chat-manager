@@ -2,7 +2,7 @@ const { spawn, execFileSync } = require('child_process');
 const { EventEmitter } = require('events');
 const os = require('os');
 const { CLAUDE_CMD } = require('./claude-cmd');
-const { infraNotice, pathContract } = require('./prompt-fragments');
+const { infraNotice, pathContract, salaNotice } = require('./prompt-fragments');
 
 const CURRENT_USER = os.userInfo().username;
 const IS_WIN = process.platform === 'win32';
@@ -68,6 +68,11 @@ class Runner extends EventEmitter {
       promptFragments.push(infraNotice(host, this.selfPort));
       promptFragments.push(pathContract());
     }
+    // job.isSala: seteado por server.js en los dos disparadores de turno de
+    // Sala (mención humana desde la sala, y el poller de menciones de otro
+    // agente) — no depende de selfPort, así que se agrega también en
+    // instalaciones sin panel propio expuesto (igual corre siempre acá).
+    if (job.isSala) promptFragments.push(salaNotice(job.appName || 'este agente'));
     if (promptFragments.length > 0) {
       args.push('--append-system-prompt', promptFragments.join('\n\n'));
     }

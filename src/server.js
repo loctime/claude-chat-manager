@@ -936,7 +936,7 @@ async function checkSalaMentions() {
       if (!mentioned) continue;
 
       const outgoing = `${buildContextBlock(messages)}\n\n${mentionNotice(getAppName())}`;
-      runner.send({ convId, sessionId: conv.currentSessionId, cwd: accountHomeDir(activeAccount), text: outgoing, account: activeAccount });
+      runner.send({ convId, sessionId: conv.currentSessionId, cwd: accountHomeDir(activeAccount), text: outgoing, account: activeAccount, isSala: true, appName: getAppName() });
 
       const fresh = meta.load(SALA_META_FILE);
       if (fresh.conversations[convId]) {
@@ -1860,15 +1860,32 @@ const MAX_TREE_LIMIT = 500;
 // una conversación pero no esté en el registro (auto-adopción, cubre datos
 // viejos o creados por otro cliente). El conteo sí se calcula al vuelo desde
 // las conversaciones — eso no se persiste aparte.
+//
+// Cada entrada de data.projects puede venir en dos formas: un string pelado
+// (formato viejo, de antes del 09/09) o {name, hideFromAll} (formato nuevo —
+// ver hideFromAll más abajo). projectEntry() normaliza cualquiera de las dos
+// a la forma objeto, así el resto del código no tiene que preguntar el tipo.
+function projectEntry(p) {
+  return typeof p === 'string' ? { name: p, hideFromAll: false } : p;
+}
+
 // Da de alta una etiqueta en el registro si todavía no está (comparación sin
 // mayúsculas/minúsculas) — se llama cada vez que una conversación queda
 // etiquetada con un proyecto, así el registro nunca queda desincronizado con
 // lo que realmente se está usando, aunque el alta explícita por /api/projects
 // se haya salteado (ej. un cliente viejo que solo mande `project` en el PATCH).
-function registerProject(data, name) {
+// hideFromAll solo se pisa si se pasa explícito (ej. el toggle al crear desde
+// la UI) — el alta automática por etiquetar una conversación no lo toca, para
+// no resetear sin querer un proyecto que alguien ya marcó oculto.
+function registerProject(data, name, hideFromAll) {
   if (!name) return;
   if (!Array.isArray(data.projects)) data.projects = [];
-  if (!data.projects.some(p => p.toLowerCase() === name.toLowerCase())) data.projects.push(name);
+  const idx = data.projects.findIndex(p => projectEntry(p).name.toLowerCase() === name.toLowerCase());
+  if (idx === -1) {
+    data.projects.push({ name, hideFromAll: !!hideFromAll });
+  } else if (hideFromAll !== undefined) {
+    data.projects[idx] = { name: projectEntry(data.projects[idx]).name, hideFromAll: !!hideFromAll };
+  }
 }
 
 function projectsWithCounts(data) {
@@ -1877,10 +1894,18 @@ function projectsWithCounts(data) {
     if (c.hidden || !c.project) continue;
     counts.set(c.project, (counts.get(c.project) || 0) + 1);
   }
-  const names = new Set([...(data.projects || []), ...counts.keys()]);
+  const registered = new Map((data.projects || []).map(p => { const e = projectEntry(p); return [e.name, e.hideFromAll]; }));
+  const names = new Set([...registered.keys(), ...counts.keys()]);
   return [...names]
-    .map(name => ({ name, count: counts.get(name) || 0 }))
+    .map(name => ({ name, count: counts.get(name) || 0, hideFromAll: !!registered.get(name) }))
     .sort((a, b) => a.name.localeCompare(b.name, 'es'));
+}
+
+// Nombres de proyecto marcados hideFromAll=true — /api/tree los salta cuando
+// se está mirando "Todos los proyectos" (sin filtro puesto). Filtrando
+// específicamente por ESE proyecto sí se ven (ver ?project= más abajo).
+function hiddenProjectNames(data) {
+  return new Set((data.projects || []).filter(p => projectEntry(p).hideFromAll).map(p => projectEntry(p).name));
 }
 
 app.get('/api/projects', (req, res) => {
@@ -1892,20 +1917,17 @@ app.get('/api/projects', (req, res) => {
 // Crea (o reactiva) una etiqueta de proyecto en el registro persistido, sin
 // necesidad de que ya exista una conversación con ese nombre — así "+ Nuevo
 // proyecto…" no desaparece la próxima vez que se abre el selector si todavía
-// no se etiquetó nada con él.
+// no se etiquetó nada con él. hideFromAll (opcional): si viene true, ese
+// proyecto queda oculto de "Todos los proyectos" desde el arranque — ver
+// hiddenProjectNames()/registerProject() arriba.
 app.post('/api/projects', (req, res) => {
   const acc = req.body.account || activeAccount;
   const name = (req.body.name || '').trim();
   if (!name) return res.status(400).json({ error: 'nombre vacío' });
   const metaFile = accountMetaFile(acc);
   const data = meta.load(metaFile);
-  if (!Array.isArray(data.projects)) data.projects = [];
-  // Sin duplicar por mayúsculas/minúsculas — "ferzep" y "FERZEP" son el mismo proyecto.
-  const exists = data.projects.some(p => p.toLowerCase() === name.toLowerCase());
-  if (!exists) {
-    data.projects.push(name);
-    meta.save(data, metaFile);
-  }
+  registerProject(data, name, 'hideFromAll' in req.body ? !!req.body.hideFromAll : undefined);
+  meta.save(data, metaFile);
   res.status(201).json({ projects: projectsWithCounts(data) });
 });
 
@@ -1915,7 +1937,7 @@ app.delete('/api/projects/:name', (req, res) => {
   const acc = req.query.account || activeAccount;
   const metaFile = accountMetaFile(acc);
   const data = meta.load(metaFile);
-  data.projects = (data.projects || []).filter(p => p !== req.params.name);
+  data.projects = (data.projects || []).filter(p => projectEntry(p).name !== req.params.name);
   meta.save(data, metaFile);
   res.json({ projects: projectsWithCounts(data) });
 });
@@ -1924,6 +1946,19 @@ app.get('/api/tree', (req, res) => {
   const acc = req.query.account || activeAccount;
   const data = meta.load(accountMetaFile(acc));
   const sessions = scanner.listSessions(accountProjectsDir(acc));
+  // Sesiones de Sala (viven en SALA_META_FILE, no en accountMetaFile — ver
+  // resolveOrCreateSalaConv) — sin esto, caían en el segundo loop de abajo
+  // como "huérfanas" sin proyecto. Ahora se agrupan bajo el proyecto "Salas",
+  // registrado (una sola vez) con hideFromAll:true — así no ensucian "Todos
+  // los proyectos" pero siguen disponibles filtrando por ese proyecto
+  // puntual, para cuando haga falta ver cómo se arma la conversación.
+  const salaSessionIds = new Set(
+    Object.values(meta.load(SALA_META_FILE).conversations).map(c => c.currentSessionId).filter(Boolean)
+  );
+  if (salaSessionIds.size > 0 && !(data.projects || []).some(p => projectEntry(p).name === 'Salas')) {
+    registerProject(data, 'Salas', true);
+    meta.save(data, accountMetaFile(acc));
+  }
   const referenced = new Set(data.superseded);
   for (const c of Object.values(data.conversations)) referenced.add(c.currentSessionId);
   const byId = new Map(sessions.map(s => [s.sessionId, s]));
@@ -1985,7 +2020,7 @@ app.get('/api/tree', (req, res) => {
       lastModel: s.lastModel || null,
       pinned: false,
       archived: false,
-      project: null,
+      project: salaSessionIds.has(s.sessionId) ? 'Salas' : null,
       contextPct: contextPctFor(s),
       status: convStatus(s.sessionId),
     });
@@ -2004,6 +2039,11 @@ app.get('/api/tree', (req, res) => {
     filtered = projectFilter === '__none__'
       ? filtered.filter(c => !c.project)
       : filtered.filter(c => c.project === projectFilter);
+  } else {
+    // "Todos los proyectos": saltar los marcados hideFromAll (ej. "Salas").
+    // Filtrando específicamente por ESE proyecto (rama de arriba) sí se ven.
+    const hidden = hiddenProjectNames(data);
+    if (hidden.size > 0) filtered = filtered.filter(c => !c.project || !hidden.has(c.project));
   }
 
   // Sort: pinned primero, después lastActivity desc.
@@ -2732,7 +2772,7 @@ app.post('/api/sala/rooms/:id/message', async (req, res) => {
       ? `${contextBlock}\n\n[Mensaje actual de ${getUserName()}]\n${text}`
       : text;
 
-    runner.send({ convId, sessionId: conv.currentSessionId, cwd: accountHomeDir(activeAccount), text: outgoing, account: activeAccount });
+    runner.send({ convId, sessionId: conv.currentSessionId, cwd: accountHomeDir(activeAccount), text: outgoing, account: activeAccount, isSala: true, appName: getAppName() });
     res.status(202).json({ queued: true });
   } catch (err) {
     res.status(502).json({ error: 'no se pudo publicar en la sala: ' + err.message });

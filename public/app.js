@@ -2309,17 +2309,28 @@ function updateProjectBar() {
 // el filtro activo, no etiqueta ninguna charla) desaparecía apenas se
 // navegaba a otro lado: no había ninguna conversación con esa etiqueta que
 // lo mantuviera vivo en /api/projects.
-async function createProject(name) {
+async function createProject(name, hideFromAll) {
   try {
     const resp = await api('/projects', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(withAccountBody({ name })),
+      body: JSON.stringify(withAccountBody({ name, hideFromAll: !!hideFromAll })),
     });
     knownProjects = resp.projects || knownProjects;
   } catch (err) {
     toast('No se pudo crear el proyecto: ' + err.message);
   }
+}
+
+// Pide nombre + si hay que ocultarlo de "Todos los proyectos" (ej. "Salas",
+// que usa exactamente esto) — mismos dos prompts nativos que ya usaba el
+// flujo viejo (esta app no tiene modales custom para inputs cortos), solo se
+// agregó el segundo. Devuelve null si se canceló el nombre.
+function promptNewProjectName() {
+  const name = (prompt('Nombre del proyecto (ej: FERZEP, Maximia, ControlApps):') || '').trim();
+  if (!name) return null;
+  const hideFromAll = confirm(`¿Ocultar "${name}" de "Todos los proyectos"? (vas a poder verlo igual filtrando por él)`);
+  return { name, hideFromAll };
 }
 
 function setActiveProject(name) {
@@ -2352,7 +2363,7 @@ function showProjectBarMenu() {
     const hr = document.createElement('hr');
     menu.appendChild(hr);
     for (const p of knownProjects) {
-      menu.appendChild(projectMenuItem(`${p.name} (${p.count})`, p.name));
+      menu.appendChild(projectMenuItem(`${p.name} (${p.count})${p.hideFromAll ? ' 🙈' : ''}`, p.name));
     }
   }
   const hr2 = document.createElement('hr');
@@ -2373,8 +2384,8 @@ function showProjectBarMenu() {
     if (!btn) return;
     menu.remove();
     if (btn.dataset.action === 'new-project') {
-      const name = (prompt('Nombre del proyecto (ej: FERZEP, Maximia, ControlApps):') || '').trim();
-      if (name) createProject(name).then(() => setActiveProject(name));
+      const p = promptNewProjectName();
+      if (p) createProject(p.name, p.hideFromAll).then(() => setActiveProject(p.name));
       return;
     }
     if ('project' in btn.dataset) setActiveProject(btn.dataset.project);
@@ -2449,8 +2460,8 @@ function showAssignProjectMenu(x, y, conv) {
     if (!btn) return;
     menu.remove();
     if (btn.dataset.action === 'new-project') {
-      const name = (prompt('Nombre del proyecto (ej: FERZEP, Maximia, ControlApps):') || '').trim();
-      if (name) createProject(name).then(() => assign(name));
+      const p = promptNewProjectName();
+      if (p) createProject(p.name, p.hideFromAll).then(() => assign(p.name));
       return;
     }
     if ('project' in btn.dataset) assign(btn.dataset.project);
