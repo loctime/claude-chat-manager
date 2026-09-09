@@ -24,6 +24,8 @@ let notebookListLoaded = false;
 let notebooks = [];
 let currentNotebook = null; // {id, name} de la libreta abierta, o null si estamos en la lista
 let notesData = [];
+let agendaListLoaded = false;
+let agendaTasks = [];
 
 function noteTimeLabel(ts) {
   return new Date(ts).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
@@ -202,6 +204,230 @@ async function loadNotebookList() {
 async function safeLoadNotebookList() {
   try { await loadNotebookList(); }
   catch { /* noop: polling de fondo, se autocura en el próximo tick */ }
+}
+
+// ── Agenda: semáforo de tareas recurrentes mensuales (07/09/2026) ──
+// Catálogo fijo del lado del servidor (agenda.js). Acá solo se pinta y se
+// disparan las acciones. La única tarea con automatización real hoy es
+// Estadístico Contratista (pedirle la nómina a Macarena por Outlook clásico
+// vía COM — nunca se manda sola, siempre se abre en Outlook para que
+// Fernando revise y apriete Enviar él mismo).
+const AGENDA_COLOR_LABEL = { verde: 'Hecho', amarillo: 'Pendiente', naranja: 'Por vencer', rojo: 'Vencida', esperando: 'Esperando' };
+
+async function loadAgendaList() {
+  const { tasks } = await api('/agenda');
+  agendaTasks = tasks;
+  renderAgendaList();
+  updateAgendaBadge(tasks);
+}
+
+// Badge en la pestaña "Agenda" (visible sin entrar a la sección) — cuenta
+// vencidas (🔴) + por vencer (🟠), así avisa ANTES de que se pase la fecha,
+// no solo cuando ya es tarde. Rojo si hay al menos una vencida, naranja si
+// solo hay "por vencer". Se llama al abrir la Agenda y también solo
+// (startup + cada 10 min) para que se vea aunque estés en Chats.
+function updateAgendaBadge(tasks) {
+  const rojas = tasks.filter(t => t.color === 'rojo').length;
+  const naranjas = tasks.filter(t => t.color === 'naranja').length;
+  const total = rojas + naranjas;
+  const badge = $('agenda-badge');
+  if (total > 0) {
+    badge.textContent = String(total);
+    badge.classList.toggle('tab-badge-naranja', rojas === 0);
+    badge.hidden = false;
+  } else {
+    badge.hidden = true;
+  }
+}
+
+async function refreshAgendaBadge() {
+  try {
+    const { tasks } = await api('/agenda');
+    agendaTasks = tasks;
+    updateAgendaBadge(tasks);
+  } catch { /* noop: no es crítico, se reintenta solo en el próximo tick */ }
+}
+
+// ── "🎓 Aprender rutina nueva" — enseñar una tarea recurrente por CHAT ──
+// Fernando pidió esto en vez del formulario de 3 campos que había antes
+// (07/09/2026): "tengo que tener el chat así podemos ver, pasar link, y si
+// está todo bien o no" — enseñar una rutina real necesita ida y vuelta
+// (pegar links, capturas, aclarar pasos), no un formulario. Así que este
+// botón abre una conversación real nueva (mismo mecanismo que "+ Nueva
+// conversación") con un mensaje inicial que le explica a esa sesión cómo
+// registrar la tarea en el catálogo una vez que quede clara.
+const AGENDA_LEARN_PROMPT = `Te quiero enseñar una rutina nueva para la pestaña Agenda de FerStark (semáforo de tareas recurrentes mensuales).
+
+Preguntame lo que haga falta — puedo pegarte links, capturas, explicarte los pasos. Cuando ya tengas claro de qué se trata (nombre, si tiene un día fijo del mes o no, y qué grupo la agrupa), agregala vos mismo al catálogo: es el módulo \`src/agenda.js\` dentro de \`/mnt/c/Users/Fernando/Desktop/claude/claude-chat-manager/\`, tiene una función \`addCustomTask({title, group, day, kind, insumoNota})\` — la podés invocar con \`node -e\` desde esa carpeta. Confirmame cuando quedó guardada (no hace falta reiniciar FerStark para que aparezca, ese catálogo se lee de un JSON en vivo).
+
+Empecemos: contame qué rutina es.`;
+
+// Abre una conversación real nueva (mismo mecanismo que "+ Nueva
+// conversación") y le manda un primer mensaje ya armado — reusado tanto por
+// "Aprender rutina nueva" como por "▶️ Hacer ahora" en cada tarjeta con
+// autoPrompt (ver agenda.js). Devuelve el convId por si hace falta encadenar algo.
+async function agendaSpawnConversation(promptText, project) {
+  const { convId, projectDir } = await api('/conversations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(withAccountBody({ project })),
+  });
+  await selectConv(convId, 'Nueva conversación', undefined, null, projectDir);
+  await performSend(convId, promptText, []);
+  return convId;
+}
+
+async function agendaLearnNewRoutine() {
+  const btn = $('agenda-learn-btn');
+  btn.disabled = true;
+  try {
+    await agendaSpawnConversation(AGENDA_LEARN_PROMPT, 'Agenda');
+  } catch (err) {
+    toast('No se pudo abrir el chat: ' + err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Dispara el trabajo real de una tarea del catálogo (hoy: las 2 facturas).
+// El prompt ya trae adentro la instrucción de marcarse "hecho" sola al
+// terminar (ver MARK_DONE_CMD en agenda.js) — este botón solo abre el chat.
+async function agendaRunTask(id) {
+  const task = agendaTasks.find(t => t.id === id);
+  if (!task || !task.autoPrompt) return toast('Esta tarea no tiene automatización todavía');
+  try {
+    await agendaSpawnConversation(task.autoPrompt, task.group);
+  } catch (err) {
+    toast('No se pudo abrir el chat: ' + err.message);
+  }
+}
+
+async function agendaDeleteLearnedTask(id) {
+  if (!confirm('¿Borrar esta rutina aprendida?')) return;
+  try {
+    await api(`/agenda/tasks/${id}`, { method: 'DELETE' });
+    await loadAgendaList();
+  } catch (err) { toast('No se pudo borrar: ' + err.message); }
+}
+
+function agendaCardActions(task) {
+  if (task.id === 'estadistico_contratista') {
+    return `
+      <div class="agenda-actions">
+        <button type="button" onclick="agendaPrepareMacarena()">✉️ Pedir nómina</button>
+        <button type="button" onclick="agendaCheckMacarena()">🔄 ¿Contestó?</button>
+      </div>
+      <div class="agenda-draft" id="agenda-macarena-draft" hidden></div>
+    `;
+  }
+  const label = task.state === 'hecho' ? '↩️ Desmarcar' : '✅ Marcar hecho';
+  // "Marcar hecho" queda siempre como fallback manual (por si lo resolviste
+  // por otro lado), pero si la tarea tiene autoPrompt sumamos el botón real
+  // que abre un chat y hace el trabajo — mismo mecanismo que "Aprender
+  // rutina nueva" (spawnear una conversación real con un prompt armado).
+  const runBtn = task.autoPrompt ? `<button type="button" class="primary" onclick="agendaRunTask('${task.id}')">▶️ Hacer ahora</button>` : '';
+  return `<div class="agenda-actions">${runBtn}<button type="button" onclick="agendaToggleDone('${task.id}', ${task.state !== 'hecho'})">${label}</button></div>`;
+}
+
+function renderAgendaList() {
+  const wrap = $('agenda-list');
+  wrap.innerHTML = '';
+  if (agendaTasks.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'notes-empty';
+    empty.textContent = 'Sin tareas cargadas.';
+    wrap.appendChild(empty);
+    return;
+  }
+  let lastGroup = null;
+  for (const task of agendaTasks) {
+    if (task.group !== lastGroup) {
+      const h = document.createElement('div');
+      h.className = 'agenda-group-title';
+      h.textContent = task.group;
+      wrap.appendChild(h);
+      lastGroup = task.group;
+    }
+    const card = document.createElement('div');
+    card.className = 'agenda-card';
+    card.id = `agenda-card-${task.id}`;
+    const dayMeta = task.day != null ? `Día ${task.day}` : (task.insumoNota || '');
+    card.innerHTML = `
+      <div class="agenda-card-top">
+        <span class="agenda-dot ${task.color}" title="${AGENDA_COLOR_LABEL[task.color] || ''}"></span>
+        <span class="agenda-title"></span>
+        ${task.learned ? `<button type="button" class="agenda-delete-btn" title="Borrar rutina aprendida" onclick="agendaDeleteLearnedTask('${task.id}')">🗑️</button>` : ''}
+      </div>
+      <div class="agenda-meta"></div>
+      ${Array.isArray(task.checklist) && task.checklist.length ? '<ul class="agenda-checklist"></ul>' : ''}
+      ${agendaCardActions(task)}
+    `;
+    card.querySelector('.agenda-title').textContent = task.title;
+    card.querySelector('.agenda-meta').textContent = dayMeta;
+    // Checklist visible en la tarjeta (pedido de Fernando 08/09/2026: "esto
+    // tiene que ser una guía" — no obligarlo a preguntar qué incluye un
+    // combo). textContent por ítem, no innerHTML, para no depender de
+    // escapear bien texto con tildes/símbolos.
+    const ul = card.querySelector('.agenda-checklist');
+    if (ul) {
+      for (const item of task.checklist) {
+        const li = document.createElement('li');
+        li.textContent = item;
+        ul.appendChild(li);
+      }
+    }
+    wrap.appendChild(card);
+  }
+}
+
+async function agendaToggleDone(id, done) {
+  try {
+    await api(`/agenda/${id}/done`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ done }) });
+    await loadAgendaList();
+  } catch (err) { toast('No se pudo actualizar: ' + err.message); }
+}
+
+// Pide el texto propuesto al server (busca el hilo de Maca por Outlook COM)
+// y lo muestra en un textarea editable — todavía no toca Outlook.
+async function agendaPrepareMacarena() {
+  const box = $('agenda-macarena-draft');
+  box.hidden = false;
+  box.innerHTML = '<div class="agenda-meta">Buscando el hilo en Outlook…</div>';
+  try {
+    const data = await api('/agenda/macarena/prepare', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    box.innerHTML = `
+      ${data.warning ? `<div class="agenda-warning">${data.warning}</div>` : `<div class="agenda-meta">Responde a: "${data.subject}"</div>`}
+      <textarea id="agenda-macarena-text">${data.proposedText}</textarea>
+      <div class="agenda-actions">
+        <button type="button" class="primary" onclick="agendaSendMacarena('${data.entryId || ''}')" ${data.entryId ? '' : 'disabled'}>📤 Abrir en Outlook</button>
+        <button type="button" onclick="$('agenda-macarena-draft').hidden = true">Cancelar</button>
+      </div>
+    `;
+  } catch (err) {
+    box.innerHTML = `<div class="agenda-warning">No se pudo conectar con Outlook: ${err.message}. ¿Está Outlook clásico abierto?</div>`;
+  }
+}
+
+// Recién acá se abre Outlook — con el texto que el usuario ya revisó/editó
+// en el textarea. Outlook se queda con la ventana de respuesta abierta sin
+// enviar; el envío lo hace Fernando a mano.
+async function agendaSendMacarena(entryId) {
+  const text = $('agenda-macarena-text').value.trim();
+  if (!text) return toast('El texto está vacío');
+  try {
+    await api('/agenda/macarena/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ entryId, text }) });
+    toast('Abrí Outlook y revisá antes de mandar');
+    $('agenda-macarena-draft').hidden = true;
+    await loadAgendaList();
+  } catch (err) { toast('No se pudo abrir Outlook: ' + err.message); }
+}
+
+async function agendaCheckMacarena() {
+  try {
+    const data = await api('/agenda/macarena/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    toast(data.replied ? '¡Maca contestó! Revisá el mail.' : 'Todavía no contestó.');
+    await loadAgendaList();
+  } catch (err) { toast('No se pudo chequear: ' + err.message); }
 }
 
 // ── Notas: abrir/cerrar una libreta reusando el panel/overlay del chat ──
@@ -1474,13 +1700,23 @@ async function goToPane(index) {
         .finally(() => { codexTreeLoading = null; });
     }
   }
+  if (index === 4 && !agendaListLoaded) {
+    try {
+      await loadAgendaList();
+      agendaListLoaded = true;
+    } catch (err) {
+      toast('No se pudo cargar la Agenda: ' + err.message);
+      if (myGeneration === paneNavGeneration) paneNavTarget = activePane;
+      return;
+    }
+  }
   if (myGeneration !== paneNavGeneration) return; // otra navegación más nueva ya tomó el control
   activePane = index;
   // El acento identifica la pestaña visible, no el chat que haya quedado
   // abierto en el panel principal.
   document.body.classList.toggle('codex-list-theme', index === 2);
   // El selector de proyecto solo aplica a conversaciones (Chats/Archivado) —
-  // Notas y Codex son modelos de datos distintos, sin esta etiqueta.
+  // Notas, Codex y Agenda son modelos de datos distintos, sin esta etiqueta.
   $('project-bar').hidden = index !== 0 && index !== 1;
   $('tree-viewport-inner').dataset.pane = String(index);
   document.querySelectorAll('.pane-tab').forEach(t => {
@@ -4302,7 +4538,7 @@ function paneSwipeStart(clientX, clientY) {
   return true;
 }
 
-const PANE_COUNT = 4; // Chats/Archivado/Codex/Notas.
+const PANE_COUNT = 5; // Chats/Archivado/Codex/Notas/Agenda.
 
 function paneSwipeMove(clientX, clientY) {
   if (!paneDragging) return false;
@@ -4415,6 +4651,8 @@ document.addEventListener('visibilitychange', () => {
 })();
 loadUsage();
 setInterval(loadUsage, 10 * 60 * 1000);
+refreshAgendaBadge();
+setInterval(refreshAgendaBadge, 10 * 60 * 1000);
 
 // ── Configuración ──
 const SETTINGS_KEY = 'ccm.settings';

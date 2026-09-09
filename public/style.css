@@ -275,20 +275,21 @@ body.codex-list-theme #panel-list {
 }
 
 #tree-viewport { flex: 1; overflow: hidden; position: relative; }
-/* Carrusel móvil: Chats → Archivado → Codex → Notas (4 paneles — Escáner se
-   sacó de la navegación por swipe, ver commit de Diego "simplificar
-   navegación móvil"). */
+/* Carrusel móvil: Chats → Archivado → Codex → Notas → Agenda (5 paneles —
+   Escáner se sacó de la navegación por swipe, ver commit de Diego
+   "simplificar navegación móvil"; Agenda sumada 07/09/2026). */
 #tree-viewport-inner {
   display: flex;
-  width: 400%;
+  width: 500%;
   height: 100%;
   transition: transform .25s ease;
   touch-action: pan-y;
 }
-#tree-viewport-inner[data-pane="1"] { transform: translateX(-25%); }
-#tree-viewport-inner[data-pane="2"] { transform: translateX(-50%); }
-#tree-viewport-inner[data-pane="3"] { transform: translateX(-75%); }
-.tree-pane { width: 25%; flex: none; height: 100%; overflow-y: auto; }
+#tree-viewport-inner[data-pane="1"] { transform: translateX(-20%); }
+#tree-viewport-inner[data-pane="2"] { transform: translateX(-40%); }
+#tree-viewport-inner[data-pane="3"] { transform: translateX(-60%); }
+#tree-viewport-inner[data-pane="4"] { transform: translateX(-80%); }
+.tree-pane { width: 20%; flex: none; height: 100%; overflow-y: auto; }
 .tree-pane::-webkit-scrollbar { width: 4px; }
 .tree-pane::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
@@ -306,6 +307,61 @@ body.codex-list-theme #panel-list {
   width: 36px; height: 36px; flex: none; display: flex; align-items: center; justify-content: center;
 }
 .notes-composer button:hover { color: var(--text); }
+
+/* ── Agenda: semáforo de tareas recurrentes mensuales (07/09/2026) ── */
+.agenda-pane { display: flex; flex-direction: column; overflow-y: auto; padding: 10px 12px calc(10px + var(--safe-b)); gap: 14px; }
+.agenda-group-title {
+  font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em;
+  color: var(--text2); margin: 10px 0 4px; padding: 0 2px;
+}
+.agenda-group-title:first-child { margin-top: 0; }
+.agenda-card {
+  background: var(--card-bg, var(--input-bg)); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 10px 12px; margin-bottom: 8px; display: flex; flex-direction: column; gap: 6px;
+}
+.agenda-card-top { display: flex; align-items: center; gap: 8px; }
+.agenda-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.agenda-dot.verde { background: #2ecc71; }
+.agenda-dot.amarillo { background: #f1c40f; }
+.agenda-dot.naranja { background: #e67e22; }
+.agenda-dot.rojo { background: #e74c3c; }
+.agenda-dot.esperando { background: #3498db; }
+.agenda-title { font-weight: 600; font-size: 14px; flex: 1; }
+.agenda-meta { font-size: 12px; color: var(--text2); }
+.agenda-checklist { margin: 2px 0 0; padding-left: 18px; font-size: 12px; color: var(--text2); }
+.agenda-checklist li { margin: 2px 0; }
+.agenda-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+.agenda-actions button {
+  font-size: 12px; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--border);
+  background: none; color: var(--text); cursor: pointer;
+}
+.agenda-actions button:hover { background: var(--input-bg); }
+.agenda-actions button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.agenda-draft { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.agenda-draft textarea {
+  width: 100%; min-height: 90px; resize: vertical; padding: 8px 10px;
+  background: var(--input-bg); border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--text); font-family: var(--chat-font); font-size: 13px; box-sizing: border-box;
+}
+.agenda-warning { font-size: 12px; color: #e67e22; }
+.agenda-header { padding: 2px 2px 8px; }
+.agenda-header button {
+  width: 100%; font-size: 13px; padding: 8px 10px; border-radius: var(--radius);
+  border: 1px dashed var(--border); background: none; color: var(--text); cursor: pointer;
+}
+.agenda-header button:hover { background: var(--input-bg); }
+.agenda-delete-btn { background: none; border: none; color: var(--text2); cursor: pointer; font-size: 14px; padding: 0 2px; margin-left: auto; }
+.agenda-delete-btn:hover { color: #e74c3c; }
+
+/* Badge de la pestaña "Agenda" — visible desde cualquier otra sección (Chats,
+   Notas, etc.) sin tener que entrar, cuenta las tareas en rojo (vencidas). */
+.pane-tab { position: relative; }
+.tab-badge {
+  position: absolute; top: 2px; right: 2px; min-width: 15px; height: 15px; padding: 0 3px;
+  border-radius: 999px; background: #e74c3c; color: #fff; font-size: 10px; font-weight: 700;
+  line-height: 15px; text-align: center;
+}
+.tab-badge.tab-badge-naranja { background: #e67e22; }
 
 
 /* ── Escáner de documentos (tipo CamScanner) ── */

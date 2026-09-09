@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=78">
+  <link rel="stylesheet" href="style.css?v=82">
   <!-- Color de identidad server-side (Configuración → Color de identidad). Va
        después de style.css para pisar el --accent default de ahí; el ajuste
        personal por-dispositivo ("Acento" en Colores, más abajo) sigue
@@ -58,6 +58,7 @@
         <button type="button" class="pane-tab" data-pane="1">Archivado</button>
         <button type="button" class="pane-tab" id="codex-tab" data-pane="2">Codex</button>
         <button type="button" class="pane-tab" data-pane="3">📝 Notas</button>
+        <button type="button" class="pane-tab" data-pane="4">🚦 Agenda<span id="agenda-badge" class="tab-badge" hidden></span></button>
       </nav>
       <!-- Selector de proyecto: en qué tema/carpeta está parado Fernando ahora
            mismo cuando tiene 2-3 charlas abiertas a la vez. Filtra Chats y
@@ -102,6 +103,12 @@
           </nav>
           <div id="tree-notes" class="tree-pane notes-pane">
             <nav id="notebook-list"></nav>
+          </div>
+          <div id="tree-agenda" class="tree-pane agenda-pane">
+            <div class="agenda-header">
+              <button type="button" id="agenda-learn-btn" onclick="agendaLearnNewRoutine()">🎓 Aprender rutina nueva</button>
+            </div>
+            <div id="agenda-list"></div>
           </div>
         </div>
       </div>
@@ -390,7 +397,7 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=85"></script>
+  <script src="app.js?v=90"></script>
   <!-- Split de app.js por dominio (sesión 2026-08-20) — scripts clásicos, no
        ES modules: siguen compartiendo el mismo scope global que app.js, por
        eso cargan DESPUÉS (usan $()/settings/selectConv/etc. definidos ahí).
