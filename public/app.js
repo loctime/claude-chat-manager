@@ -457,6 +457,7 @@ async function openNotebook(id, name) {
   $('notebook-title').textContent = name;
   notesData = [];
   renderNotes();
+  showSalaView(false); // si había una sala abierta, se cierra — ver bug reportado por Diego
   showNotebookView(true);
   openChat();
   try { await loadNotes(); }
@@ -578,6 +579,7 @@ async function openRoom(id, name) {
   $('sala-title').textContent = name;
   roomMessages = [];
   renderRoomMessages();
+  showNotebookView(false); // si había una libreta abierta, se cierra — mismo bug que reportó Diego, en la otra dirección
   showSalaView(true);
   openChat();
   try { await loadRoomMessages(); setSalaOnline(true); }
@@ -617,6 +619,7 @@ function openNotebookDraft() {
   $('notebook-title').textContent = 'Nueva nota';
   notesData = [];
   renderNotes();
+  showSalaView(false); // si había una sala abierta, se cierra — ver bug reportado por Diego
   showNotebookView(true);
   openChat();
   $('notes-input').value = '';
@@ -1764,6 +1767,7 @@ async function selectCodexShared(convId, name, projectDir = '') {
   $('last-user-pin').hidden = true;
   setCodexMainBusy(false);
   showNotebookView(false);
+  showSalaView(false); // si había una sala abierta, se cierra — ver bug reportado por Diego
   openChat();
   const markRead = codexApi(`/conversations/${convId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ unread: false }) }).catch(() => {});
   await loadCodexSharedMessages(convId);
@@ -1807,6 +1811,7 @@ async function createCodexSharedConversation() {
   messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Codex</p></div>';
   setCodexMainBusy(false);
   showNotebookView(false);
+  showSalaView(false); // si había una sala abierta, se cierra — ver bug reportado por Diego
   openChat();
   loadCodexSharedTree();
 }
@@ -4055,6 +4060,7 @@ async function selectConv(convId, name, model, lastModel, projectDir) {
     }, 1500);
   }
   showNotebookView(false);
+  showSalaView(false); // si había una sala abierta, se cierra — ver bug reportado por Diego
   openChat();
   // Al abrir otra conversación no heredamos la posición de scroll de la
   // anterior: arrancamos mostrando el PRINCIPIO del último mensaje (no el
