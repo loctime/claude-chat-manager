@@ -898,6 +898,32 @@ async function publishSalaReplyIfNeeded(convId, account, cancelled) {
 async function checkSalaMentions() {
   const salaUrl = getSalaUrl(), salaToken = getSalaToken();
   if (!salaUrl || !salaToken) return;
+
+  // Antes de revisar lo que ya conocía: se fija si hay salas en el VPS que
+  // esta instancia todavía no tiene en SALA_META_FILE. Esa lista solo se
+  // llena hoy cuando ALGUIEN, desde ESTA instancia, mandó un mensaje ahí (ver
+  // resolveOrCreateSalaConv) — si Fernando nunca abrió/escribió en una sala
+  // nueva que Diego creó, su FerStark no tenía forma de enterarse de una
+  // mención ahí, por más que el poll corriera cada 20s para siempre. Se
+  // registra con contextCursor:0 — la primera vez que SÍ la mencionen, el
+  // turno arranca con el historial completo de esa sala como contexto,
+  // mismo comportamiento que el primer mensaje humano en una sala nueva.
+  try {
+    const remoteRooms = await salaClient.listRooms({ baseUrl: salaUrl, token: salaToken });
+    const data0 = meta.load(SALA_META_FILE);
+    const knownRoomIds = new Set(Object.values(data0.conversations).map(c => c.roomId));
+    let discovered = false;
+    for (const r of remoteRooms) {
+      if (!knownRoomIds.has(r.id)) {
+        data0.conversations[crypto.randomUUID()] = { roomId: r.id, contextCursor: 0, createdAt: new Date().toISOString() };
+        discovered = true;
+      }
+    }
+    if (discovered) meta.save(data0, SALA_META_FILE);
+  } catch (err) {
+    console.error('[sala] no se pudo listar salas para autodescubrir menciones:', err.message);
+  }
+
   const data = meta.load(SALA_META_FILE);
   for (const [convId, conv] of Object.entries(data.conversations)) {
     if (runner.isBusy(convId)) continue;
@@ -2607,7 +2633,11 @@ app.get('/api/sala/rooms', async (req, res) => {
     const data = meta.load(SALA_META_FILE);
     const withConv = rooms.map(r => {
       const convId = Object.keys(data.conversations).find(id => data.conversations[id].roomId === r.id) || null;
-      return { ...r, convId };
+      // busy = esta instancia (la de acá, no la del otro lado) está generando
+      // un turno para esa sala ahora mismo — mismo criterio que el ping-dot
+      // de Chats/Codex (runner.isBusy), no hay forma de saber si el OTRO
+      // agente está procesando, eso vive en su propia PC.
+      return { ...r, convId, busy: convId ? runner.isBusy(convId) : false };
     });
     res.json({ rooms: withConv });
   } catch (err) {
@@ -2650,7 +2680,12 @@ app.get('/api/sala/rooms/:id/messages', async (req, res) => {
     // (since=0) — es una lectura completa para renderizar, independiente
     // del contextCursor que trackea qué ya se le dio de comer a Claude.
     const { messages } = await salaClient.fetchMessages({ baseUrl: salaUrl, token: salaToken, roomId: req.params.id, since: 0 });
-    res.json({ messages });
+    // Mismo campo busy que GET /api/sala/rooms (ver ahí el comentario) —
+    // acá también, sin efecto secundario: solo lectura de lo que ya exista
+    // en SALA_META_FILE, no crea la conv si todavía no existe.
+    const data = meta.load(SALA_META_FILE);
+    const convId = Object.keys(data.conversations).find(id => data.conversations[id].roomId === req.params.id) || null;
+    res.json({ messages, busy: convId ? runner.isBusy(convId) : false });
   } catch (err) {
     res.status(502).json({ error: 'no se pudo leer la sala: ' + err.message });
   }

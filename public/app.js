@@ -466,6 +466,12 @@ async function openNotebook(id, name) {
 
 // ── Sala: lista de salas ──
 function roomElement(room) {
+  // room.busy = ESTA instancia está generando un turno para esa sala ahora
+  // mismo (server.js, GET /api/sala/rooms) — mismo ping-dot que ya usa la
+  // lista de Chats (badge()), así se ve desde la lista sin tener que abrir
+  // la sala. No hay forma de saber si el OTRO agente (del otro lado) está
+  // procesando, eso vive en su propia PC.
+  const b = badge(room.busy ? 'running' : null);
   const div = document.createElement('div');
   div.className = 'conv notebook-row';
   div.innerHTML = `
@@ -474,6 +480,7 @@ function roomElement(room) {
       <div class="name"><span class="conv-name-text"></span></div>
       <div class="sub"><span class="conv-date"></span></div>
     </div>
+    ${b}
   `;
   div.querySelector('.conv-name-text').textContent = room.name;
   div.querySelector('.conv-date').textContent = room.lastActivity
@@ -596,10 +603,17 @@ function renderRoomMessages() {
   }
 }
 
+function setSalaBusy(busy) {
+  const el = $('sala-busy');
+  el.innerHTML = busy ? badge('running') : '';
+  el.hidden = !busy;
+}
+
 async function loadRoomMessages() {
-  const { messages } = await api(`/sala/rooms/${currentRoom.id}/messages`);
+  const { messages, busy } = await api(`/sala/rooms/${currentRoom.id}/messages`);
   roomMessages = messages;
   renderRoomMessages();
+  setSalaBusy(busy);
 }
 
 async function safeLoadRoomMessages() {
@@ -617,6 +631,7 @@ async function openRoom(id, name) {
   $('sala-title').textContent = name;
   roomMessages = [];
   renderRoomMessages();
+  setSalaBusy(false); // se actualiza de verdad con lo que traiga el primer loadRoomMessages() de abajo — evita mostrar el estado de la sala anterior mientras carga
   closeSalaMentionMenu(); // si venía abierto de otra sala, no tiene sentido acá
   showNotebookView(false); // si había una libreta abierta, se cierra — mismo bug que reportó Diego, en la otra dirección
   showSalaView(true);
