@@ -13,3 +13,4 @@ CLAUDE.local.md
 sala-jarvis/node_modules/
 sala-jarvis/data/
 sala-jarvis/.impeccable/
+*.tmp.js
