@@ -372,10 +372,14 @@ function readAccountAuth(acc) {
   return { email, accessToken };
 }
 
-async function fetchAccountUsage(acc) {
+async function fetchAccountUsage(acc, { force = false } = {}) {
   const now = Date.now();
   const cached = usageCache.get(acc);
-  if (cached && now < cached.nextAt) return cached;
+  // force=true (botón de refresco manual) salta nuestro piso propio de 55min,
+  // pero NO el rate limit real de Anthropic — si están muy encima del último
+  // pedido real, la rama de abajo (429) sigue respondiendo con el error tal
+  // cual y sin gastar nada extra.
+  if (!force && cached && now < cached.nextAt) return cached;
 
   const { email, accessToken } = readAccountAuth(acc);
   if (!accessToken) {
@@ -408,13 +412,15 @@ async function fetchAccountUsage(acc) {
 
 app.get('/api/usage', async (req, res) => {
   const acc = req.query.account || activeAccount;
-  const entry = await fetchAccountUsage(acc);
+  const force = req.query.force === '1';
+  const entry = await fetchAccountUsage(acc, { force });
   const d = entry.data;
   res.json({
     email: entry.email || '',
     fiveHour: d && d.five_hour ? { pct: d.five_hour.utilization, resetsAt: d.five_hour.resets_at } : null,
     sevenDay: d && d.seven_day ? { pct: d.seven_day.utilization, resetsAt: d.seven_day.resets_at } : null,
     fetchedAt: entry.fetchedAt,
+    error: entry.error || null,
   });
 });
 
@@ -427,7 +433,7 @@ app.get('/api/codex/status', async (req, res) => {
 });
 app.get('/api/codex/usage', async (req, res) => {
   try {
-    res.json(await codexUsage.get());
+    res.json(await codexUsage.get({ force: req.query.force === '1' }));
   } catch (err) {
     res.status(503).json({ error: 'No se pudo consultar el uso de Codex: ' + err.message });
   }

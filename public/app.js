@@ -1043,12 +1043,17 @@ setInterval(() => {
   if (b5 && !b5.hidden) updateCountdownLabel(b5);
   if (b7 && !b7.hidden) updateCountdownLabel(b7);
 }, 30000);
-async function loadUsage() {
+// force=true salta el cache propio del server (piso de 55min en Claude, 10min
+// en Codex) y pega un pedido real — lo usa el botón de refresco manual. El
+// rate limit real de Anthropic lo sigue respetando el server (ver comentario
+// en fetchAccountUsage/server.js), acá solo se refleja si vino con error.
+async function loadUsage(force) {
   const provider = activePane === 2 ? 'codex' : 'claude';
+  const btn = $('account-status-refresh');
+  if (force && btn) btn.classList.add('loading');
   try {
-    const d = provider === 'codex'
-      ? await api('/codex/usage')
-      : await api(withAccount('/usage'));
+    const path = provider === 'codex' ? '/codex/usage' : withAccount('/usage');
+    const d = await api(force ? path + (path.includes('?') ? '&' : '?') + 'force=1' : path);
     // Si se cambió de pestaña mientras la consulta estaba en vuelo, no dejar
     // que el header quede mostrando el proveedor anterior.
     if ((activePane === 2 ? 'codex' : 'claude') !== provider) return;
@@ -1062,8 +1067,14 @@ async function loadUsage() {
       : (d.email || '');
     renderUsageBar($('usage-5h'), first);
     renderUsageBar($('usage-7d'), second);
-  } catch {}
+    if (force) toast(d.error ? `Todavía no: ${d.error}` : 'Consumo actualizado', 'info', 3000);
+  } catch (err) {
+    if (force) toast('No se pudo actualizar: ' + err.message, 'error', 4000);
+  } finally {
+    if (btn) btn.classList.remove('loading');
+  }
 }
+$('account-status-refresh').onclick = () => loadUsage(true);
 
 // Codex es opcional: en una instalación sin CLI o sin login la pestaña no se
 // muestra. El endpoint usa `codex login status`, no inicia un agente ni gasta
@@ -4169,6 +4180,11 @@ function openStream(convId) {
         });
         refreshVisibleTrees();
         refreshCostBadge(convId);
+        // Gratis: el server ya actualizó su cache de %consumo con los
+        // rate_limits que vinieron pegados a este mismo turno (ingestStreamRateLimits
+        // en server.js), sin gastar el pedido limitado a Anthropic — esto solo
+        // hace que la UI lo refleje ya, en vez de esperar hasta 10min de poll.
+        loadUsage();
       } else {
         setBusy(true);
         refreshVisibleTrees();
