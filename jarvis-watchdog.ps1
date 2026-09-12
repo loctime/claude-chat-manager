@@ -31,6 +31,8 @@ $projectDir = "C:\Users\User\Desktop\Proyectos\claude-chat-manager"
 $pm2 = "C:\Users\User\AppData\Roaming\npm\pm2.cmd"
 $npm = "C:\Program Files\nodejs\npm.cmd"
 
+. (Join-Path $PSScriptRoot 'session0-cleanup.ps1')
+
 function Log($msg) {
     "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg" | Out-File -FilePath $logFile -Append -Encoding utf8
 }
@@ -56,49 +58,14 @@ function Repair-Pm2Daemon {
     if (Test-Pm2Healthy) { Log "PM2 sano tras matar daemons zombie -- no hizo falta elevar"; return $true }
 
     Log "Sigue roto -- buscando procesos Session 0 sospechosos (node/cloudflared con CommandLine ilegible)"
-    $suspects = @()
-    $suspects += Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.SessionId -eq 0 -and [string]::IsNullOrEmpty($_.CommandLine) }
-    $suspects += Get-CimInstance Win32_Process -Filter "Name='cloudflared.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.SessionId -eq 0 -and [string]::IsNullOrEmpty($_.CommandLine) }
+    $killed = Repair-SessionZeroZombies -ProcessNames @('node.exe', 'cloudflared.exe')
 
-    if ($suspects.Count -eq 0) {
-        Log "No se encontraron procesos Session 0 sospechosos -- no se puede reparar solo, requiere revision manual"
+    if ($killed.Count -eq 0) {
+        Log "No se encontraron procesos Session 0 sospechosos, o no se pudo elevar -- requiere revision manual"
         return $false
     }
 
-    $targetPids = ($suspects | Select-Object -ExpandProperty ProcessId) -join ','
-    Log "Sospechosos: PIDs $targetPids -- intentando matar elevado"
-
-    $marker = "$env:TEMP\jarvis-watchdog-elevated-kill.txt"
-    Remove-Item $marker -ErrorAction SilentlyContinue
-    $killScriptPath = "$env:TEMP\jarvis-watchdog-elevated-kill.ps1"
-    @"
-`$targetPids = '$targetPids' -split ','
-foreach (`$p in `$targetPids) {
-    try {
-        Stop-Process -Id `$p -Force -ErrorAction Stop
-        "PID `$p matado" | Out-File -FilePath '$marker' -Append
-    } catch {
-        "PID `$p fallo: `$(`$_.Exception.Message)" | Out-File -FilePath '$marker' -Append
-    }
-}
-"@ | Out-File -FilePath $killScriptPath -Encoding utf8 -Force
-
-    try {
-        Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$killScriptPath`"" -ErrorAction Stop
-    } catch {
-        Log "No se pudo lanzar la PowerShell elevada: $($_.Exception.Message) -- requiere Reiniciar Jarvis (Admin).bat"
-        return $false
-    }
-
-    Start-Sleep -Seconds 5
-    if (Test-Path $marker) {
-        Log "Resultado elevacion: $((Get-Content $marker) -join ' | ')"
-    } else {
-        Log "La elevacion no dejo marcador -- probablemente esta tarea no tiene escritorio interactivo disponible ahora. Requiere 'Reiniciar Jarvis (Admin).bat' a mano."
-        return $false
-    }
+    Log "Resultado elevacion: $($killed -join ' | ')"
 
     Start-Sleep -Seconds 2
     if (Test-Pm2Healthy) { Log "PM2 sano tras matar procesos Session 0"; return $true }
