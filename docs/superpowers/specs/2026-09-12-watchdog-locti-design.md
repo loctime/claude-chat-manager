@@ -41,7 +41,9 @@ Corre cada 5 min como `locti`. Lógica, en orden:
 
 ### 3. Tarea programada `JarvisLocti-Watchdog`
 
-`Principal`: `UserId = locti`, `LogonType = S4U`, `RunLevel = Highest` (necesario para el paso de matar zombies de Session 0 — mismo motivo que `JarvisWatchdog`). Trigger: repetición cada 5 min indefinida, igual que la tarea existente de `User`.
+`Principal`: `UserId = locti`, `LogonType = S4U`, `RunLevel = Limited`. Trigger: repetición cada 5 min indefinida, igual que la tarea existente de `User`.
+
+**Actualización (durante la implementación, 2026-09-12):** el diseño original pedía `RunLevel Highest` para que este watchdog también pudiera matar zombies de Session 0. Al intentar registrarlo dio "Acceso denegado" — se descubrió que `locti` no es miembro del grupo Administradores de esta PC, y Windows no permite `RunLevel Highest` para un principal que no es admin (no hay privilegio máximo que otorgarle). Se corrigió a `RunLevel Limited`, y `jarvis-locti-watchdog.ps1` quedó sin la llamada a `Repair-SessionZeroZombies` — esa limpieza la sigue cubriendo el `JarvisWatchdog` de `User` (que sí es admin), que ya barre zombies de Session 0 a nivel de toda la máquina, no solo los relacionados a su propio puerto.
 
 ### 4. Tarea programada `JarvisLocti` (arranque)
 

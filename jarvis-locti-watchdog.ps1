@@ -10,6 +10,17 @@
 # resuelto del proyecto (el pipe de PM2 colgandose) en una segunda cuenta. El
 # chequeo es mas simple: puerto escuchando + npm install si hace falta +
 # relanzar crudo -- mismo patron que restart-jarvis-locti.ps1, pero automatico.
+#
+# NO llama a Repair-SessionZeroZombies (a diferencia de jarvis-watchdog.ps1):
+# locti no es miembro del grupo Administradores de esta PC (verificado el
+# 2026-09-12 -- "net localgroup Administradores" solo lista a Administrador y
+# User), asi que un RunLevel "Highest" para su tarea programada da "Acceso
+# denegado" al registrarla, y aunque se pudiera registrar, un intento de
+# elevar (Start-Process -Verb RunAs) desde una cuenta no-admin dispara un
+# prompt real de UAC pidiendo credenciales -- no la elevacion silenciosa que
+# si aplica para User. La limpieza de zombies de Session 0 (que es un problema
+# de toda la maquina, no de una cuenta) la sigue cubriendo el JarvisWatchdog
+# de User, que ya es admin y ya corre cada 5 min.
 
 $logFile    = "$env:TEMP\jarvis-locti-watchdog.log"
 $publicUrl  = "https://jarvis-locti.controlapps.ar"
@@ -24,15 +35,8 @@ if (-not (Get-Command cloudflared -ErrorAction SilentlyContinue)) {
     if (Test-Path $fallback) { $cloudflaredExe = $fallback }
 }
 
-. (Join-Path $PSScriptRoot 'session0-cleanup.ps1')
-
 function Log($msg) {
     "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg" | Out-File -FilePath $logFile -Append -Encoding utf8
-}
-
-$killed = Repair-SessionZeroZombies -ProcessNames @('node.exe', 'cloudflared.exe')
-if ($killed.Count -gt 0) {
-    Log "Zombies de Session 0 matados: $($killed -join ' | ')"
 }
 
 $localAlive = $false
