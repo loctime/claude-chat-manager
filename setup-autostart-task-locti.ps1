@@ -1,20 +1,22 @@
 # Crea/actualiza la tarea programada que levanta esta instancia de Jarvis (usuario locti, puerto 3778)
 # al ARRANCAR WINDOWS, sin necesitar que nadie inicie sesion en el perfil locti (trigger AtStartup +
-# logon type S4U). Esto requiere admin para registrarse (a diferencia de la version AtLogOn, que no).
+# logon type S4U).
 #
 # RunLevel Limited a proposito (no "Highest"): un proceso lanzado desde una tarea elevada hereda
 # integridad "High" y despues nada sin elevar lo puede volver a matar (mismo motivo documentado en
-# restart-jarvis.ps1 de este repo). S4U con RunLevel Limited corre como locti a integridad normal,
-# aunque la tarea en si se haya REGISTRADO con admin.
+# restart-jarvis.ps1 de este repo). S4U con RunLevel Limited corre como locti a integridad normal.
+#
+# CORREGIDO 2026-09-12 -- este script se auto-elevaba ("requiere admin para registrarse", nota vieja
+# de arriba), pero eso es exactamente lo que NO hay que hacer: S4U solo permite registrar una tarea
+# para "uno mismo" sin privilegios especiales -- si otra cuenta (ej. User, elevada) intenta
+# registrarla para locti, da "Acceso denegado" sin importar el RunLevel (falta el privilegio de
+# sistema SeTcbPrivilege, que ningun Administrador tiene por default). Y locti tampoco puede
+# completar la auto-elevacion el mismo -- no es miembro del grupo Administradores, asi que el intento
+# le dispara un pedido real de credenciales de admin que no tiene. Esto probablemente explica por que
+# la tarea "JarvisLocti" nunca llego a existir desde que se escribio este script (17/8). Correr esto
+# DESDE la sesion de locti, SIN elevar.
 
 $ErrorActionPreference = "Stop"
-
-# Auto-elevar si no estamos como admin
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-    Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
-    exit
-}
 
 $taskName   = "JarvisLocti"
 $projectDir = "C:\Users\locti\Proyectos\claude-chat-manager"

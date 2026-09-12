@@ -11,14 +11,19 @@
 #
 # No requiere la contrasena de locti (S4U no la necesita) ni que locti este
 # logueado -- corre igual, este su sesion conectada, desconectada o deslogueada.
+#
+# IMPORTANTE -- correr esto DESDE la sesion de locti, SIN elevar (ni PowerShell
+# como administrador, ni aceptar ningun prompt de UAC si aparece). Descubierto
+# el 2026-09-12: S4U solo permite registrar una tarea para "uno mismo" sin
+# privilegios especiales -- si otra cuenta (ej. User) intenta registrarla para
+# locti, da "Acceso denegado" (CimException) sin importar el RunLevel, salvo
+# que esa otra cuenta tenga el privilegio de sistema SeTcbPrivilege, que ningun
+# Administrador tiene por default. Elevar tampoco ayuda: locti no es miembro
+# del grupo Administradores, asi que un intento de elevar (Start-Process -Verb
+# RunAs) le dispara un pedido real de credenciales de admin que no tiene como
+# completar. La solucion es que locti la registre para si mismo, sin elevar.
 
 $ErrorActionPreference = "Stop"
-
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-    Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
-    exit
-}
 
 $taskName   = "JarvisLocti-Watchdog"
 $scriptPath = "C:\Users\locti\Proyectos\claude-chat-manager\jarvis-locti-watchdog.ps1"
