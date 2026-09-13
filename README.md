@@ -1,4 +1,4 @@
-# J.A.R.V.I.S — Claude Chat Manager
+# Claude Chat Manager
 
 PWA local para chatear con Claude Code desde el celular o el browser. Sidebar de conversaciones por proyecto, streaming en tiempo real, voz, adjuntos e imágenes.
 
@@ -70,6 +70,8 @@ Opcional:
 export PORT=3777          # default
 export HOST=127.0.0.1    # cambiar a 0.0.0.0 para red local
 export ACCESS_PIN=1234   # PIN de acceso (recomendado si exponés al exterior)
+export CCM_APP_NAME="Mi agente" # nombre visible de esta instancia; default: Claude Chat Manager
+export CCM_NOTES_DIR="/ruta/a/mis-notas" # opcional; carpeta para adjuntos de Notas
 ```
 
 ## Uso
@@ -81,8 +83,6 @@ npm start
 # Windows
 start.bat
 
-# Windows con túnel Cloudflare (server + cloudflared, requiere config.yml y setx ACCESS_PIN)
-start-jarvis.bat
 ```
 → http://127.0.0.1:3777
 
@@ -90,20 +90,25 @@ start-jarvis.bat
 
 ```bash
 # Crear túnel (una vez)
-cloudflared tunnel create jarvis
-cloudflared tunnel route dns jarvis tu-subdominio.tudominio.com
+cloudflared tunnel create claude-chat-manager
+cloudflared tunnel route dns claude-chat-manager tu-subdominio.tudominio.com
 
 # Archivo ~/.cloudflared/config.yml
 tunnel: <ID>
 credentials-file: ~/.cloudflared/<ID>.json
 ingress:
-  - hostname: jarvis.tudominio.com
+  - hostname: chat.tudominio.com
     service: http://127.0.0.1:3777
   - service: http_status:404
 
 # Correr
 cloudflared tunnel run
 ```
+
+El nombre del túnel, el hostname y los scripts de arranque son decisiones de cada
+deploy. Por ejemplo, una instancia personal puede usar `J.A.R.V.I.S` como
+`CCM_APP_NAME` y conservar scripts locales con ese nombre, sin cambiar el nombre
+del producto ni del repositorio.
 
 ## Cómo funciona
 

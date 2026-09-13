@@ -1,5 +1,5 @@
 @echo off
-:: J.A.R.V.I.S - Claude Chat Manager (Windows)
+:: Claude Chat Manager (Windows)
 :: Requiere: Node.js, Claude Code CLI. Opcional: ImageMagick 7 (magick) + Ghostscript para thumbnails.
 cd /d "%~dp0"
 
@@ -14,5 +14,5 @@ if not exist node_modules (
 :: Puerto (default 3777)
 if "%PORT%"=="" set PORT=3777
 
-echo Iniciando J.A.R.V.I.S en http://127.0.0.1:%PORT%
+echo Iniciando Claude Chat Manager en http://127.0.0.1:%PORT%
 node src\server.js

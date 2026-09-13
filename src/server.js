@@ -51,11 +51,11 @@ const PORT = Number(process.env.PORT || 3777);
 const ACCESS_PIN = process.env.ACCESS_PIN || '';
 // Nombre mostrado en título/manifest/PWA/toasts. Prioridad: lo guardado desde
 // la pantalla de Configuración (~/.ccm-config.json) > env var CCM_APP_NAME >
-// default. Se lee del archivo en cada request (no una constante al boot) para
+// default genérico. Se lee del archivo en cada request (no una constante al boot) para
 // que guardar desde la UI aplique sin reiniciar el server.
 function getAppName() {
   const name = (config.load().appName || '').trim();
-  return name || process.env.CCM_APP_NAME || 'J.A.R.V.I.S';
+  return name || process.env.CCM_APP_NAME || 'Claude Chat Manager';
 }
 
 // Tu propio nombre (no el del agente) — usado para etiquetar tus mensajes

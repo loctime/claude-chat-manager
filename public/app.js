@@ -911,7 +911,7 @@ const codexDrafts = new Map();
 // Nombre de la app configurado del lado del server (CCM_APP_NAME) — index.html
 // y manifest.json ya vienen con el nombre correcto server-rendered; esto es
 // solo para los pedacitos que arma el JS después (título dinámico, toasts).
-let APP_NAME = 'J.A.R.V.I.S';
+let APP_NAME = 'Claude Chat Manager';
 // Color de identidad server-side (ídem APP_NAME) — se usa solo para
 // precargar el input de Configuración; el pintado real ya viene hecho por el
 // <style> inline server-rendered de index.html.
@@ -3203,7 +3203,7 @@ async function revealInFolder(filePath) {
     }
     toast('Abriendo carpeta…', 'info', 1200);
   } catch {
-    toast('No se pudo contactar a Jarvis', 'error', 2500);
+    toast(`No se pudo contactar a ${APP_NAME}`, 'error', 2500);
   }
 }
 
@@ -3242,7 +3242,7 @@ async function downloadFolderZip(folderPath) {
     a.click();
     URL.revokeObjectURL(url);
   } catch {
-    toast('No se pudo contactar a Jarvis', 'error', 2500);
+    toast(`No se pudo contactar a ${APP_NAME}`, 'error', 2500);
   }
 }
 

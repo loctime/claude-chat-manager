@@ -7,12 +7,14 @@ const HOME_DIR = process.env.HOME || process.env.USERPROFILE || os.homedir();
 const NOTES_DIR = path.join(HOME_DIR, '.ccm-notes');
 const NOTEBOOKS_FILE = path.join(NOTES_DIR, 'notebooks.json');
 const NOTEBOOKS_DIR = path.join(NOTES_DIR, 'notebooks');
-// No se ata a CCM_APP_NAME a propósito: el nombre de marca (J.A.R.V.I.S,
-// FerStark, lo que sea) y el nombre "amigable" de esta carpeta ya eran
-// strings distintos antes de esto (J.A.R.V.I.S/Jarvis) — atarlos movería
-// la carpeta cada vez que alguien cambie su nombre de marca, perdiendo el
-// rastro de las notas ya guardadas ahí.
-const FILES_DIR = path.join(HOME_DIR, 'Desktop', 'Notas Jarvis');
+// No se ata a CCM_APP_NAME a propósito: renombrar una instancia no debe mover
+// los archivos de notas. Los deploys nuevos usan un nombre genérico; una
+// carpeta legacy se conserva automáticamente para no perder archivos ya
+// guardados por instancias previas.
+const DEFAULT_FILES_DIR = path.join(HOME_DIR, 'Desktop', 'Notas Claude Chat Manager');
+const LEGACY_FILES_DIR = path.join(HOME_DIR, 'Desktop', 'Notas Jarvis');
+const FILES_DIR = process.env.CCM_NOTES_DIR ||
+  (fs.existsSync(LEGACY_FILES_DIR) ? LEGACY_FILES_DIR : DEFAULT_FILES_DIR);
 
 // Nombre por default de una libreta recién creada, y su patrón de detección
 // (para saber si el auto-nombre por primera nota todavía puede pisarlo, o si
@@ -138,5 +140,5 @@ module.exports = {
   append, readAll, ensureFilesDir, resolveDestName,
   listNotebooks, createNotebook, renameNotebook, hideNotebook, getNotebook,
   notebookNotesFile, nextDefaultName, DEFAULT_NAME_RE,
-  NOTES_DIR, NOTEBOOKS_FILE, NOTEBOOKS_DIR, FILES_DIR,
+  NOTES_DIR, NOTEBOOKS_FILE, NOTEBOOKS_DIR, FILES_DIR, DEFAULT_FILES_DIR, LEGACY_FILES_DIR,
 };
