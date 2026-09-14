@@ -2115,26 +2115,16 @@ const CLAUDE_MODELS = [
 ];
 
 const AGY_MODELS = [
-  { value: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
-  { value: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)' },
-  { value: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)' },
-  { value: 'gemini-3.7-flash-high', label: 'Gemini 3.7 Flash (High)' },
-  { value: 'gemini-3.7-flash-medium', label: 'Gemini 3.7 Flash (Medium)' },
-  { value: 'gemini-3.7-flash-low', label: 'Gemini 3.7 Flash (Low)' },
-  { value: 'gemini-3.6-flash-high', label: 'Gemini 3.6 Flash (High)' },
-  { value: 'gemini-3.6-flash-medium', label: 'Gemini 3.6 Flash (Medium)' },
-  { value: 'gemini-3.6-flash-low', label: 'Gemini 3.6 Flash (Low)' },
-  { value: 'gemini-3.1-pro-high', label: 'Gemini 3.1 Pro (High)' },
-  { value: 'gemini-3.1-pro-low', label: 'Gemini 3.1 Pro (Low)' },
-  { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-  { value: 'claude-opus-4-6-thinking', label: 'Claude Opus 4.6' },
-  { value: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B' },
+  { value: 'claude-sonnet-4-6', label: 'Sonnet' },
+  { value: 'gemini-3.8-flash-high', label: 'Flash High' },
+  { value: 'gemini-3.8-flash-medium', label: 'Flash Medium' },
 ];
 
 function setModelSelectOptions(options, selectedValue) {
   const sel = $('model-select');
   sel.innerHTML = options.map(o => `<option value="${o.value}">${o.label}</option>`).join('');
-  if (selectedValue) sel.value = selectedValue;
+  const exists = options.some(o => o.value === selectedValue);
+  sel.value = exists ? selectedValue : (options.find(o => o.value === 'gemini-3.8-flash-high') ? 'gemini-3.8-flash-high' : options[0]?.value);
 }
 
 function setGeminiBusy(value) { geminiMainBusy = value; $('input').disabled = !currentGeminiConv || value; $('send').disabled = !currentGeminiConv || value; $('attach-btn').disabled = !currentGeminiConv || value; $('cancel-btn').hidden = !value; $('conv-status').textContent = value ? 'escribiendo…' : ''; }
@@ -2185,7 +2175,7 @@ async function selectGemini(id, name, projectDir = '') {
   if (geminiStream) geminiStream.close();
   currentConv = null;
   currentCodexConv = null;
-  const currentModel = currentGeminiConv?.model || 'gemini-3.8-flash-high';
+  const currentModel = (id ? currentGeminiConv?.model : 'gemini-3.8-flash-high') || 'gemini-3.8-flash-high';
   currentGeminiConv = { id, name, model: currentModel };
   $('panel-chat').classList.remove('codex-chat-theme');
   $('panel-chat').classList.add('antigravity-chat-theme');
@@ -2218,8 +2208,7 @@ async function selectGemini(id, name, projectDir = '') {
   if (!isMobile()) $('input').focus();
 }
 async function createGeminiConversation() {
-  const projectDir = activeProject || '';
-  await selectGemini(null, 'Nueva conversación', projectDir);
+  await selectGemini(null, 'Nueva conversación');
 }
 
 let paneNavGeneration = 0;
@@ -4995,7 +4984,6 @@ $('composer').onsubmit = async e => {
         const body = {
           model: $('model-select').value || 'gemini-3.8-flash-high',
         };
-        if (typeof activeProject !== 'undefined' && activeProject) body.projectDir = activeProject;
         const created = await geminiApi('/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         if (currentGeminiConv !== draft) return;
         id = created.convId; currentGeminiConv = { id, name: 'Nueva conversación', model: body.model }; geminiStream = openGeminiStream(id);
@@ -5618,13 +5606,38 @@ function openSettings() {
 // ("Voz Claude/Codex/AgY"). No cachea nada localmente a propósito: se puede
 // haber tocado un icono viejo o el panel desde otro dispositivo, así que se
 // lee fresco cada vez que se abre Configuración.
+// Nombre lindo para cada voz de edge-tts — el select del server solo manda
+// el id crudo (`options`, mismo whitelist que valida el PATCH).
+const VOICE_NAME_LABELS = {
+  'es-AR-ElenaNeural': 'Elena (Argentina)', 'es-AR-TomasNeural': 'Tomás (Argentina)',
+  'es-UY-ValentinaNeural': 'Valentina (Uruguay)', 'es-UY-MateoNeural': 'Mateo (Uruguay)',
+  'es-MX-DaliaNeural': 'Dalia (México)', 'es-MX-JorgeNeural': 'Jorge (México)',
+  'es-ES-ElviraNeural': 'Elvira (España)', 'es-ES-AlvaroNeural': 'Álvaro (España)', 'es-ES-XimenaNeural': 'Ximena (España)',
+  'es-CO-SalomeNeural': 'Salomé (Colombia)', 'es-CO-GonzaloNeural': 'Gonzalo (Colombia)',
+  'es-CL-CatalinaNeural': 'Catalina (Chile)', 'es-CL-LorenzoNeural': 'Lorenzo (Chile)',
+  'es-PY-TaniaNeural': 'Tania (Paraguay)', 'es-PY-MarioNeural': 'Mario (Paraguay)',
+  'es-VE-PaolaNeural': 'Paola (Venezuela)', 'es-VE-SebastianNeural': 'Sebastián (Venezuela)',
+  'es-PE-CamilaNeural': 'Camila (Perú)', 'es-PE-AlexNeural': 'Alex (Perú)',
+  'es-US-PalomaNeural': 'Paloma (EE.UU.)', 'es-US-AlonsoNeural': 'Alonso (EE.UU.)',
+};
+
 async function loadVoiceSettings() {
   let data;
   try { data = await api('/voice-settings'); }
   catch (err) { toast('No se pudo leer el estado de las voces: ' + err.message); return; }
   for (const row of document.querySelectorAll('.voice-row')) {
-    const info = data[row.dataset.voice];
+    const info = data.voices[row.dataset.voice];
     if (!info) continue;
+    const select = row.querySelector('.voice-select');
+    if (!select.options.length) {
+      for (const id of data.options) {
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = VOICE_NAME_LABELS[id] || id;
+        select.appendChild(opt);
+      }
+    }
+    select.value = info.name;
     row.querySelector('.voice-on-toggle').checked = info.on;
     row.querySelector('.voice-volume').value = info.volume;
     row.querySelector('.voice-volume-pct').textContent = info.volume + '%';
@@ -5645,6 +5658,7 @@ for (const row of document.querySelectorAll('.voice-row')) {
   const toggle = row.querySelector('.voice-on-toggle');
   const slider = row.querySelector('.voice-volume');
   const pct = row.querySelector('.voice-volume-pct');
+  const select = row.querySelector('.voice-select');
   toggle.addEventListener('change', () => {
     row.classList.toggle('voice-off', !toggle.checked);
     patchVoiceSetting(voice, { on: toggle.checked });
@@ -5653,6 +5667,7 @@ for (const row of document.querySelectorAll('.voice-row')) {
   // el PATCH real va en 'change' (soltar el slider), no en cada tick del drag.
   slider.addEventListener('input', () => { pct.textContent = slider.value + '%'; });
   slider.addEventListener('change', () => { patchVoiceSetting(voice, { volume: Number(slider.value) }); });
+  select.addEventListener('change', () => { patchVoiceSetting(voice, { name: select.value }); });
 }
 
 // Placeholder + badge "✓ Configurada" junto al label — dos señales para lo

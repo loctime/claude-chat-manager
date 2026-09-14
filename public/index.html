@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=84">
+  <link rel="stylesheet" href="style.css?v=85">
   <!-- Color de identidad server-side (Configuración → Color de identidad). Va
        después de style.css para pisar el --accent default de ahí; el ajuste
        personal por-dispositivo ("Acento" en Colores, más abajo) sigue
@@ -336,8 +336,13 @@
         </div>
       </div>
 
+      <!-- Cada sección es un <details> nativo: ocultable/expandable sin JS
+           propio (el browser lo maneja solo), arranca colapsado para que el
+           panel entre compacto — Diego expande solo lo que necesita en el
+           momento. -->
       <div class="settings-body">
-        <section class="settings-section">
+        <details class="settings-section">
+          <summary class="settings-section-label">General</summary>
           <div class="settings-grid">
             <label>Tu nombre
               <input type="text" id="cfg-user-name" placeholder="Vos" maxlength="40" autocomplete="off">
@@ -347,54 +352,58 @@
               <input type="checkbox" id="cfg-show-tools">
             </label>
           </div>
-        </section>
+        </details>
 
-        <label class="settings-loose">Voz de los mensajes
-          <select id="cfg-voice"><option value="">Default del sistema</option></select>
-        </label>
-
-        <!-- Narración por voz de cada agente (on/off + volumen). Reemplaza
-             los accesos directos sueltos del escritorio ("Voz Claude/Codex/
-             AgY") — quedan como respaldo, tocan el mismo interruptor de
-             archivo así que no se desincronizan entre sí. -->
-        <section class="settings-section">
-          <h3 class="settings-section-label">Voces</h3>
+        <!-- Narración por voz de cada agente (on/off + volumen + qué voz).
+             Reemplaza los accesos directos sueltos del escritorio ("Voz
+             Claude/Codex/AgY") — quedan como respaldo, tocan el mismo
+             interruptor de archivo así que no se desincronizan entre sí. La
+             lectura de mensajes en voz del navegador vive acá también, es
+             otro tipo de voz pero misma sección temática. -->
+        <details class="settings-section">
+          <summary class="settings-section-label">Voces</summary>
           <div class="voice-rows">
             <div class="voice-row" data-voice="claude">
-              <label class="settings-row settings-toggle">
-                <span>Claude <small class="voice-row-actor">Elena</small></span>
+              <div class="voice-row-top">
+                <span class="voice-row-name">Claude</span>
                 <input type="checkbox" class="voice-on-toggle">
-              </label>
-              <div class="voice-volume-row">
+              </div>
+              <div class="voice-row-controls">
+                <select class="voice-select"></select>
                 <input type="range" class="voice-volume" min="0" max="100" step="5">
                 <span class="voice-volume-pct">100%</span>
               </div>
             </div>
             <div class="voice-row" data-voice="codex">
-              <label class="settings-row settings-toggle">
-                <span>Codex <small class="voice-row-actor">Tomás</small></span>
+              <div class="voice-row-top">
+                <span class="voice-row-name">Codex</span>
                 <input type="checkbox" class="voice-on-toggle">
-              </label>
-              <div class="voice-volume-row">
+              </div>
+              <div class="voice-row-controls">
+                <select class="voice-select"></select>
                 <input type="range" class="voice-volume" min="0" max="100" step="5">
                 <span class="voice-volume-pct">100%</span>
               </div>
             </div>
             <div class="voice-row" data-voice="antigravity">
-              <label class="settings-row settings-toggle">
-                <span>AgY <small class="voice-row-actor">Valentina</small></span>
+              <div class="voice-row-top">
+                <span class="voice-row-name">AgY</span>
                 <input type="checkbox" class="voice-on-toggle">
-              </label>
-              <div class="voice-volume-row">
+              </div>
+              <div class="voice-row-controls">
+                <select class="voice-select"></select>
                 <input type="range" class="voice-volume" min="0" max="100" step="5">
                 <span class="voice-volume-pct">100%</span>
               </div>
             </div>
           </div>
-        </section>
+          <label class="settings-loose voice-browser-tts">Lectura de mensajes en voz alta (navegador)
+            <select id="cfg-voice"><option value="">Default del sistema</option></select>
+          </label>
+        </details>
 
-        <section class="settings-section">
-          <h3 class="settings-section-label">Apariencia de los mensajes</h3>
+        <details class="settings-section">
+          <summary class="settings-section-label">Apariencia de los mensajes</summary>
           <div class="settings-grid">
             <label>Tipografía
               <button type="button" class="settings-font-trigger" id="cfg-font-family-btn" aria-haspopup="listbox"></button>
@@ -426,20 +435,20 @@
               <input type="color" id="cfg-color-ai">
             </label>
           </div>
-        </section>
+        </details>
 
-        <section class="settings-section">
-          <h3 class="settings-section-label">Respuestas sugeridas</h3>
+        <details class="settings-section">
+          <summary class="settings-section-label">Respuestas sugeridas</summary>
           <div class="settings-grid">
             <label>API key de Groq <span id="cfg-groq-key-status" class="settings-key-status" hidden>✓ Configurada</span>
               <input type="password" id="cfg-groq-key" placeholder="gsk_..." maxlength="200" autocomplete="off">
             </label>
           </div>
           <span class="settings-hint">Gratis en console.groq.com — sin key, esta función queda apagada. Con key configurada, debajo del último mensaje de Claude aparecen botones con respuestas rápidas cuando el mensaje pide una confirmación.</span>
-        </section>
+        </details>
 
-        <section class="settings-section">
-          <h3 class="settings-section-label">Sala compartida</h3>
+        <details class="settings-section">
+          <summary class="settings-section-label">Sala compartida</summary>
           <div class="settings-grid">
             <label>URL de la sala
               <input type="text" id="cfg-sala-url" placeholder="https://sala.controlapps.ar" autocomplete="off">
@@ -449,23 +458,23 @@
             </label>
           </div>
           <span class="settings-hint">Datos del servicio sala-jarvis (VPS) para la pestaña 💬 Sala — pedíselos a quien lo deployó. Sin esto configurado, la pestaña avisa que falta completarlo.</span>
-        </section>
+        </details>
 
-        <section class="settings-section">
-          <h3 class="settings-section-label">Almacenamiento</h3>
+        <details class="settings-section">
+          <summary class="settings-section-label">Almacenamiento</summary>
           <div class="settings-server">
             <button type="button" id="settings-cleanup-btn">🧹 Limpiar sesiones</button>
             <span class="settings-hint">Ver, filtrar y borrar sesiones de Claude Code guardadas en disco para liberar espacio.</span>
           </div>
-        </section>
+        </details>
 
-        <section class="settings-section">
-          <h3 class="settings-section-label">Servidor</h3>
+        <details class="settings-section">
+          <summary class="settings-section-label">Servidor</summary>
           <div class="settings-server">
             <button type="button" id="cfg-restart-btn">Reiniciar server</button>
             <span class="settings-hint" title="Aplica código nuevo (git pull). Corta la conexión unos segundos.">Aplica código nuevo (git pull). Corta la conexión unos segundos.</span>
           </div>
-        </section>
+        </details>
       </div>
 
       <div class="settings-footer">
@@ -493,7 +502,7 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=96"></script>
+  <script src="app.js?v=99"></script>
   <!-- Split de app.js por dominio (sesión 2026-08-20) — scripts clásicos, no
        ES modules: siguen compartiendo el mismo scope global que app.js, por
        eso cargan DESPUÉS (usan $()/settings/selectConv/etc. definidos ahí).

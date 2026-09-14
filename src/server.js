@@ -745,10 +745,63 @@ const VOICE_VOLUME_FILES = {
   codex: path.join(HOME_DIR, '.claude', 'codex-voice-volume'),
   antigravity: path.join(HOME_DIR, '.claude', 'antigravity-voice-volume'),
 };
+// Mismo razonamiento que el volumen (arriba): Codex/AgY en archivo propio
+// porque Jarvis es quien arma el env del narrador; Claude en settings.json
+// porque lo lee el Stop hook real, sea o no a través de Jarvis.
+const VOICE_NAME_FILES = {
+  codex: path.join(HOME_DIR, '.claude', 'codex-voice-name'),
+  antigravity: path.join(HOME_DIR, '.claude', 'antigravity-voice-name'),
+};
+const DEFAULT_VOICE_NAME = { claude: 'es-AR-ElenaNeural', codex: CODEX_TTS_VOICE, antigravity: GEMINI_TTS_VOICE };
+// edge-tts no tiene endpoint de validación — lista fija de las voces es-*
+// reales (`edge-tts --list-voices`, revisado a mano el 2026-09-14). Evita
+// persistir un nombre inventado que silenciosamente no sintetice nada.
+const ALLOWED_VOICE_NAMES = new Set([
+  'es-AR-ElenaNeural', 'es-AR-TomasNeural',
+  'es-UY-ValentinaNeural', 'es-UY-MateoNeural',
+  'es-MX-DaliaNeural', 'es-MX-JorgeNeural',
+  'es-ES-ElviraNeural', 'es-ES-AlvaroNeural', 'es-ES-XimenaNeural',
+  'es-CO-SalomeNeural', 'es-CO-GonzaloNeural',
+  'es-CL-CatalinaNeural', 'es-CL-LorenzoNeural',
+  'es-PY-TaniaNeural', 'es-PY-MarioNeural',
+  'es-VE-PaolaNeural', 'es-VE-SebastianNeural',
+  'es-PE-CamilaNeural', 'es-PE-AlexNeural',
+  'es-US-PalomaNeural', 'es-US-AlonsoNeural',
+]);
 
 function clampVolume(v) {
   const n = Math.round(Number(v));
   return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 100;
+}
+
+function readVoiceName(voice) {
+  if (voice === 'claude') {
+    try {
+      const s = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_FILE, 'utf8'));
+      const v = s.env && s.env.CLAUDE_TTS_VOICE;
+      return ALLOWED_VOICE_NAMES.has(v) ? v : DEFAULT_VOICE_NAME.claude;
+    } catch { return DEFAULT_VOICE_NAME.claude; }
+  }
+  try {
+    const v = fs.readFileSync(VOICE_NAME_FILES[voice], 'utf8').trim();
+    return ALLOWED_VOICE_NAMES.has(v) ? v : DEFAULT_VOICE_NAME[voice];
+  } catch { return DEFAULT_VOICE_NAME[voice]; }
+}
+
+function writeVoiceName(voice, value) {
+  if (!ALLOWED_VOICE_NAMES.has(value)) throw new Error('voz de edge-tts desconocida: ' + value);
+  if (voice === 'claude') {
+    let s = {};
+    try { s = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_FILE, 'utf8')); } catch {}
+    s.env = s.env || {};
+    s.env.CLAUDE_TTS_VOICE = value;
+    fs.writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify(s, null, 2) + '\n', 'utf8');
+  } else {
+    const file = VOICE_NAME_FILES[voice];
+    if (!file) throw new Error('voz desconocida');
+    fs.writeFileSync(file, value, 'utf8');
+  }
+  return value;
 }
 
 function readVoiceOn(voice) {
@@ -795,8 +848,8 @@ function writeVoiceVolume(voice, value) {
 
 app.get('/api/voice-settings', (req, res) => {
   const out = {};
-  for (const v of Object.keys(VOICE_FLAG_FILES)) out[v] = { on: readVoiceOn(v), volume: readVoiceVolume(v) };
-  res.json(out);
+  for (const v of Object.keys(VOICE_FLAG_FILES)) out[v] = { on: readVoiceOn(v), volume: readVoiceVolume(v), name: readVoiceName(v) };
+  res.json({ voices: out, options: [...ALLOWED_VOICE_NAMES] });
 });
 app.patch('/api/voice-settings/:voice', (req, res) => {
   const voice = req.params.voice;
@@ -804,7 +857,8 @@ app.patch('/api/voice-settings/:voice', (req, res) => {
   try {
     if ('on' in req.body) writeVoiceOn(voice, !!req.body.on);
     if ('volume' in req.body) writeVoiceVolume(voice, req.body.volume);
-    res.json({ on: readVoiceOn(voice), volume: readVoiceVolume(voice) });
+    if ('name' in req.body) writeVoiceName(voice, req.body.name);
+    res.json({ on: readVoiceOn(voice), volume: readVoiceVolume(voice), name: readVoiceName(voice) });
   } catch (err) {
     res.status(500).json({ error: 'no se pudo guardar: ' + err.message });
   }
@@ -843,7 +897,7 @@ function narrateCodexResponse(convId) {
       windowsHide: true,
       env: {
         ...process.env,
-        CLAUDE_TTS_VOICE: CODEX_TTS_VOICE,
+        CLAUDE_TTS_VOICE: readVoiceName('codex'),
         CLAUDE_TTS_VOLUME: String(readVoiceVolume('codex')),
         CLAUDE_TTS_FLAG_FILE: VOICE_FLAG_FILES.codex,
       },
@@ -878,7 +932,7 @@ function narrateGeminiResponse(convId) {
       windowsHide: true,
       env: {
         ...process.env,
-        CLAUDE_TTS_VOICE: GEMINI_TTS_VOICE,
+        CLAUDE_TTS_VOICE: readVoiceName('antigravity'),
         CLAUDE_TTS_VOLUME: String(readVoiceVolume('antigravity')),
         CLAUDE_TTS_FLAG_FILE: VOICE_FLAG_FILES.antigravity,
       },
@@ -2852,20 +2906,9 @@ geminiRunner.on('status', status => {
   geminiBroadcast(status.convId, { kind: 'status', ...status });
 });
 const AGY_MODELS = [
-  { id: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)' },
-  { id: 'gemini-3.8-flash-medium', name: 'Gemini 3.8 Flash (Medium)' },
-  { id: 'gemini-3.8-flash-low', name: 'Gemini 3.8 Flash (Low)' },
-  { id: 'gemini-3.7-flash-high', name: 'Gemini 3.7 Flash (High)' },
-  { id: 'gemini-3.7-flash-medium', name: 'Gemini 3.7 Flash (Medium)' },
-  { id: 'gemini-3.7-flash-low', name: 'Gemini 3.7 Flash (Low)' },
-  { id: 'gemini-3.6-flash-high', name: 'Gemini 3.6 Flash (High)' },
-  { id: 'gemini-3.6-flash-medium', name: 'Gemini 3.6 Flash (Medium)' },
-  { id: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' },
-  { id: 'gemini-3.1-pro-high', name: 'Gemini 3.1 Pro (High)' },
-  { id: 'gemini-3.1-pro-low', name: 'Gemini 3.1 Pro (Low)' },
-  { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6 (Thinking)' },
-  { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6 (Thinking)' },
-  { id: 'gpt-oss-120b-medium', name: 'GPT-OSS 120B (Medium)' },
+  { id: 'claude-sonnet-4-6', name: 'Sonnet' },
+  { id: 'gemini-3.8-flash-high', name: 'Flash High' },
+  { id: 'gemini-3.8-flash-medium', name: 'Flash Medium' },
 ];
 
 app.get('/api/antigravity/models', (req, res) => {
