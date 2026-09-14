@@ -18,9 +18,12 @@ const icon = require('./icon');
 const { Runner } = require('./runner');
 const { CLAUDE_CMD } = require('./claude-cmd');
 const { CodexRunner } = require('./codex-runner');
+const { GeminiRunner } = require('./gemini-runner');
 const { CodexAvailability } = require('./codex-availability');
 const { CodexUsageService } = require('./codex-usage');
+const { AntigravityUsageService } = require('./antigravity-usage');
 const codexScanner = require('./codex-scanner');
+const geminiScanner = require('./gemini-scanner');
 const searchIndex = require('./search-index');
 const { getReplySuggestions } = require('./groq-suggest');
 const gitSync = require('./git-sync');
@@ -427,6 +430,7 @@ app.get('/api/usage', async (req, res) => {
 // Límites de la cuenta ChatGPT con la que está logueado Codex. Se lee del
 // App Server local oficial, no de los límites de Claude ni de una API key.
 const codexUsage = new CodexUsageService();
+const antigravityUsage = new AntigravityUsageService();
 const codexAvailability = new CodexAvailability();
 app.get('/api/codex/status', async (req, res) => {
   res.json(await codexAvailability.get());
@@ -711,11 +715,100 @@ const runner = new Runner({ selfHost: HOST, selfPort: PORT });
 const sseClients = new Map(); // convId → Set<res>
 
 const CODEX_META_FILE = path.join(os.homedir(), '.claude', 'session-manager', 'codex-meta.json');
+const GEMINI_META_FILE = path.join(os.homedir(), '.claude', 'session-manager', 'gemini-meta.json');
 const SALA_META_FILE = path.join(os.homedir(), '.claude', 'session-manager', 'sala-meta.json');
 const codexRunner = new CodexRunner({ selfHost: HOST, selfPort: PORT });
 const codexSseClients = new Map(); // convId → Set<res>
+const geminiRunner = new GeminiRunner({ selfHost: HOST, selfPort: PORT });
+const geminiSseClients = new Map();
 const CODEX_TTS_SCRIPT = path.join(os.homedir(), '.claude', 'scripts', 'speak-response.py');
 const CODEX_TTS_VOICE = 'es-AR-TomasNeural';
+const GEMINI_TTS_VOICE = 'es-UY-ValentinaNeural';
+const CLAUDE_SETTINGS_FILE = path.join(HOME_DIR, '.claude', 'settings.json');
+// El on/off ya existía como archivo por voz (el switch que checkea el propio
+// speak-response.py, ver arriba) — el panel de Configuración solo le agrega
+// una UI encima, sin cambiar el mecanismo (así los accesos directos viejos
+// del escritorio y el panel nunca se desincronizan, tocan el mismo archivo).
+const VOICE_FLAG_FILES = {
+  claude: path.join(HOME_DIR, '.claude', 'voice-on'),
+  codex: path.join(HOME_DIR, '.claude', 'codex-voice-on'),
+  antigravity: path.join(HOME_DIR, '.claude', 'antigravity-voice-on'),
+};
+// El volumen de Codex/AgY solo lo necesita este mismo proceso (es quien
+// spawnea el narrador con env explícito, ver narrateCodexResponse/
+// narrateGeminiResponse) — un archivo de texto plano alcanza. El de Claude
+// es distinto: lo lee el Stop hook del CLI real (cualquier terminal, no solo
+// Jarvis), que solo hereda variables de entorno — por eso vive en
+// settings.json → env.CLAUDE_TTS_VOLUME, mismo lugar que ya usa
+// CLAUDE_TTS_VOICE (Elena) para ese mismo hook.
+const VOICE_VOLUME_FILES = {
+  codex: path.join(HOME_DIR, '.claude', 'codex-voice-volume'),
+  antigravity: path.join(HOME_DIR, '.claude', 'antigravity-voice-volume'),
+};
+
+function clampVolume(v) {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 100;
+}
+
+function readVoiceOn(voice) {
+  const file = VOICE_FLAG_FILES[voice];
+  return !!file && fs.existsSync(file);
+}
+
+function writeVoiceOn(voice, on) {
+  const file = VOICE_FLAG_FILES[voice];
+  if (!file) throw new Error('voz desconocida');
+  if (on) fs.writeFileSync(file, '', 'utf8');
+  else { try { fs.unlinkSync(file); } catch {} }
+}
+
+function readVoiceVolume(voice) {
+  if (voice === 'claude') {
+    try {
+      const s = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_FILE, 'utf8'));
+      const v = s.env && s.env.CLAUDE_TTS_VOLUME;
+      return v != null ? clampVolume(v) : 100;
+    } catch { return 100; }
+  }
+  const file = VOICE_VOLUME_FILES[voice];
+  try { return clampVolume(fs.readFileSync(file, 'utf8').trim()); } catch { return 100; }
+}
+
+function writeVoiceVolume(voice, value) {
+  const volume = clampVolume(value);
+  if (voice === 'claude') {
+    // Reescribe solo env.CLAUDE_TTS_VOLUME — settings.json tiene TODOS los
+    // tokens de API del usuario, no se toca nada más de lo necesario.
+    let s = {};
+    try { s = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_FILE, 'utf8')); } catch {}
+    s.env = s.env || {};
+    s.env.CLAUDE_TTS_VOLUME = String(volume);
+    fs.writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify(s, null, 2) + '\n', 'utf8');
+  } else {
+    const file = VOICE_VOLUME_FILES[voice];
+    if (!file) throw new Error('voz desconocida');
+    fs.writeFileSync(file, String(volume), 'utf8');
+  }
+  return volume;
+}
+
+app.get('/api/voice-settings', (req, res) => {
+  const out = {};
+  for (const v of Object.keys(VOICE_FLAG_FILES)) out[v] = { on: readVoiceOn(v), volume: readVoiceVolume(v) };
+  res.json(out);
+});
+app.patch('/api/voice-settings/:voice', (req, res) => {
+  const voice = req.params.voice;
+  if (!VOICE_FLAG_FILES[voice]) return res.status(404).json({ error: 'voz desconocida' });
+  try {
+    if ('on' in req.body) writeVoiceOn(voice, !!req.body.on);
+    if ('volume' in req.body) writeVoiceVolume(voice, req.body.volume);
+    res.json({ on: readVoiceOn(voice), volume: readVoiceVolume(voice) });
+  } catch (err) {
+    res.status(500).json({ error: 'no se pudo guardar: ' + err.message });
+  }
+});
 
 function codexBroadcast(convId, payload) {
   const set = codexSseClients.get(convId);
@@ -751,12 +844,48 @@ function narrateCodexResponse(convId) {
       env: {
         ...process.env,
         CLAUDE_TTS_VOICE: CODEX_TTS_VOICE,
-        CLAUDE_TTS_FLAG_FILE: path.join(os.homedir(), '.claude', 'codex-voice-on'),
+        CLAUDE_TTS_VOLUME: String(readVoiceVolume('codex')),
+        CLAUDE_TTS_FLAG_FILE: VOICE_FLAG_FILES.codex,
       },
     });
     child.unref();
   } catch (err) {
     console.error('[codex-tts] no se pudo lanzar el narrador:', err.message);
+  }
+}
+
+// Mismo mecanismo que narrateCodexResponse (Antigravity tampoco tiene hooks
+// propios) — voz propia (Valentina, uruguaya/rioplatense) para distinguirse
+// de Elena (Claude) y Tomás (Codex). A diferencia de Codex, el texto ya está
+// en meta.json (gemini-runner.js lo persiste ahí) — no hace falta ir a buscar
+// un archivo de sesión aparte.
+function narrateGeminiResponse(convId) {
+  if (!IS_WIN || !fs.existsSync(CODEX_TTS_SCRIPT)) return;
+  try {
+    const data = meta.load(GEMINI_META_FILE);
+    const conv = data.conversations[convId];
+    const messages = conv && conv.messages;
+    if (!messages) return;
+    const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && m.text && m.text.trim());
+    if (!lastAssistant) return;
+    const assistantIndex = messages.lastIndexOf(lastAssistant);
+    const user = [...messages.slice(0, assistantIndex)].reverse().find(m => m.role === 'user');
+    const inputFile = path.join(os.tmpdir(), `agy-tts-${process.pid}-${Date.now()}-${crypto.randomUUID()}.json`);
+    fs.writeFileSync(inputFile, JSON.stringify({ user: user?.text || '', assistant: lastAssistant.text }), { encoding: 'utf8', mode: 0o600 });
+    const child = spawn('python', [CODEX_TTS_SCRIPT, '--say-json', inputFile], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      env: {
+        ...process.env,
+        CLAUDE_TTS_VOICE: GEMINI_TTS_VOICE,
+        CLAUDE_TTS_VOLUME: String(readVoiceVolume('antigravity')),
+        CLAUDE_TTS_FLAG_FILE: VOICE_FLAG_FILES.antigravity,
+      },
+    });
+    child.unref();
+  } catch (err) {
+    console.error('[antigravity-tts] no se pudo lanzar el narrador:', err.message);
   }
 }
 
@@ -2673,6 +2802,230 @@ app.get('/api/codex/conversations/:id/stream', (req, res) => {
     if (set.size === 0) codexSseClients.delete(convId);
   });
 });
+
+// ── Gemini CLI ──
+function geminiBroadcast(convId, payload) { for (const res of geminiSseClients.get(convId) || []) res.write(`data: ${JSON.stringify(payload)}\n\n`); }
+function geminiConvStatus(convId) { return geminiRunner.isBusy(convId) ? 'running' : 'idle'; }
+geminiRunner.on('event', ({ convId, event }) => geminiBroadcast(convId, { kind: 'gemini', event }));
+geminiRunner.on('status', status => {
+  // Antes exigía code===0 — con el fix del 2026-09-14 (gemini-runner.js) el
+  // código de salida del proceso ya no es la señal confiable de éxito (ver
+  // comentario ahí); lo que importa es que gemini-runner NO lo haya marcado
+  // incomplete (result real, sin status:"ERROR").
+  if (status.status === 'idle' && !status.incomplete && status.response) {
+    const data = meta.load(GEMINI_META_FILE), conv = data.conversations[status.convId];
+    if (conv) { conv.messages.push({ role: 'assistant', text: status.response, ts: new Date().toISOString() }); conv.currentSessionId = status.conversationId || conv.currentSessionId; conv.lastActivity = new Date().toISOString(); meta.save(data, GEMINI_META_FILE); }
+  }
+  // Bug real del 2026-09-14: un pedido grande se cortó sin dejar NINGÚN
+  // rastro — ni mensaje de error en el historial, ni toast (nadie miraba en
+  // ese momento). Este mensaje ahora es el "siempre queda algo" para
+  // cualquier motivo de corte (timeout, límite de herramientas, error de
+  // Antigravity) — incluye el motivo real cuando gemini-runner lo trae.
+  if (status.status === 'idle' && status.incomplete) {
+    const data = meta.load(GEMINI_META_FILE), conv = data.conversations[status.convId];
+    if (conv) {
+      conv.currentSessionId = status.conversationId || conv.currentSessionId;
+      const motivo = status.stderr ? ` (motivo: ${status.stderr})` : '';
+      conv.messages.push({ role: 'assistant', text: `Antigravity se detuvo antes de entregar la respuesta final${motivo}. Podés enviar “continuá y dame la respuesta final” para retomar el trabajo.`, ts: new Date().toISOString(), incomplete: true });
+      conv.lastActivity = new Date().toISOString();
+      meta.save(data, GEMINI_META_FILE);
+    }
+  }
+  // Mismo criterio que Codex (narrateCodexResponse, arriba): narrar también
+  // el caso "incomplete" (cualquier motivo, no solo code===0 — ver arriba)
+  // porque ya le agregamos un mensaje real al historial avisando que no hubo
+  // respuesta final — tiene sentido que Diego se entere por voz igual que
+  // por texto, sobre todo si es el único aviso que va a recibir.
+  if (status.status === 'idle' && !status.cancelled) {
+    narrateGeminiResponse(status.convId);
+  }
+  // Mismo criterio que Chats (ver comentario ahí): un turno terminó sin nadie
+  // mirando esta convId por SSE → marcarla no leída. Faltaba acá — la pestaña
+  // AgY nunca prendía el punto de "no leído" aunque el backend ya lo soporta.
+  if (status.status === 'idle' && !status.cancelled) {
+    const hasViewer = (geminiSseClients.get(status.convId)?.size || 0) > 0;
+    if (!hasViewer) {
+      const data = meta.load(GEMINI_META_FILE), conv = data.conversations[status.convId];
+      if (conv) { conv.unread = true; meta.save(data, GEMINI_META_FILE); }
+    }
+  }
+  geminiBroadcast(status.convId, { kind: 'status', ...status });
+});
+const AGY_MODELS = [
+  { id: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)' },
+  { id: 'gemini-3.8-flash-medium', name: 'Gemini 3.8 Flash (Medium)' },
+  { id: 'gemini-3.8-flash-low', name: 'Gemini 3.8 Flash (Low)' },
+  { id: 'gemini-3.7-flash-high', name: 'Gemini 3.7 Flash (High)' },
+  { id: 'gemini-3.7-flash-medium', name: 'Gemini 3.7 Flash (Medium)' },
+  { id: 'gemini-3.7-flash-low', name: 'Gemini 3.7 Flash (Low)' },
+  { id: 'gemini-3.6-flash-high', name: 'Gemini 3.6 Flash (High)' },
+  { id: 'gemini-3.6-flash-medium', name: 'Gemini 3.6 Flash (Medium)' },
+  { id: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' },
+  { id: 'gemini-3.1-pro-high', name: 'Gemini 3.1 Pro (High)' },
+  { id: 'gemini-3.1-pro-low', name: 'Gemini 3.1 Pro (Low)' },
+  { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6 (Thinking)' },
+  { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6 (Thinking)' },
+  { id: 'gpt-oss-120b-medium', name: 'GPT-OSS 120B (Medium)' },
+];
+
+app.get('/api/antigravity/models', (req, res) => {
+  res.json({ models: AGY_MODELS });
+});
+
+app.get('/api/antigravity/usage', async (req, res) => {
+  try { res.json(await antigravityUsage.get({ force: req.query.force === '1' })); }
+  catch (err) { res.status(503).json({ error: 'No se pudo consultar el uso de Antigravity: ' + err.message }); }
+});
+
+app.post('/api/gemini/conversations', (req, res) => {
+  const convId = crypto.randomUUID(), data = meta.load(GEMINI_META_FILE);
+  const projectDir = req.body.projectDir || process.env.CCM_DEFAULT_PROJECT_DIR || os.homedir();
+  const model = req.body.model || 'gemini-3.8-flash-high';
+  data.conversations[convId] = {
+    currentSessionId: null,
+    projectDir,
+    model,
+    messages: [],
+    lastActivity: null,
+  };
+  meta.save(data, GEMINI_META_FILE);
+  res.status(201).json({ convId, projectDir, model });
+});
+
+app.get('/api/gemini/tree', async (req, res) => {
+  const data = meta.load(GEMINI_META_FILE);
+  let metadataChanged = false;
+
+  // Auto-descubrir sesiones creadas en Antigravity CLI que no estén registradas en gemini-meta.json
+  const knownSessions = new Set(Object.values(data.conversations).map(c => c.currentSessionId).filter(Boolean));
+  for (const session of geminiScanner.listSessions()) {
+    if (!knownSessions.has(session.sessionId)) {
+      const convId = crypto.randomUUID();
+      data.conversations[convId] = {
+        currentSessionId: session.sessionId,
+        projectDir: session.workspace || process.env.CCM_DEFAULT_PROJECT_DIR || os.homedir(),
+        name: session.snippet || '(conversación externa)',
+        messages: [],
+        lastActivity: session.lastActivity,
+        model: 'gemini-3.8-flash-high',
+      };
+      knownSessions.add(session.sessionId);
+      metadataChanged = true;
+    }
+  }
+
+  const conversations = [];
+  for (const [convId, c] of Object.entries(data.conversations)) {
+    if (c.hidden) continue;
+    const s = (c.currentSessionId && geminiScanner.sessionInfo(c.currentSessionId)) || {};
+    if (!c.gitRepo && (c.projectDir || s.workspace)) {
+      const candidateDir = c.projectDir || s.workspace;
+      const repo = await gitSync.resolveRepo([candidateDir]);
+      if (repo) {
+        c.gitRepo = repo;
+        metadataChanged = true;
+      }
+    }
+    const snippet = s.snippet || c.messages?.at(-1)?.text.slice(0, 90) || '';
+    conversations.push({
+      convId,
+      name: c.name || s.snippet || c.messages?.find(m => m.role === 'user')?.text.slice(0, 60) || '(nueva conversación)',
+      snippet,
+      lastActivity: s.lastActivity || c.lastActivity || null,
+      messageCount: s.messageCount || c.messages?.length || 0,
+      pinned: !!c.pinned,
+      unread: !!c.unread,
+      status: geminiConvStatus(convId),
+      projectDir: c.projectDir || s.workspace || null,
+      gitRepo: c.gitRepo || null,
+      model: c.model || 'gemini-3.8-flash-high',
+    });
+  }
+
+  if (metadataChanged) meta.save(data, GEMINI_META_FILE);
+
+  conversations.sort((a, b) => Number(b.pinned) - Number(a.pinned) || String(b.lastActivity || '').localeCompare(String(a.lastActivity || '')));
+  res.json({ conversations, unreadTotal: conversations.filter(c => c.unread).length });
+});
+
+app.patch('/api/gemini/conversations/:id', (req, res) => {
+  const data = meta.load(GEMINI_META_FILE), c = data.conversations[req.params.id];
+  if (!c) return res.status(404).json({ error: 'conversación no encontrada' });
+  for (const key of ['pinned', 'unread', 'hidden']) {
+    if (key in req.body) c[key] = !!req.body[key];
+  }
+  for (const key of ['model', 'projectDir', 'gitRepo', 'name']) {
+    if (key in req.body && typeof req.body[key] === 'string') c[key] = req.body[key];
+  }
+  meta.save(data, GEMINI_META_FILE);
+  res.json({ ok: true });
+});
+
+app.get('/api/gemini/conversations/:id/messages', (req, res) => {
+  const data = meta.load(GEMINI_META_FILE);
+  const c = data.conversations[req.params.id];
+  if (!c) return res.status(404).json({ error: 'conversación no encontrada' });
+  if (c.currentSessionId) {
+    const realMessages = geminiScanner.getMessages(c.currentSessionId);
+    if (realMessages && realMessages.length > 0) {
+      return res.json(realMessages);
+    }
+  }
+  res.json(c.messages || []);
+});
+
+app.get('/api/gemini/conversations/:id/repo', async (req, res) => {
+  const data = meta.load(GEMINI_META_FILE);
+  const conv = data.conversations[req.params.id];
+  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  let repo = conv.gitRepo || null;
+  if (!repo && conv.projectDir) {
+    repo = await gitSync.resolveRepo([conv.projectDir]);
+  }
+  if (!repo && conv.currentSessionId) {
+    const ws = geminiScanner.findSessionWorkspace(conv.currentSessionId);
+    if (ws) repo = await gitSync.resolveRepo([ws]);
+  }
+  if (!repo) {
+    const msgs = (conv.currentSessionId && geminiScanner.getMessages(conv.currentSessionId)) || conv.messages || [];
+    repo = await inferRepoFromMessages(msgs);
+  }
+  if (repo && conv.gitRepo !== repo) {
+    conv.gitRepo = repo;
+    meta.save(data, GEMINI_META_FILE);
+  }
+  res.json({ repo: repo || conv.projectDir || null });
+});
+
+app.post('/api/gemini/conversations/:id/message', async (req, res) => {
+  const text = String(req.body.text || '').trim();
+  if (!text) return res.status(400).json({ error: 'mensaje vacío' });
+  if (geminiRunner.isBusy(req.params.id)) return res.status(409).json({ error: 'esa conversación ya está procesando un mensaje' });
+  const data = meta.load(GEMINI_META_FILE), c = data.conversations[req.params.id];
+  if (!c) return res.status(404).json({ error: 'conversación no encontrada' });
+  if (!c.gitRepo) {
+    const inferredRepo = await inferRepoFromMessage(text);
+    if (inferredRepo) {
+      c.gitRepo = inferredRepo;
+      meta.save(data, GEMINI_META_FILE);
+    }
+  }
+  c.messages.push({ role: 'user', text, ts: new Date().toISOString() });
+  c.lastActivity = new Date().toISOString();
+  meta.save(data, GEMINI_META_FILE);
+  const cwd = c.projectDir || os.homedir();
+  geminiRunner.send({
+    convId: req.params.id,
+    sessionId: c.currentSessionId,
+    cwd,
+    text,
+    model: c.model || 'gemini-3.8-flash-high',
+  });
+  res.status(202).json({ queued: true });
+});
+
+app.delete('/api/gemini/conversations/:id/message', (req, res) => res.json({ cancelled: geminiRunner.cancel(req.params.id) }));
+app.get('/api/gemini/conversations/:id/stream', (req, res) => { const id = req.params.id; res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' }); if (!geminiSseClients.has(id)) geminiSseClients.set(id, new Set()); geminiSseClients.get(id).add(res); res.write(`data: ${JSON.stringify({ kind: 'status', status: geminiConvStatus(id) })}\n\n`); const heartbeat = setInterval(() => res.write(':heartbeat\n\n'), 20000); req.on('close', () => { clearInterval(heartbeat); const set = geminiSseClients.get(id); if (set) { set.delete(res); if (!set.size) geminiSseClients.delete(id); } }); });
 
 // ── Sala compartida (Jarvis ↔ FerStark) ──
 // Cada "sala" es una conversación de Claude local normal (mismo runner,

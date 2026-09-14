@@ -22,11 +22,13 @@ PWA local para chatear con Claude Code desde el celular o el browser. Sidebar de
 - **Escáner de documentos** — pestaña aparte (o botón directo en el header en mobile): sacás/subís una foto de un documento, se detecta el borde, se endereza la perspectiva y se limpia el contraste con OpenCV local (no pasa por Claude, no gasta tokens); descartás una página si no te gustó, o la agregás a un documento de varias páginas y las juntás en un solo PDF al terminar; guardás el resultado en Notas o lo descargás directo. Ver `docs/superpowers/specs/2026-08-17-escaner-documentos-design.md`
 - **Buscador con índice FTS5** — busca en chats y notas con tolerancia a tildes, resaltado del término encontrado y salto directo al mensaje; toggle aparte para incluir herramientas
 - **Mensaje en cola** — si mandás algo mientras Claude sigue respondiendo, se guarda (tope 1 por conversación) y se envía solo al terminar el turno, sin perderlo
+- **Pestaña AgY (Antigravity CLI)** — integración con Google Antigravity (`agy`), lectura de sesiones reales con historial de herramientas (`tool_calls`), chip de carpeta/repositorio y selector de modelo Gemini dedicado.
 
 ## Requisitos
 
 - Node.js 18+
 - [Claude Code CLI](https://claude.ai/code) instalado y autenticado
+- [Google Antigravity CLI](https://antigravity.google) (opcional, para la pestaña AgY)
 - ImageMagick + Ghostscript (para thumbnails de imágenes y PDFs)
 - Groq API key (para transcripción de audio)
 
@@ -117,6 +119,7 @@ del producto ni del repositorio.
 - Cada mensaje spawnea `claude -p --resume <id> --output-format stream-json --dangerously-skip-permissions`
 - Los archivos subidos van a `~/.ccm-uploads/`
 - Thumbnails generados al vuelo por ImageMagick (1h de cache)
+- AgY (Google Antigravity) lee transcripts desde `~/.gemini/antigravity-cli/brain/`, resuelve proyectos con `conversation_summaries.db` y ejecuta el CLI nativo `agy`
 
 ## Tests
 

@@ -10,6 +10,7 @@
   --bubble-ai: #2f3f4a;
   --accent:    #25d366;
   --codex-accent: #10a37f;
+  --antigravity-accent: #7c5cff;
   /* Brillo de "no leído" en las pestañas (#pane-tabs) — variable propia, NO
      --accent: #pane-tabs vive adentro de #panel-list, y body.codex-list-theme
      redefine --accent ahí (más abajo) para teñir de teal la pestaña Codex
@@ -39,6 +40,9 @@ body.codex-list-theme #panel-list {
 }
 #panel-chat.codex-chat-theme { --accent: var(--codex-accent); }
 #panel-chat.codex-chat-theme #chat-header { background: var(--codex-accent); }
+body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
+#panel-chat.antigravity-chat-theme { --accent: var(--antigravity-accent); }
+#panel-chat.antigravity-chat-theme #chat-header { background: var(--antigravity-accent); }
 
 /* ── App shell ── */
 #app { display: flex; height: 100dvh; position: relative; overflow: hidden; }
@@ -253,6 +257,9 @@ body.codex-list-theme #panel-list {
     background: color-mix(in srgb, var(--codex-accent) 22%, transparent);
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--codex-accent) 65%, transparent), 0 0 12px color-mix(in srgb, var(--codex-accent) 45%, transparent);
   }
+  .pane-tab[data-pane="6"] { color: var(--antigravity-accent); }
+  .pane-tab[data-pane="6"].active { color: var(--antigravity-accent); border-bottom-color: var(--antigravity-accent); }
+  .pane-tab[data-pane="6"].has-unread { --pane-alert: var(--antigravity-accent); color: color-mix(in srgb, var(--antigravity-accent) 35%, white); background: color-mix(in srgb, var(--antigravity-accent) 22%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--antigravity-accent) 65%, transparent), 0 0 12px color-mix(in srgb, var(--antigravity-accent) 45%, transparent); }
   @keyframes pane-unread-glow {
     50% { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pane-alert) 90%, transparent), 0 0 20px color-mix(in srgb, var(--pane-alert) 75%, transparent); }
   }
@@ -309,17 +316,18 @@ body.codex-list-theme #panel-list {
    más y recalcula los translateX a k/N, N = cantidad total de paneles). */
 #tree-viewport-inner {
   display: flex;
-  width: 600%;
+  width: 700%;
   height: 100%;
   transition: transform .25s ease;
   touch-action: pan-y;
 }
-#tree-viewport-inner[data-pane="1"] { transform: translateX(calc(-100% / 6)); }
-#tree-viewport-inner[data-pane="2"] { transform: translateX(calc(-200% / 6)); }
-#tree-viewport-inner[data-pane="3"] { transform: translateX(calc(-300% / 6)); }
-#tree-viewport-inner[data-pane="4"] { transform: translateX(calc(-400% / 6)); }
-#tree-viewport-inner[data-pane="5"] { transform: translateX(calc(-500% / 6)); }
-.tree-pane { width: calc(100% / 6); flex: none; height: 100%; overflow-y: auto; }
+#tree-viewport-inner[data-pane="1"] { transform: translateX(calc(-100% / 7)); }
+#tree-viewport-inner[data-pane="2"] { transform: translateX(calc(-200% / 7)); }
+#tree-viewport-inner[data-pane="3"] { transform: translateX(calc(-300% / 7)); }
+#tree-viewport-inner[data-pane="4"] { transform: translateX(calc(-400% / 7)); }
+#tree-viewport-inner[data-pane="5"] { transform: translateX(calc(-500% / 7)); }
+#tree-viewport-inner[data-pane="6"] { transform: translateX(calc(-600% / 7)); }
+.tree-pane { width: calc(100% / 7); flex: none; height: 100%; overflow-y: auto; }
 .tree-pane::-webkit-scrollbar { width: 4px; }
 .tree-pane::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
@@ -1319,6 +1327,25 @@ dialog button:hover { background: var(--border); }
 /* Una sola voz para agente y usuario — selector más chico que un input
    normal del dialog (antes se salía del cuadro con nombres de voz largos). */
 #settings-dialog #cfg-voice { font-size: 13px; padding: 7px 10px; }
+
+/* Panel "Voces" — un bloque por agente (toggle + volumen), reemplaza los
+   accesos directos del escritorio. El slider queda deshabilitado (opaco)
+   mientras esa voz está apagada, para no sugerir que ajustarlo hace algo. */
+#settings-dialog .voice-rows { display: flex; flex-direction: column; gap: 14px; }
+#settings-dialog .voice-row:not(:last-child) { padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+#settings-dialog .voice-row .settings-row { margin-top: 0; }
+#settings-dialog .voice-row-actor {
+  color: var(--text2); font-weight: 400; margin-left: 4px;
+}
+#settings-dialog .voice-volume-row {
+  display: flex; align-items: center; gap: 10px; margin-top: 8px;
+}
+#settings-dialog .voice-volume { flex: 1; accent-color: var(--accent); cursor: pointer; }
+#settings-dialog .voice-volume-pct {
+  font-size: 12.5px; color: var(--text2); min-width: 38px; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+#settings-dialog .voice-row.voice-off .voice-volume-row { opacity: .45; pointer-events: none; }
 
 /* Botón que reemplaza al <select> nativo de tipografía: el <select> real
    sigue existiendo oculto (guarda el valor y dispara el "change" de

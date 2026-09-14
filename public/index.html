@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=83">
+  <link rel="stylesheet" href="style.css?v=84">
   <!-- Color de identidad server-side (Configuración → Color de identidad). Va
        después de style.css para pisar el --accent default de ahí; el ajuste
        personal por-dispositivo ("Acento" en Colores, más abajo) sigue
@@ -59,9 +59,10 @@
         </div>
       </div>
       <nav id="pane-tabs">
-        <button type="button" class="pane-tab active" data-pane="0">Chats</button>
+        <button type="button" class="pane-tab active" data-pane="0" title="Razonamiento y planificación">Chats</button>
         <button type="button" class="pane-tab" data-pane="1" hidden>Archivado</button>
-        <button type="button" class="pane-tab" id="codex-tab" data-pane="2">Codex</button>
+        <button type="button" class="pane-tab" id="codex-tab" data-pane="2" title="Ejecución de tareas e implementación de planes">Codex</button>
+        <button type="button" class="pane-tab" id="gemini-tab" data-pane="6" title="Otro punto de vista y mucho contexto">AgY</button>
         <button type="button" class="pane-tab" data-pane="3">📝 Notas</button>
         <button type="button" class="pane-tab" data-pane="4">🚦 Agenda<span id="agenda-badge" class="tab-badge" hidden></span></button>
         <button type="button" class="pane-tab" data-pane="5">💬 Sala</button>
@@ -119,6 +120,7 @@
           <div id="tree-sala" class="tree-pane notes-pane">
             <nav id="room-list"></nav>
           </div>
+          <nav class="tree-pane" id="gemini-pane"></nav>
         </div>
       </div>
     </div>
@@ -351,6 +353,46 @@
           <select id="cfg-voice"><option value="">Default del sistema</option></select>
         </label>
 
+        <!-- Narración por voz de cada agente (on/off + volumen). Reemplaza
+             los accesos directos sueltos del escritorio ("Voz Claude/Codex/
+             AgY") — quedan como respaldo, tocan el mismo interruptor de
+             archivo así que no se desincronizan entre sí. -->
+        <section class="settings-section">
+          <h3 class="settings-section-label">Voces</h3>
+          <div class="voice-rows">
+            <div class="voice-row" data-voice="claude">
+              <label class="settings-row settings-toggle">
+                <span>Claude <small class="voice-row-actor">Elena</small></span>
+                <input type="checkbox" class="voice-on-toggle">
+              </label>
+              <div class="voice-volume-row">
+                <input type="range" class="voice-volume" min="0" max="100" step="5">
+                <span class="voice-volume-pct">100%</span>
+              </div>
+            </div>
+            <div class="voice-row" data-voice="codex">
+              <label class="settings-row settings-toggle">
+                <span>Codex <small class="voice-row-actor">Tomás</small></span>
+                <input type="checkbox" class="voice-on-toggle">
+              </label>
+              <div class="voice-volume-row">
+                <input type="range" class="voice-volume" min="0" max="100" step="5">
+                <span class="voice-volume-pct">100%</span>
+              </div>
+            </div>
+            <div class="voice-row" data-voice="antigravity">
+              <label class="settings-row settings-toggle">
+                <span>AgY <small class="voice-row-actor">Valentina</small></span>
+                <input type="checkbox" class="voice-on-toggle">
+              </label>
+              <div class="voice-volume-row">
+                <input type="range" class="voice-volume" min="0" max="100" step="5">
+                <span class="voice-volume-pct">100%</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <section class="settings-section">
           <h3 class="settings-section-label">Apariencia de los mensajes</h3>
           <div class="settings-grid">
@@ -373,6 +415,9 @@
             </label>
             <label>Color Codex
               <input type="color" id="cfg-color-codex">
+            </label>
+            <label>Color Antigravity
+              <input type="color" id="cfg-color-antigravity">
             </label>
             <label>Burbuja tuya
               <input type="color" id="cfg-color-me">
@@ -448,7 +493,7 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=93"></script>
+  <script src="app.js?v=96"></script>
   <!-- Split de app.js por dominio (sesión 2026-08-20) — scripts clásicos, no
        ES modules: siguen compartiendo el mismo scope global que app.js, por
        eso cargan DESPUÉS (usan $()/settings/selectConv/etc. definidos ahí).

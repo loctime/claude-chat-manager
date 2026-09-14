@@ -15,7 +15,7 @@ let archivedTotal = 0;
 let archivedTreeLimit = 100;
 let archivedTreeHasMore = false;
 let archivedTreeTotal = 0;
-let activePane = 0; // 0=chats 1=archived 2=codex 3=notas 4=agenda 5=sala
+let activePane = 0; // 0=chats 1=archived 2=codex 3=notas 4=agenda 5=sala 6=gemini
 // Etiqueta de "proyecto" activa (filtro del sidebar) — '' = todos, '__none__' =
 // sin etiquetar, o el nombre elegido. Persiste entre recargas/dispositivos vía
 // localStorage porque es justo lo que resuelve "no veo dónde estoy parado".
@@ -905,9 +905,14 @@ let archivedPaneLoaded = false;
 let codexTreeLoaded = false;
 let codexTreeLoading = null;
 let codexAvailable = false;
+let geminiTreeLoaded = false;
+let currentGeminiConv = null;
+let geminiStream = null;
+let geminiMainBusy = false;
 let activeAccount = null;
 const drafts = new Map();
 const codexDrafts = new Map();
+const antigravityDrafts = new Map();
 // Nombre de la app configurado del lado del server (CCM_APP_NAME) — index.html
 // y manifest.json ya vienen con el nombre correcto server-rendered; esto es
 // solo para los pedacitos que arma el JS después (título dinámico, toasts).
@@ -990,8 +995,11 @@ function usageTone(pct) {
 function formatCountdown(ms) {
   if (ms == null || ms <= 0) return '¡ya!';
   const totalMin = Math.floor(ms / 60000);
-  const h = Math.floor(totalMin / 60);
+  const totalHours = Math.floor(totalMin / 60);
+  const days = Math.floor(totalHours / 24);
+  const h = totalHours % 24;
   const m = totalMin % 60;
+  if (days) return `${days} d ${h} h`;
   return `${h} : ${String(m).padStart(2, '0')} min`;
 }
 // La ventana corta conserva una cuenta regresiva. Para la semanal es mucho
@@ -1012,7 +1020,7 @@ function updateCountdownLabel(el) {
   const resetsAt = el.dataset.resetsAt ? Number(el.dataset.resetsAt) : null;
   if (!resetsAt) {
     label.textContent = label.dataset.staticLabel;
-  } else if (el.id === 'usage-7d') {
+  } else if (el.id === 'usage-7d' || el.dataset.usageWindow === 'weekly') {
     label.textContent = resetsAt <= Date.now() ? '¡ya!' : formatWeeklyReset(resetsAt);
   } else {
     label.textContent = formatCountdown(resetsAt - Date.now());
@@ -1025,6 +1033,7 @@ function renderUsageBar(el, info) {
   // Codex informa la duración real de cada ventana. Claude conserva las
   // etiquetas fijas 5h/Semana que ya venía usando esta pantalla.
   label.dataset.staticLabel = info.label || (el.id === 'usage-5h' ? '5h' : 'Semana');
+  if (info.window) el.dataset.usageWindow = info.window; else delete el.dataset.usageWindow;
   const pct = Math.max(0, Math.min(100, info.pct));
   const tone = usageTone(pct);
   const fill = el.querySelector('.usage-bar-fill');
@@ -1048,22 +1057,23 @@ setInterval(() => {
 // rate limit real de Anthropic lo sigue respetando el server (ver comentario
 // en fetchAccountUsage/server.js), acá solo se refleja si vino con error.
 async function loadUsage(force) {
-  const provider = activePane === 2 ? 'codex' : 'claude';
+  const provider = activePane === 2 ? 'codex' : activePane === 6 ? 'antigravity' : 'claude';
   const btn = $('account-status-refresh');
   if (force && btn) btn.classList.add('loading');
   try {
-    const path = provider === 'codex' ? '/codex/usage' : withAccount('/usage');
+    const path = provider === 'codex' ? '/codex/usage' : provider === 'antigravity' ? '/antigravity/usage' : withAccount('/usage');
     const d = await api(force ? path + (path.includes('?') ? '&' : '?') + 'force=1' : path);
     // Si se cambió de pestaña mientras la consulta estaba en vuelo, no dejar
     // que el header quede mostrando el proveedor anterior.
-    if ((activePane === 2 ? 'codex' : 'claude') !== provider) return;
+    if ((activePane === 2 ? 'codex' : activePane === 6 ? 'antigravity' : 'claude') !== provider) return;
     const box = $('account-status');
-    const first = provider === 'codex' ? d.primary : d.fiveHour;
-    const second = provider === 'codex' ? d.secondary : d.sevenDay;
+    const first = provider === 'codex' || provider === 'antigravity' ? d.primary : d.fiveHour;
+    const second = provider === 'codex' || provider === 'antigravity' ? d.secondary : d.sevenDay;
     if (!d.email && !first && !second) { box.hidden = true; return; }
     box.hidden = false;
     $('account-status-email').textContent = provider === 'codex'
       ? `Codex${d.plan ? ' · ' + d.plan : ''}`
+      : provider === 'antigravity' ? `Antigravity${d.plan ? ' · ' + d.plan : ''}`
       : (d.email || '');
     renderUsageBar($('usage-5h'), first);
     renderUsageBar($('usage-7d'), second);
@@ -1548,6 +1558,13 @@ async function codexApi(path, opts) {
   return res.json();
 }
 
+async function geminiApi(path, opts) {
+  const method = (opts && opts.method) || 'GET';
+  const res = method === 'GET' ? await netFetch('/api/gemini' + path, opts) : await fetch('/api/gemini' + path, opts).catch(err => { throw netError(err); });
+  if (!res.ok && res.status !== 202) throw new Error((await res.json()).error || res.statusText);
+  return res.json();
+}
+
 async function codexTogglePin(convId, pinned) {
   await codexApi(`/conversations/${convId}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
@@ -2009,8 +2026,12 @@ function openCodexSharedStream(convId) {
 
 async function selectCodexShared(convId, name, projectDir = '') {
   $('panel-chat').classList.add('codex-chat-theme');
+  $('panel-chat').classList.remove('antigravity-chat-theme');
   if (eventSource) { eventSource.close(); eventSource = null; }
   if (codexStream) codexStream.close();
+  if (geminiStream) { geminiStream.close(); geminiStream = null; }
+  if (currentGeminiConv) antigravityDrafts.set(currentGeminiConv.id || '__new__', $('input').value);
+  currentGeminiConv = null;
   if (currentCodexConv && currentCodexConv.id) codexDrafts.set(currentCodexConv.id, $('input').value);
   currentConv = null;
   currentCodexConv = { id: convId, name };
@@ -2086,6 +2107,121 @@ async function createCodexSharedConversation() {
   loadCodexSharedTree();
 }
 
+const CLAUDE_MODELS = [
+  { value: 'sonnet', label: 'Sonnet' },
+  { value: 'opus', label: 'Opus' },
+  { value: 'fable', label: 'Fable' },
+  { value: 'haiku', label: 'Haiku' },
+];
+
+const AGY_MODELS = [
+  { value: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
+  { value: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)' },
+  { value: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)' },
+  { value: 'gemini-3.7-flash-high', label: 'Gemini 3.7 Flash (High)' },
+  { value: 'gemini-3.7-flash-medium', label: 'Gemini 3.7 Flash (Medium)' },
+  { value: 'gemini-3.7-flash-low', label: 'Gemini 3.7 Flash (Low)' },
+  { value: 'gemini-3.6-flash-high', label: 'Gemini 3.6 Flash (High)' },
+  { value: 'gemini-3.6-flash-medium', label: 'Gemini 3.6 Flash (Medium)' },
+  { value: 'gemini-3.6-flash-low', label: 'Gemini 3.6 Flash (Low)' },
+  { value: 'gemini-3.1-pro-high', label: 'Gemini 3.1 Pro (High)' },
+  { value: 'gemini-3.1-pro-low', label: 'Gemini 3.1 Pro (Low)' },
+  { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+  { value: 'claude-opus-4-6-thinking', label: 'Claude Opus 4.6' },
+  { value: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B' },
+];
+
+function setModelSelectOptions(options, selectedValue) {
+  const sel = $('model-select');
+  sel.innerHTML = options.map(o => `<option value="${o.value}">${o.label}</option>`).join('');
+  if (selectedValue) sel.value = selectedValue;
+}
+
+function setGeminiBusy(value) { geminiMainBusy = value; $('input').disabled = !currentGeminiConv || value; $('send').disabled = !currentGeminiConv || value; $('attach-btn').disabled = !currentGeminiConv || value; $('cancel-btn').hidden = !value; $('conv-status').textContent = value ? 'escribiendo…' : ''; }
+async function loadGeminiMessages(id) {
+  messagesEl.innerHTML = '';
+  const messages = await geminiApi(`/conversations/${id}/messages`);
+  if (!messages.length) {
+    messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Antigravity</p></div>';
+  } else {
+    for (const m of messages) {
+      if (m.role === 'tool') addTool(m.name, m.input, m.output);
+      else addMsg(m.role, m.text, { ts: m.ts });
+    }
+  }
+  scrollToBottom();
+}
+function openGeminiStream(id) { let live = '', bubble = null; const seenTools = new Set(); const stream = new EventSource(`/api/gemini/conversations/${id}/stream`); stream.onmessage = e => { if (!currentGeminiConv || currentGeminiConv.id !== id) return; const payload = JSON.parse(e.data); if (payload.kind === 'gemini') { const step = payload.event?.step_update; const delta = step?.text_delta; if (typeof delta === 'string') { live += delta; if (!bubble) bubble = addMsg('assistant', ''); const text = bubble.querySelector('.msg-text'); if (text) text.textContent = live; autoScroll(); }
+    // Antigravity entrega las herramientas como step_update, con el estado real
+    // en step.state (ACTIVE/DONE/ERROR) — no step.status, que es la convención
+    // de otro lado de este archivo y no existe acá. Con el nombre de campo
+    // equivocado la condición de abajo daba siempre true (step.status es
+    // undefined), así que la tool se agregaba en ACTIVE (sin output todavía) y
+    // el chequeo de "ya visto" descartaba el DONE real con el resultado.
+    const tool = step?.tool_info; const toolKey = step?.step_index ?? step?.id;
+    if (tool && (step?.state === 'DONE' || step?.state === 'ERROR') && !seenTools.has(toolKey)) { seenTools.add(toolKey); addTool(tool.name || step.tool_name || step.step_type || 'herramienta', tool.parameters || tool.args || {}, tool.output || tool.error?.message || tool.result || ''); autoScroll(); }
+    return; }
+    if (payload.kind === 'status') { setGeminiBusy(payload.status !== 'idle'); if (payload.status === 'idle') { if (payload.incomplete) toast(payload.stderr || 'Antigravity no entregó una respuesta final.'); loadGeminiMessages(id).then(loadGeminiTree); } } }; stream.onerror = () => setTimeout(() => { if (currentGeminiConv?.id === id) loadGeminiMessages(id); }, 1500); return stream; }
+function geminiRow(c) {
+  const div = document.createElement('div');
+  div.className = 'conv' + (currentGeminiConv?.id === c.convId ? ' active' : '');
+  const label = c.name || c.snippet || '(nueva conversación)';
+  div.innerHTML = `<div class="conv-avatar">A</div><div class="conv-body"><div class="name"></div><div class="sub"></div></div>${badge(c.status) || (c.unread ? '<span class="unread-dot"></span>' : '')}`;
+  div.querySelector('.name').textContent = label;
+  div.querySelector('.sub').textContent = c.snippet;
+  div.onclick = () => {
+    currentGeminiConv = { id: c.convId, name: label, model: c.model || 'gemini-3.8-flash-high' };
+    selectGemini(c.convId, label, c.gitRepo || c.projectDir);
+  };
+  attachGeminiRowGestures(div, c);
+  return div;
+}
+async function loadGeminiTree() { const { conversations, unreadTotal } = await geminiApi('/tree'); setPaneUnread('6', unreadTotal > 0); const pane = $('gemini-pane'); if (!conversations.length) pane.innerHTML = '<div id="empty-state"><p>Sin conversaciones de Antigravity todavía</p></div>'; else pane.replaceChildren(...conversations.map(geminiRow)); geminiTreeLoaded = true; }
+function attachGeminiRowGestures(el, conv) { let timer = null, longPressed = false; const show = (x, y) => showGeminiConvMenu(x, y, conv); el.addEventListener('contextmenu', e => { e.preventDefault(); show(e.clientX, e.clientY); }); el.addEventListener('touchstart', e => { const t = e.touches[0]; longPressed = false; timer = setTimeout(() => { longPressed = true; show(t.clientX, t.clientY); if (navigator.vibrate) navigator.vibrate(30); }, 500); }, { passive: true }); el.addEventListener('touchmove', () => { if (timer) { clearTimeout(timer); timer = null; } }, { passive: true }); el.addEventListener('touchend', () => { if (timer) clearTimeout(timer); timer = null; }); el.addEventListener('click', e => { if (longPressed) { longPressed = false; e.preventDefault(); e.stopPropagation(); } }, { capture: true }); }
+function showGeminiConvMenu(x, y, conv) { document.querySelectorAll('.ctx-menu').forEach(m => m.remove()); const menu = document.createElement('div'); menu.className = 'ctx-menu'; menu.innerHTML = `<button data-action="copy">📋 Copiar conversación</button><button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button><button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`; document.body.appendChild(menu); const rect = menu.getBoundingClientRect(); menu.style.left = Math.min(x, window.innerWidth - rect.width - 8) + 'px'; menu.style.top = Math.min(y, window.innerHeight - rect.height - 8) + 'px'; const dismiss = () => { menu.remove(); document.removeEventListener('click', dismiss, true); document.removeEventListener('touchstart', dismiss, true); }; menu.addEventListener('click', async e => { const action = e.target.dataset.action; if (!action) return; dismiss(); try { if (action === 'copy') await copyConversationMessages(() => geminiApi(`/conversations/${conv.convId}/messages`)); else { await geminiApi(`/conversations/${conv.convId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(action === 'pin' ? { pinned: !conv.pinned } : { hidden: true }) }); if (action === 'hide' && currentGeminiConv?.id === conv.convId) closeChat(); loadGeminiTree(); } } catch (err) { toast('No se pudo actualizar: ' + err.message); } }); setTimeout(() => { document.addEventListener('click', dismiss, true); document.addEventListener('touchstart', dismiss, true); }, 250); }
+async function selectGemini(id, name, projectDir = '') {
+  if (eventSource) { eventSource.close(); eventSource = null; }
+  if (codexStream) codexStream.close();
+  if (geminiStream) geminiStream.close();
+  currentConv = null;
+  currentCodexConv = null;
+  const currentModel = currentGeminiConv?.model || 'gemini-3.8-flash-high';
+  currentGeminiConv = { id, name, model: currentModel };
+  $('panel-chat').classList.remove('codex-chat-theme');
+  $('panel-chat').classList.add('antigravity-chat-theme');
+  $('conv-title').textContent = name;
+  $('input').value = antigravityDrafts.get(id || '__new__') || '';
+  $('input').placeholder = 'Escribile a Antigravity…';
+  setModelSelectOptions(AGY_MODELS, currentModel);
+  $('model-select').hidden = false;
+  setConversationRepoChip(projectDir);
+  $('mic-btn').hidden = true;
+  $('cost-badge').hidden = true;
+  $('attach-btn').hidden = false;
+  $('file-input').accept = 'image/*,text/*,application/*,audio/*,video/*';
+  clearAttachments();
+  setGeminiBusy(false);
+  showNotebookView(false);
+  showSalaView(false);
+  openChat();
+  if (id) {
+    await geminiApi(`/conversations/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ unread: false }) });
+    geminiApi(`/conversations/${id}/repo`).then(({ repo }) => {
+      if (currentGeminiConv?.id === id && repo) setConversationRepoChip(repo);
+    }).catch(() => {});
+    await loadGeminiMessages(id);
+    geminiStream = openGeminiStream(id);
+    loadGeminiTree();
+  } else {
+    messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Antigravity</p></div>';
+  }
+  if (!isMobile()) $('input').focus();
+}
+async function createGeminiConversation() {
+  const projectDir = activeProject || '';
+  await selectGemini(null, 'Nueva conversación', projectDir);
+}
+
 let paneNavGeneration = 0;
 let paneNavTarget = 0; // pane que debe quedar activo una vez termine la navegación en curso
 
@@ -2131,6 +2267,7 @@ async function goToPane(index) {
         .finally(() => { codexTreeLoading = null; });
     }
   }
+  if (index === 6 && !geminiTreeLoaded) loadGeminiTree().catch(err => toast('No se pudo cargar Antigravity: ' + err.message));
   if (index === 4 && !agendaListLoaded) {
     try {
       await loadAgendaList();
@@ -2157,6 +2294,7 @@ async function goToPane(index) {
   // El acento identifica la pestaña visible, no el chat que haya quedado
   // abierto en el panel principal.
   document.body.classList.toggle('codex-list-theme', index === 2);
+  document.body.classList.toggle('antigravity-list-theme', index === 6);
   // El selector de proyecto solo aplica a conversaciones (Chats/Archivado) —
   // Notas, Codex, Agenda y Sala son modelos de datos distintos, sin esta etiqueta.
   $('project-bar').hidden = index !== 0 && index !== 1;
@@ -4311,10 +4449,15 @@ function setConversationRepoChip(repoPath) {
 
 async function selectConv(convId, name, model, lastModel, projectDir) {
   $('panel-chat').classList.remove('codex-chat-theme');
+  $('panel-chat').classList.remove('antigravity-chat-theme');
   if (codexStream) { codexStream.close(); codexStream = null; }
+  if (geminiStream) { geminiStream.close(); geminiStream = null; }
+  if (currentGeminiConv) antigravityDrafts.set(currentGeminiConv.id || '__new__', $('input').value);
+  currentGeminiConv = null;
   if (currentCodexConv && currentCodexConv.id) codexDrafts.set(currentCodexConv.id, $('input').value);
   currentCodexConv = null;
   $('input').placeholder = 'Mensaje…';
+  setModelSelectOptions(CLAUDE_MODELS, model || 'sonnet');
   $('model-select').hidden = false;
   $('mic-btn').hidden = false;
   $('attach-btn').hidden = false;
@@ -4393,6 +4536,7 @@ function autoResize(el) {
 $('input').addEventListener('input', () => {
   const input = $('input');
   autoResize(input);
+  if (currentGeminiConv) antigravityDrafts.set(currentGeminiConv.id || '__new__', input.value);
   if (currentCodexConv && currentCodexConv.id) codexDrafts.set(currentCodexConv.id, input.value);
 });
 
@@ -4411,6 +4555,11 @@ $('input').addEventListener('keydown', e => {
 
 // ── Cancel ──
 $('cancel-btn').onclick = async () => {
+  if (currentGeminiConv) {
+    try { await geminiApi(`/conversations/${currentGeminiConv.id}/message`, { method: 'DELETE' }); }
+    catch (err) { addMsg('error', 'No se pudo cancelar: ' + err.message); }
+    return;
+  }
   if (currentCodexConv) {
     try { await codexApi(`/conversations/${currentCodexConv.id}/message`, { method: 'DELETE' }); }
     catch (err) { addMsg('error', 'No se pudo cancelar: ' + err.message); }
@@ -4834,6 +4983,30 @@ async function performSend(convId, rawText, attachments) {
 $('composer').onsubmit = async e => {
   e.preventDefault();
   const rawText = $('input').value.trim();
+  if (currentGeminiConv) {
+    const attachments = [...pendingAttachments];
+    if ((!rawText && attachments.length === 0) || geminiMainBusy) return;
+    let id = currentGeminiConv.id; const draft = currentGeminiConv;
+    const attachmentText = attachments.map(a => `[Archivo adjunto disponible localmente: ${a.path}]`).join('\n');
+    const text = attachmentText + (rawText ? (attachmentText ? '\n\n' : '') + rawText : '');
+    $('input').value = ''; autoResize($('input')); clearAttachments(); setGeminiBusy(true);
+    try {
+      if (!id) {
+        const body = {
+          model: $('model-select').value || 'gemini-3.8-flash-high',
+        };
+        if (typeof activeProject !== 'undefined' && activeProject) body.projectDir = activeProject;
+        const created = await geminiApi('/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (currentGeminiConv !== draft) return;
+        id = created.convId; currentGeminiConv = { id, name: 'Nueva conversación', model: body.model }; geminiStream = openGeminiStream(id);
+      }
+      addUserMsgWithFiles(rawText, attachments);
+      await geminiApi(`/conversations/${id}/message`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+      antigravityDrafts.delete(id); antigravityDrafts.delete('__new__');
+    }
+    catch (err) { addMsg('error', 'No se pudo enviar: ' + err.message); setGeminiBusy(false); }
+    return;
+  }
   if (currentCodexConv) {
     const attachments = [...pendingAttachments];
     if ((!rawText && attachments.length === 0) || codexMainBusy) return;
@@ -4892,6 +5065,19 @@ $('composer').onsubmit = async e => {
 
 // ── Model change ──
 $('model-select').onchange = async () => {
+  if (currentGeminiConv) {
+    currentGeminiConv.model = $('model-select').value;
+    if (currentGeminiConv.id) {
+      try {
+        await geminiApi(`/conversations/${currentGeminiConv.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: $('model-select').value }),
+        });
+      } catch (err) { addMsg('error', 'No se pudo cambiar el modelo: ' + err.message); }
+    }
+    return;
+  }
   if (!currentConv) return;
   try {
     await api(`/conversations/${currentConv}`, {
@@ -4941,6 +5127,11 @@ $('new-conv').onclick = async () => {
     }
     if (activePane === 2) {
       await createCodexSharedConversation();
+      $('input').focus();
+      return;
+    }
+    if (activePane === 6) {
+      await createGeminiConversation();
       $('input').focus();
       return;
     }
@@ -5029,7 +5220,7 @@ function paneSwipeStart(clientX, clientY) {
   return true;
 }
 
-const PANE_COUNT = 6; // Chats/Archivado/Codex/Notas/Agenda/Sala.
+const PANE_COUNT = 7; // Chats/Archivado/Codex/Notas/Agenda/Sala/Gemini.
 
 function paneSwipeMove(clientX, clientY) {
   if (!paneDragging) return false;
@@ -5159,6 +5350,7 @@ const DEFAULT_SETTINGS = {
   voice: '', // una sola voz para mensajes propios y del agente (antes voiceAssistant/voiceUser separados)
   colorAccent: '',
   colorCodex: '#10a37f',
+  colorAntigravity: '#7c5cff',
   colorMe: '',
   colorAi: '',
   fontFamily: '',
@@ -5289,7 +5481,7 @@ function contrastTextColor(hex) {
 function applySettings() {
   document.body.classList.toggle('hide-tools', !settings.showTools);
   const root = document.documentElement;
-  const vars = { '--accent': settings.colorAccent, '--codex-accent': settings.colorCodex, '--bubble-me': settings.colorMe, '--bubble-ai': settings.colorAi };
+  const vars = { '--accent': settings.colorAccent, '--codex-accent': settings.colorCodex, '--antigravity-accent': settings.colorAntigravity, '--bubble-me': settings.colorMe, '--bubble-ai': settings.colorAi };
   for (const [k, v] of Object.entries(vars)) {
     if (v) root.style.setProperty(k, v);
     else root.style.removeProperty(k);
@@ -5404,6 +5596,7 @@ function openSettings() {
   $('cfg-voice').value = settings.voice;
   $('cfg-color-accent').value = settings.colorAccent || readComputedColor('--accent');
   $('cfg-color-codex').value = settings.colorCodex || readComputedColor('--codex-accent');
+  $('cfg-color-antigravity').value = settings.colorAntigravity || readComputedColor('--antigravity-accent');
   $('cfg-color-me').value = settings.colorMe || readComputedColor('--bubble-me');
   $('cfg-color-ai').value = settings.colorAi || readComputedColor('--bubble-ai');
   $('cfg-font-family').value = settings.fontFamily;
@@ -5417,7 +5610,49 @@ function openSettings() {
   $('cfg-sala-url').value = SALA_URL;
   $('cfg-sala-token').value = '';
   updateSalaTokenStatus();
+  loadVoiceSettings();
   $('settings-dialog').showModal();
+}
+
+// Panel "Voces" — reemplaza los accesos directos sueltos del escritorio
+// ("Voz Claude/Codex/AgY"). No cachea nada localmente a propósito: se puede
+// haber tocado un icono viejo o el panel desde otro dispositivo, así que se
+// lee fresco cada vez que se abre Configuración.
+async function loadVoiceSettings() {
+  let data;
+  try { data = await api('/voice-settings'); }
+  catch (err) { toast('No se pudo leer el estado de las voces: ' + err.message); return; }
+  for (const row of document.querySelectorAll('.voice-row')) {
+    const info = data[row.dataset.voice];
+    if (!info) continue;
+    row.querySelector('.voice-on-toggle').checked = info.on;
+    row.querySelector('.voice-volume').value = info.volume;
+    row.querySelector('.voice-volume-pct').textContent = info.volume + '%';
+    row.classList.toggle('voice-off', !info.on);
+  }
+}
+
+async function patchVoiceSetting(voice, patch) {
+  try {
+    await api(`/voice-settings/${voice}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) });
+  } catch (err) {
+    toast('No se pudo guardar: ' + err.message);
+  }
+}
+
+for (const row of document.querySelectorAll('.voice-row')) {
+  const voice = row.dataset.voice;
+  const toggle = row.querySelector('.voice-on-toggle');
+  const slider = row.querySelector('.voice-volume');
+  const pct = row.querySelector('.voice-volume-pct');
+  toggle.addEventListener('change', () => {
+    row.classList.toggle('voice-off', !toggle.checked);
+    patchVoiceSetting(voice, { on: toggle.checked });
+  });
+  // 'input' solo actualiza el número mientras arrastrás (feedback instantáneo);
+  // el PATCH real va en 'change' (soltar el slider), no en cada tick del drag.
+  slider.addEventListener('input', () => { pct.textContent = slider.value + '%'; });
+  slider.addEventListener('change', () => { patchVoiceSetting(voice, { volume: Number(slider.value) }); });
 }
 
 // Placeholder + badge "✓ Configurada" junto al label — dos señales para lo
@@ -5578,6 +5813,7 @@ $('cfg-voice').onchange = e => {
 };
 $('cfg-color-accent').oninput = e => { settings.colorAccent = e.target.value; applySettings(); saveSettings(); };
 $('cfg-color-codex').oninput = e => { settings.colorCodex = e.target.value; applySettings(); saveSettings(); };
+$('cfg-color-antigravity').oninput = e => { settings.colorAntigravity = e.target.value; applySettings(); saveSettings(); };
 $('cfg-color-me').oninput = e => { settings.colorMe = e.target.value; applySettings(); saveSettings(); };
 $('cfg-color-ai').oninput = e => { settings.colorAi = e.target.value; applySettings(); saveSettings(); };
 $('cfg-font-family').onchange = e => { settings.fontFamily = e.target.value; applySettings(); saveSettings(); };
