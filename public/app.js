@@ -300,11 +300,42 @@ async function agendaLearnNewRoutine() {
 // Dispara el trabajo real de una tarea del catálogo (hoy: las 2 facturas).
 // El prompt ya trae adentro la instrucción de marcarse "hecho" sola al
 // terminar (ver MARK_DONE_CMD en agenda.js) — este botón solo abre el chat.
+// Si la tarea tiene checklist con estado por ítem, no repetir lo que ya está
+// hecho — armar un prompt que abra la conversación pidiendo SOLO lo que sigue
+// gris, y le suma la guía completa del autoPrompt como referencia de cómo
+// hacer cada cosa (accesos, formato, dónde subir). Pedido de Fernando
+// 09/09/2026: "si aprieto en ferzep solo me va a pedir el recibo de sueldo o
+// me va a empezar la rutina de cero" — antes empezaba siempre de cero.
+function agendaBuildRunPrompt(task) {
+  if (!Array.isArray(task.checklistState) || !task.checklistState.length) {
+    return task.autoPrompt; // sin checklist por ítem, comportamiento de siempre
+  }
+  const withIndex = task.checklistState.map((item, i) => ({ ...item, i }));
+  const pending = withIndex.filter(i => !i.done);
+  if (pending.length === 0) return null; // ya está todo hecho, no hay nada que pedir
+  const done = withIndex.filter(i => i.done);
+  const markItemCmd = i =>
+    `cd /mnt/c/Users/Fernando/Desktop/claude/claude-chat-manager && node -e "require('./src/agenda').markItem('${task.id}', ${i}, true)"`;
+  let prompt = '';
+  if (done.length) {
+    prompt += `De "${task.title}" esto ya está hecho este mes, NO lo vuelvas a hacer ni lo reproceses:\n`;
+    prompt += done.map(i => `- ${i.text}${i.doneAt ? ` (${agendaFormatDoneDate(i.doneAt)})` : ''}`).join('\n');
+    prompt += '\n\n';
+  }
+  prompt += `Falta SOLO esto:\n${pending.map(i => `- ${i.text}`).join('\n')}\n\n`;
+  prompt += `Guía completa de la tarea (accesos, formato, dónde subir cada cosa — usala como referencia, pero hacé nada más que lo que falta arriba):\n\n${task.autoPrompt}\n\n`;
+  prompt += `IMPORTANTE — marcado: ignorá el comando de "marcá la tarea como hecha" que pueda aparecer en la guía de arriba (es para cuando se arranca de cero y tildaría de vuelta lo que ya estaba hecho, pisando esas fechas). En cambio, a medida que termines cada ítem de la lista de arriba, corré el comando de ESE ítem puntual:\n`;
+  prompt += pending.map(i => `- ${i.text} →\n  ${markItemCmd(i.i)}`).join('\n');
+  return prompt;
+}
+
 async function agendaRunTask(id) {
   const task = agendaTasks.find(t => t.id === id);
   if (!task || !task.autoPrompt) return toast('Esta tarea no tiene automatización todavía');
+  const prompt = agendaBuildRunPrompt(task);
+  if (prompt === null) return toast('Ya está todo hecho este mes ✅');
   try {
-    await agendaSpawnConversation(task.autoPrompt, task.group);
+    await agendaSpawnConversation(prompt, task.group);
   } catch (err) {
     toast('No se pudo abrir el chat: ' + err.message);
   }
@@ -373,11 +404,31 @@ function renderAgendaList() {
     card.querySelector('.agenda-title').textContent = task.title;
     card.querySelector('.agenda-meta').textContent = dayMeta;
     // Checklist visible en la tarjeta (pedido de Fernando 08/09/2026: "esto
-    // tiene que ser una guía" — no obligarlo a preguntar qué incluye un
-    // combo). textContent por ítem, no innerHTML, para no depender de
-    // escapear bien texto con tildes/símbolos.
+    // tiene que ser una guía"). Desde 09/09/2026 cada ítem tiene su propio
+    // estado: dot verde + fecha cuando está hecho, gris cuando falta — clic
+    // en el dot lo tilda/destilda sin tener que abrir la tarea entera. Ya sé
+    // lo que hicimos (queda cargado desde acá o desde markDone en bloque),
+    // así que solo hace falta preguntarle a Fernando por lo que sigue gris.
+    // textContent por ítem, no innerHTML, para no depender de escapear bien
+    // texto con tildes/símbolos.
     const ul = card.querySelector('.agenda-checklist');
-    if (ul) {
+    if (ul && Array.isArray(task.checklistState)) {
+      task.checklistState.forEach((item, i) => {
+        const li = document.createElement('li');
+        li.className = 'agenda-checklist-item';
+        const dot = document.createElement('span');
+        dot.className = `agenda-checklist-dot ${item.done ? 'verde' : 'gris'}`;
+        dot.title = item.done ? 'Hecho — clic para destildar' : 'Pendiente — clic para marcar hecho';
+        dot.onclick = () => agendaToggleItemDone(task.id, i, !item.done);
+        const label = document.createElement('span');
+        label.textContent = item.done && item.doneAt
+          ? `${item.text} — ${agendaFormatDoneDate(item.doneAt)}`
+          : item.text;
+        li.appendChild(dot);
+        li.appendChild(label);
+        ul.appendChild(li);
+      });
+    } else if (ul) {
       for (const item of task.checklist) {
         const li = document.createElement('li');
         li.textContent = item;
@@ -393,6 +444,21 @@ async function agendaToggleDone(id, done) {
     await api(`/agenda/${id}/done`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ done }) });
     await loadAgendaList();
   } catch (err) { toast('No se pudo actualizar: ' + err.message); }
+}
+
+// Tilde/destilde de un ítem puntual del checklist (ver agenda.markItem en el
+// server). Si con esto quedan todos los ítems hechos, la tarjeta pasa a
+// verde sola — no hace falta tocar el botón "Marcar hecho" aparte.
+async function agendaToggleItemDone(id, index, done) {
+  try {
+    await api(`/agenda/${id}/items/${index}/done`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ done }) });
+    await loadAgendaList();
+  } catch (err) { toast('No se pudo actualizar el ítem: ' + err.message); }
+}
+
+function agendaFormatDoneDate(ts) {
+  if (!ts) return '';
+  return new Date(ts).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' });
 }
 
 // Pide el texto propuesto al server (busca el hilo de Maca por Outlook COM)
@@ -4344,6 +4410,16 @@ async function uploadAttachment(file) {
 async function uploadFiles(files) {
   for (const f of files) await uploadAttachment(f);
 }
+
+// ── Ocultar texto al escribir (para pegar contraseñas/claves sin que queden a la vista) ──
+function setHiddenInput(on) {
+  $('input').classList.toggle('hidden-text', on);
+  $('eye-btn').setAttribute('aria-pressed', String(on));
+  $('eye-btn').title = on ? 'Mostrar texto al escribir' : 'Ocultar texto al escribir (para contraseñas)';
+}
+$('eye-btn').onclick = () => setHiddenInput($('eye-btn').getAttribute('aria-pressed') !== 'true');
+// Al enviar, vuelve a texto visible para el próximo mensaje (evita dejarlo "trabado" oculto).
+$('composer').addEventListener('submit', () => setHiddenInput(false), true);
 
 $('attach-btn').onclick = () => { $('file-input').click(); };
 $('file-input').onchange = async () => {

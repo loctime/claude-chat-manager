@@ -1582,6 +1582,16 @@ app.post('/api/agenda/:id/done', (req, res) => {
   res.json(result);
 });
 
+// Tilde por ítem del checklist (pedido de Fernando 09/09/2026) — ver
+// agenda.markItem. La tarjeta entera pasa a verde sola cuando están todos.
+app.post('/api/agenda/:id/items/:index/done', (req, res) => {
+  const done = req.body.done !== false;
+  const index = Number(req.params.index);
+  const result = agenda.markItem(req.params.id, index, done);
+  if (!result) return res.status(404).json({ error: 'tarea o ítem no encontrado' });
+  res.json(result);
+});
+
 // "🎓 Aprender rutina nueva" — Fernando enseña una tarea recurrente sin tocar
 // código. Se guarda en agenda.json, no en el catálogo fijo (ver agenda.js).
 app.post('/api/agenda/tasks', (req, res) => {
