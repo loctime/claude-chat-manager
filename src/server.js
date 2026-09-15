@@ -2922,7 +2922,7 @@ geminiRunner.on('status', status => {
   // código de salida del proceso ya no es la señal confiable de éxito (ver
   // comentario ahí); lo que importa es que gemini-runner NO lo haya marcado
   // incomplete (result real, sin status:"ERROR").
-  if (status.status === 'idle' && !status.incomplete && status.response) {
+  if (status.status === 'idle' && !status.incomplete && !status.cancelled && status.response) {
     const data = meta.load(GEMINI_META_FILE), conv = data.conversations[status.convId];
     if (conv) { conv.messages.push({ role: 'assistant', text: status.response, ts: new Date().toISOString() }); conv.currentSessionId = status.conversationId || conv.currentSessionId; conv.lastActivity = new Date().toISOString(); meta.save(data, GEMINI_META_FILE); }
   }
@@ -2931,7 +2931,8 @@ geminiRunner.on('status', status => {
   // ese momento). Este mensaje ahora es el "siempre queda algo" para
   // cualquier motivo de corte (timeout, límite de herramientas, error de
   // Antigravity) — incluye el motivo real cuando gemini-runner lo trae.
-  if (status.status === 'idle' && status.incomplete) {
+  // Si fue cancelado a propósito por el usuario, no se agrega advertencia.
+  if (status.status === 'idle' && status.incomplete && !status.cancelled) {
     const data = meta.load(GEMINI_META_FILE), conv = data.conversations[status.convId];
     if (conv) {
       conv.currentSessionId = status.conversationId || conv.currentSessionId;

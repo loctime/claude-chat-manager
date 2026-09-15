@@ -2162,7 +2162,7 @@ function openGeminiStream(id) { let live = '', bubble = null; const seenTools = 
     const tool = step?.tool_info; const toolKey = step?.step_index ?? step?.id;
     if (tool && (step?.state === 'DONE' || step?.state === 'ERROR') && !seenTools.has(toolKey)) { seenTools.add(toolKey); addTool(tool.name || step.tool_name || step.step_type || 'herramienta', tool.parameters || tool.args || {}, tool.output || tool.error?.message || tool.result || ''); autoScroll(); }
     return; }
-    if (payload.kind === 'status') { setGeminiBusy(payload.status !== 'idle'); if (payload.status === 'idle') { if (payload.incomplete) toast(payload.stderr || 'Antigravity no entregó una respuesta final.'); loadGeminiMessages(id).then(loadGeminiTree); } return; }
+    if (payload.kind === 'status') { setGeminiBusy(payload.status !== 'idle'); if (payload.status === 'idle') { if (payload.incomplete && !payload.cancelled) toast(payload.stderr || 'Antigravity no entregó una respuesta final.'); loadGeminiMessages(id).then(loadGeminiTree); } return; }
     if (payload.kind === 'meta') { if (payload.name) { if (currentGeminiConv && currentGeminiConv.id === id) { currentGeminiConv.name = payload.name; $('conv-title').textContent = payload.name; } loadGeminiTree(); } return; }
   }; stream.onerror = () => setTimeout(() => { if (currentGeminiConv?.id === id) loadGeminiMessages(id); }, 1500); return stream; }
 function geminiRow(c) {

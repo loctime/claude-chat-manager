@@ -13,6 +13,7 @@ class GeminiRunner extends EventEmitter {
   isBusy(id) { return this.running.has(id); }
   cancel(id) {
     const child = this.running.get(id); if (!child) return false;
+    child._cancelled = true;
     if (IS_WIN && child.pid) { try { execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); } catch { child.kill('SIGTERM'); } }
     else child.kill('SIGTERM');
     return true;
@@ -49,22 +50,16 @@ class GeminiRunner extends EventEmitter {
       if (done) return;
       done = true;
       this.running.delete(job.convId);
-      // "Completo" exige DOS cosas: que haya llegado el evento 'result' (si no,
-      // el CLI cortó solo — timeout, límite de herramientas, o crasheó antes de
-      // mandarlo) Y que ese result no haya venido con status:"ERROR" — visto en
-      // vivo el 2026-09-14 (resume de una sesión larga): Antigravity puede
-      // devolver "The stream was interrupted" con status:ERROR pero igual
-      // arrastrar texto parcial en response, y antes ese caso se trataba como
-      // éxito silencioso. Cualquiera de los dos motivos = incomplete, para que
-      // el turno SIEMPRE deje un rastro visible en vez de desaparecer sin
-      // explicación (que fue exactamente el bug reportado ese día).
-      const incomplete = !gotResult || resultFailed;
-      const reason = resultFailed
-        ? (resultError || 'Antigravity devolvió un error.')
-        : incomplete
-          ? 'Antigravity terminó sin una respuesta final (probablemente alcanzó el límite de herramientas, el timeout, o se cortó la conexión).'
-          : error;
-      this.emit('status', { convId: job.convId, status: 'idle', code, stderr: reason, response, conversationId, incomplete });
+      const wasCancelled = !!child?._cancelled;
+      const incomplete = !wasCancelled && (!gotResult || resultFailed);
+      const reason = wasCancelled
+        ? 'Cancelado por el usuario.'
+        : resultFailed
+          ? (resultError || 'Antigravity devolvió un error.')
+          : incomplete
+            ? 'Antigravity terminó sin una respuesta final (probablemente alcanzó el límite de herramientas, el timeout, o se cortó la conexión).'
+            : error;
+      this.emit('status', { convId: job.convId, status: 'idle', code, stderr: reason, response, conversationId, incomplete, cancelled: wasCancelled });
     };
     const ingest = line => {
       let event; try { event = JSON.parse(line); } catch { return; }

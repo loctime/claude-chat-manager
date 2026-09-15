@@ -121,3 +121,20 @@ test('spawn falla directo: status idle+incomplete, no cuelga sin avisar', () => 
   assert.equal(final.incomplete, true);
   assert.equal(final.stderr, 'ENOENT');
 });
+
+test('cancelar turno en curso: emite idle con cancelled true y incomplete false', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  const statuses = [];
+  r.on('status', s => statuses.push(s));
+  r.send({ convId: 'c1', sessionId: 's1', cwd: 'C:\\p', text: 'algo largo' });
+  const { child } = spawned[0];
+  const cancelled = r.cancel('c1');
+  assert.equal(cancelled, true);
+  child.emit('close', 1);
+  const final = statuses.find(s => s.status === 'idle');
+  assert.equal(final.cancelled, true);
+  assert.equal(final.incomplete, false);
+  assert.equal(final.stderr, 'Cancelado por el usuario.');
+});
+
