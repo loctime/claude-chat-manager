@@ -696,6 +696,7 @@ let paneNavGeneration = 0;
 let paneNavTarget = 0; // pane que debe quedar activo una vez termine la navegación en curso
 
 async function goToPane(index) {
+  if (!isPaneVisible(index)) return;
   if (index === paneNavTarget) return;
   saveCurrentDraft();
   // paneNavTarget (no activePane) es lo que compara el guard de arriba: activePane
@@ -3773,6 +3774,14 @@ setInterval(loadUsage, 10 * 60 * 1000);
 const SETTINGS_KEY = 'ccm.settings';
 const DEFAULT_SETTINGS = {
   showTools: true,
+  // Visibilidad por dispositivo: permite que cada persona deje solo las
+  // pestañas que usa. Chats no figura porque siempre debe estar disponible.
+  showArchivedPane: false,
+  showCodexPane: true,
+  showAgYPane: true,
+  showNotesPane: true,
+  showTaskPane: true,
+  showSalaPane: true,
   voice: '', // una sola voz para mensajes propios y del agente (antes voiceAssistant/voiceUser separados)
   colorAccent: '',
   colorCodex: '#10a37f',
@@ -3831,6 +3840,29 @@ function contrastTextColor(hex) {
   return luminance > 0.6 ? '#111b21' : '#e9edef';
 }
 
+const PANE_VISIBILITY_SETTINGS = {
+  1: 'showArchivedPane',
+  2: 'showCodexPane',
+  3: 'showNotesPane',
+  4: 'showTaskPane',
+  5: 'showSalaPane',
+  6: 'showAgYPane',
+};
+
+function isPaneVisible(index) {
+  const setting = PANE_VISIBILITY_SETTINGS[index];
+  return !setting || settings[setting] !== false;
+}
+
+function applyPaneVisibility() {
+  for (const [pane, setting] of Object.entries(PANE_VISIBILITY_SETTINGS)) {
+    const tab = document.querySelector(`.pane-tab[data-pane="${pane}"]`);
+    if (tab) tab.hidden = !settings[setting];
+  }
+  // Si se oculta la pestaña que estaba abierta, volver a Chats de inmediato.
+  if (!isPaneVisible(activePane)) goToPane(0);
+}
+
 function applySettings() {
   document.body.classList.toggle('hide-tools', !settings.showTools);
   const root = document.documentElement;
@@ -3852,6 +3884,7 @@ function applySettings() {
   root.style.setProperty('--chat-zoom', zoom);
   if (settings.sidebarWidth) root.style.setProperty('--sidebar-width', settings.sidebarWidth);
   document.body.classList.toggle('sidebar-hidden', !!settings.sidebarHidden);
+  applyPaneVisibility();
 }
 applySettings();
 

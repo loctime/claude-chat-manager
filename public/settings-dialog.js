@@ -126,6 +126,12 @@ function openSettings() {
   $('cfg-app-color').value = APP_COLOR;
   updateNamePreview();
   $('cfg-show-tools').checked = settings.showTools;
+  $('cfg-show-archived-pane').checked = settings.showArchivedPane;
+  $('cfg-show-codex-pane').checked = settings.showCodexPane;
+  $('cfg-show-agy-pane').checked = settings.showAgYPane;
+  $('cfg-show-notes-pane').checked = settings.showNotesPane;
+  $('cfg-show-task-pane').checked = settings.showTaskPane;
+  $('cfg-show-sala-pane').checked = settings.showSalaPane;
   $('cfg-voice').value = settings.voice;
   $('cfg-color-accent').value = settings.colorAccent || readComputedColor('--accent');
   $('cfg-color-codex').value = settings.colorCodex || readComputedColor('--codex-accent');
@@ -365,6 +371,20 @@ $('cfg-show-tools').onchange = e => {
   settings.showTools = e.target.checked;
   applySettings(); saveSettings();
 };
+const PANE_TOGGLE_SETTINGS = {
+  'cfg-show-archived-pane': 'showArchivedPane',
+  'cfg-show-codex-pane': 'showCodexPane',
+  'cfg-show-agy-pane': 'showAgYPane',
+  'cfg-show-notes-pane': 'showNotesPane',
+  'cfg-show-task-pane': 'showTaskPane',
+  'cfg-show-sala-pane': 'showSalaPane',
+};
+for (const [inputId, setting] of Object.entries(PANE_TOGGLE_SETTINGS)) {
+  $(inputId).onchange = e => {
+    settings[setting] = e.target.checked;
+    applySettings(); saveSettings();
+  };
+}
 // Una sola voz para mensajes propios y del agente. Elegirla reproduce sola
 // una muestra corta (previewVoice, tts.js) — no hace falta un botón aparte.
 $('cfg-voice').onchange = e => {
