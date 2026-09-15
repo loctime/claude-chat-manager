@@ -28,7 +28,7 @@ const searchIndex = require('./search-index');
 const { getReplySuggestions } = require('./groq-suggest');
 const gitSync = require('./git-sync');
 const salaClient = require('./sala-client');
-const { buildContextBlock, isMentioned, mentionNotice, extractMentions } = require('./sala-context');
+const { buildContextBlock, isMentioned, mentionNotice } = require('./sala-context');
 
 const IS_WIN = process.platform === 'win32';
 // WSL: Linux corriendo dentro de Windows (kernel expone "microsoft" en
@@ -3491,14 +3491,16 @@ app.post('/api/sala/rooms/:id/message', async (req, res) => {
     data.conversations[convId].lastSeenAt = Date.now();
     meta.save(data, SALA_META_FILE);
 
-    // Si el mensaje menciona a OTRO agente y no al propio, no dispara un turno
-    // acá — es una @mención dirigida al otro lado, no algo para que conteste
-    // este agente también. El texto ya quedó publicado (arriba) para que el
-    // poller de menciones de la otra instancia lo levante. Un mensaje sin
-    // menciones, o que menciona al propio agente, sigue el flujo de siempre.
-    const addressedElsewhere = extractMentions(text).length > 0 && !isMentioned(text, getAppName());
-    if (addressedElsewhere) {
-      return res.status(202).json({ queued: false, addressedElsewhere: true });
+    // La sala es libre por default (charla 15/09/2026: "los agentes solo
+    // responden cuando los llamamos") — un mensaje NO dispara un turno acá
+    // salvo que mencione explícitamente al propio agente (@Jarvis/@FerStark,
+    // según la instancia). El texto ya quedó publicado (arriba) para que
+    // cualquiera lo lea; si menciona al OTRO agente, es su poller de
+    // menciones el que lo levanta (no se toca acá). Antes el default era el
+    // opuesto (respondía salvo que mencionaras a alguien más) — invertido a
+    // propósito.
+    if (!isMentioned(text, getAppName())) {
+      return res.status(202).json({ queued: false, addressed: false });
     }
 
     const contextBlock = buildContextBlock(newFromOthers);
