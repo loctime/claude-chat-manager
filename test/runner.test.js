@@ -84,6 +84,53 @@ test('con selfPort configurado, el único --append-system-prompt es el aviso de 
   assert.doesNotMatch(spawned[0].args[i + 1], /Modo de respuesta/);
 });
 
+test('job.isSala agrega el aviso de Sala aunque no haya selfPort configurado', () => {
+  const spawned = [];
+  const r = makeRunner(spawned); // sin selfPort
+  r.send({ convId: 'c1', sessionId: 's1', cwd: '/t', text: 'a', isSala: true, appName: 'FerStark' });
+  const i = spawned[0].args.indexOf('--append-system-prompt');
+  assert.ok(i >= 0);
+  assert.match(spawned[0].args[i + 1], /SALA COMPARTIDA/);
+  assert.match(spawned[0].args[i + 1], /vos sos FerStark/);
+});
+
+test('sin job.isSala no se agrega el aviso de Sala', () => {
+  const spawned = [];
+  const r = new Runner({
+    maxConcurrent: 2,
+    selfPort: 3777,
+    spawnFn: (cmd, args, opts) => {
+      const child = fakeChild();
+      spawned.push({ cmd, args, opts, child });
+      return child;
+    },
+  });
+  r.send({ convId: 'c1', sessionId: 's1', cwd: '/t', text: 'a' });
+  const i = spawned[0].args.indexOf('--append-system-prompt');
+  assert.doesNotMatch(spawned[0].args[i + 1], /SALA COMPARTIDA/);
+});
+
+test('job.restrictedTools bloquea Bash/Edit/Write/NotebookEdit vía --disallowedTools', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  r.send({ convId: 'c1', sessionId: 's1', cwd: '/t', text: 'a', isSala: true, appName: 'Jarvis', restrictedTools: true });
+  const i = spawned[0].args.indexOf('--disallowedTools');
+  assert.ok(i >= 0);
+  assert.equal(spawned[0].args[i + 1], 'Bash,Edit,Write,NotebookEdit');
+  // El límite real (--disallowedTools) va acompañado del aviso — así Jarvis
+  // entiende por qué de golpe no tiene esas herramientas, en vez de quedar
+  // confundido si intenta usar una y le falla.
+  const j = spawned[0].args.indexOf('--append-system-prompt');
+  assert.match(spawned[0].args[j + 1], /HERRAMIENTAS LIMITADAS EN ESTE TURNO/);
+});
+
+test('sin job.restrictedTools no se agrega --disallowedTools (mensaje humano normal en Sala)', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  r.send({ convId: 'c1', sessionId: 's1', cwd: '/t', text: 'a', isSala: true, appName: 'Jarvis' });
+  assert.ok(!spawned[0].args.includes('--disallowedTools'));
+});
+
 test('con selfPort configurado, el --append-system-prompt incluye el contrato de rutas', () => {
   const spawned = [];
   const r = new Runner({

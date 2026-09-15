@@ -31,8 +31,8 @@ class CodexUsageService {
     this.pending = null;
   }
 
-  async get() {
-    if (this.cache && Date.now() - this.cache.fetchedAt < this.cacheMs) return this.cache;
+  async get({ force = false } = {}) {
+    if (!force && this.cache && Date.now() - this.cache.fetchedAt < this.cacheMs) return this.cache;
     if (!this.pending) {
       this.pending = this._fetch().finally(() => { this.pending = null; });
     }

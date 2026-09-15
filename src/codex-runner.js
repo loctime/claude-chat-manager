@@ -33,6 +33,7 @@ class CodexRunner extends EventEmitter {
   cancel(convId) {
     const child = this.running.get(convId);
     if (child) {
+      child._cancelled = true;
       if (IS_WIN && child.pid) {
         try { execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); }
         catch { child.kill('SIGTERM'); }
@@ -105,7 +106,8 @@ class CodexRunner extends EventEmitter {
       if (done) return;
       done = true;
       this.running.delete(job.convId);
-      const status = { convId: job.convId, status: 'idle', code };
+      const wasCancelled = !!child?._cancelled;
+      const status = { convId: job.convId, status: 'idle', code, cancelled: wasCancelled };
       if (error) status.stderr = error;
       this.emit('status', status);
       this._drain();

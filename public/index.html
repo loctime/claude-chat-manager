@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=82">
+  <link rel="stylesheet" href="style.css?v=85">
   <!-- Color de identidad server-side (Configuración → Color de identidad). Va
        después de style.css para pisar el --accent default de ahí; el ajuste
        personal por-dispositivo ("Acento" en Colores, más abajo) sigue
@@ -39,7 +39,12 @@
         </button>
       </header>
       <div id="account-status" hidden>
-        <span id="account-status-email"></span>
+        <div class="account-status-top">
+          <span id="account-status-email"></span>
+          <button id="account-status-refresh" type="button" title="Actualizar consumo ahora" aria-label="Actualizar consumo ahora">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+          </button>
+        </div>
         <div class="usage-row">
           <div class="usage-bar" id="usage-5h" hidden>
             <span class="usage-bar-label" data-static-label="5h">5h</span>
@@ -54,9 +59,10 @@
         </div>
       </div>
       <nav id="pane-tabs">
-        <button type="button" class="pane-tab active" data-pane="0">Chats</button>
-        <button type="button" class="pane-tab" data-pane="1">Archivado</button>
-        <button type="button" class="pane-tab" id="codex-tab" data-pane="2">Codex</button>
+        <button type="button" class="pane-tab active" data-pane="0" title="Razonamiento y planificación">Chats</button>
+        <button type="button" class="pane-tab" data-pane="1" hidden>Archivado</button>
+        <button type="button" class="pane-tab" id="codex-tab" data-pane="2" title="Ejecución de tareas e implementación de planes">Codex</button>
+        <button type="button" class="pane-tab" id="gemini-tab" data-pane="6" title="Otro punto de vista y mucho contexto">AgY</button>
         <button type="button" class="pane-tab" data-pane="3">📝 Notas</button>
         <button type="button" class="pane-tab" data-pane="4">🚦 Agenda<span id="agenda-badge" class="tab-badge" hidden></span></button>
         <button type="button" class="pane-tab" data-pane="5">💬 Sala</button>
@@ -114,6 +120,7 @@
           <div id="tree-sala" class="tree-pane notes-pane">
             <nav id="room-list"></nav>
           </div>
+          <nav class="tree-pane" id="gemini-pane"></nav>
         </div>
       </div>
     </div>
@@ -243,6 +250,9 @@
                Posicionado arriba del textarea (position:relative en el form). -->
           <div id="sala-mention-menu" class="mention-menu" hidden></div>
           <textarea id="sala-input" rows="1" placeholder="Escribí acá... (@ para mencionar)"></textarea>
+          <button id="sala-cancel-btn" type="button" hidden title="Cancelar" aria-label="Cancelar">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+          </button>
           <button id="sala-send" type="submit" aria-label="Enviar">
             <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
           </button>
@@ -320,7 +330,7 @@
       <div class="settings-header">
         <h2>Configuración</h2>
         <div class="settings-header-actions">
-          <input type="text" id="cfg-app-name" class="settings-header-name" placeholder="J.A.R.V.I.S" maxlength="40" autocomplete="off" aria-label="Nombre">
+          <input type="text" id="cfg-app-name" class="settings-header-name" placeholder="Claude Chat Manager" maxlength="40" autocomplete="off" aria-label="Nombre">
           <span class="settings-name-preview" id="cfg-name-preview" title="Vista previa — el cambio real en el ícono/tema pide reiniciar el server">
             <span class="settings-name-preview-dot" id="cfg-name-preview-dot"></span>
             <span id="cfg-name-preview-text"></span>
@@ -329,8 +339,13 @@
         </div>
       </div>
 
+      <!-- Cada sección es un <details> nativo: ocultable/expandable sin JS
+           propio (el browser lo maneja solo), arranca colapsado para que el
+           panel entre compacto — Diego expande solo lo que necesita en el
+           momento. -->
       <div class="settings-body">
-        <section class="settings-section">
+        <details class="settings-section">
+          <summary class="settings-section-label">General</summary>
           <div class="settings-grid">
             <label>Tu nombre
               <input type="text" id="cfg-user-name" placeholder="Vos" maxlength="40" autocomplete="off">
@@ -340,14 +355,58 @@
               <input type="checkbox" id="cfg-show-tools">
             </label>
           </div>
-        </section>
+        </details>
 
-        <label class="settings-loose">Voz de los mensajes
-          <select id="cfg-voice"><option value="">Default del sistema</option></select>
-        </label>
+        <!-- Narración por voz de cada agente (on/off + volumen + qué voz).
+             Reemplaza los accesos directos sueltos del escritorio ("Voz
+             Claude/Codex/AgY") — quedan como respaldo, tocan el mismo
+             interruptor de archivo así que no se desincronizan entre sí. La
+             lectura de mensajes en voz del navegador vive acá también, es
+             otro tipo de voz pero misma sección temática. -->
+        <details class="settings-section">
+          <summary class="settings-section-label">Voces</summary>
+          <div class="voice-rows">
+            <div class="voice-row" data-voice="claude">
+              <div class="voice-row-top">
+                <span class="voice-row-name">Claude</span>
+                <input type="checkbox" class="voice-on-toggle">
+              </div>
+              <div class="voice-row-controls">
+                <select class="voice-select"></select>
+                <input type="range" class="voice-volume" min="0" max="100" step="5">
+                <span class="voice-volume-pct">100%</span>
+              </div>
+            </div>
+            <div class="voice-row" data-voice="codex">
+              <div class="voice-row-top">
+                <span class="voice-row-name">Codex</span>
+                <input type="checkbox" class="voice-on-toggle">
+              </div>
+              <div class="voice-row-controls">
+                <select class="voice-select"></select>
+                <input type="range" class="voice-volume" min="0" max="100" step="5">
+                <span class="voice-volume-pct">100%</span>
+              </div>
+            </div>
+            <div class="voice-row" data-voice="antigravity">
+              <div class="voice-row-top">
+                <span class="voice-row-name">AgY</span>
+                <input type="checkbox" class="voice-on-toggle">
+              </div>
+              <div class="voice-row-controls">
+                <select class="voice-select"></select>
+                <input type="range" class="voice-volume" min="0" max="100" step="5">
+                <span class="voice-volume-pct">100%</span>
+              </div>
+            </div>
+          </div>
+          <label class="settings-loose voice-browser-tts">Lectura de mensajes en voz alta (navegador)
+            <select id="cfg-voice"><option value="">Default del sistema</option></select>
+          </label>
+        </details>
 
-        <section class="settings-section">
-          <h3 class="settings-section-label">Apariencia de los mensajes</h3>
+        <details class="settings-section">
+          <summary class="settings-section-label">Apariencia de los mensajes</summary>
           <div class="settings-grid">
             <label>Tipografía
               <button type="button" class="settings-font-trigger" id="cfg-font-family-btn" aria-haspopup="listbox"></button>
@@ -369,6 +428,9 @@
             <label>Color Codex
               <input type="color" id="cfg-color-codex">
             </label>
+            <label>Color Antigravity
+              <input type="color" id="cfg-color-antigravity">
+            </label>
             <label>Burbuja tuya
               <input type="color" id="cfg-color-me">
             </label>
@@ -376,20 +438,20 @@
               <input type="color" id="cfg-color-ai">
             </label>
           </div>
-        </section>
+        </details>
 
-        <section class="settings-section">
-          <h3 class="settings-section-label">Respuestas sugeridas</h3>
+        <details class="settings-section">
+          <summary class="settings-section-label">Respuestas sugeridas</summary>
           <div class="settings-grid">
             <label>API key de Groq <span id="cfg-groq-key-status" class="settings-key-status" hidden>✓ Configurada</span>
               <input type="password" id="cfg-groq-key" placeholder="gsk_..." maxlength="200" autocomplete="off">
             </label>
           </div>
           <span class="settings-hint">Gratis en console.groq.com — sin key, esta función queda apagada. Con key configurada, debajo del último mensaje de Claude aparecen botones con respuestas rápidas cuando el mensaje pide una confirmación.</span>
-        </section>
+        </details>
 
-        <section class="settings-section">
-          <h3 class="settings-section-label">Sala compartida</h3>
+        <details class="settings-section">
+          <summary class="settings-section-label">Sala compartida</summary>
           <div class="settings-grid">
             <label>URL de la sala
               <input type="text" id="cfg-sala-url" placeholder="https://sala.controlapps.ar" autocomplete="off">
@@ -399,23 +461,23 @@
             </label>
           </div>
           <span class="settings-hint">Datos del servicio sala-jarvis (VPS) para la pestaña 💬 Sala — pedíselos a quien lo deployó. Sin esto configurado, la pestaña avisa que falta completarlo.</span>
-        </section>
+        </details>
 
-        <section class="settings-section">
-          <h3 class="settings-section-label">Almacenamiento</h3>
+        <details class="settings-section">
+          <summary class="settings-section-label">Almacenamiento</summary>
           <div class="settings-server">
             <button type="button" id="settings-cleanup-btn">🧹 Limpiar sesiones</button>
             <span class="settings-hint">Ver, filtrar y borrar sesiones de Claude Code guardadas en disco para liberar espacio.</span>
           </div>
-        </section>
+        </details>
 
-        <section class="settings-section">
-          <h3 class="settings-section-label">Servidor</h3>
+        <details class="settings-section">
+          <summary class="settings-section-label">Servidor</summary>
           <div class="settings-server">
             <button type="button" id="cfg-restart-btn">Reiniciar server</button>
             <span class="settings-hint" title="Aplica código nuevo (git pull). Corta la conexión unos segundos.">Aplica código nuevo (git pull). Corta la conexión unos segundos.</span>
           </div>
-        </section>
+        </details>
       </div>
 
       <div class="settings-footer">
@@ -443,7 +505,7 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=90"></script>
+  <script src="app.js?v=103"></script>
   <!-- Split de app.js por dominio (sesión 2026-08-20) — scripts clásicos, no
        ES modules: siguen compartiendo el mismo scope global que app.js, por
        eso cargan DESPUÉS (usan $()/settings/selectConv/etc. definidos ahí).

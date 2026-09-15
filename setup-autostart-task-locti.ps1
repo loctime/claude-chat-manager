@@ -1,39 +1,23 @@
-# Crea/actualiza la tarea programada que levanta esta instancia de Jarvis (usuario locti, puerto 3778)
-# al ARRANCAR WINDOWS, sin necesitar que nadie inicie sesion en el perfil locti (trigger AtStartup +
-# logon type S4U). Esto requiere admin para registrarse (a diferencia de la version AtLogOn, que no).
+# OBSOLETO -- 2026-09-12. NO USAR.
 #
-# RunLevel Limited a proposito (no "Highest"): un proceso lanzado desde una tarea elevada hereda
-# integridad "High" y despues nada sin elevar lo puede volver a matar (mismo motivo documentado en
-# restart-jarvis.ps1 de este repo). S4U con RunLevel Limited corre como locti a integridad normal,
-# aunque la tarea en si se haya REGISTRADO con admin.
+# Este script intentaba registrar JarvisLocti con LogonType S4U, corriendo
+# desde la sesion de locti sin elevar. Se probo en vivo y da "Acceso denegado"
+# -- S4U (incluso para uno mismo) parece requerir que el proceso que registra
+# este elevado, y locti no es miembro de Administradores, asi que nunca puede
+# elevarse el mismo. Esto probablemente explica por que "JarvisLocti" nunca
+# llego a existir desde que se escribio este script (17/8).
+#
+# Ademas de no funcionar, correr esto ENCIMA de una tarea ya registrada por el
+# metodo bueno es activamente daniño: Register-ScheduledTask con -Force borra
+# la tarea existente antes de intentar reemplazarla -- si el reemplazo falla
+# (como siempre va a fallar aca), la tarea buena queda borrada y sin reponer.
+# Esto paso de verdad el 2026-09-12 -- ver CLAUDE.local.md.
+#
+# Usar en su lugar: setup-locti-tasks-with-password.ps1 (se corre UNA vez,
+# desde la sesion de User elevada, pidiendo la contrasena de locti -- registra
+# JarvisLocti Y JarvisLocti-Watchdog juntas).
 
-$ErrorActionPreference = "Stop"
-
-# Auto-elevar si no estamos como admin
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-    Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
-    exit
-}
-
-$taskName   = "JarvisLocti"
-$projectDir = "C:\Users\locti\Proyectos\claude-chat-manager"
-# NB: "start-jarvis-locti.bat", no "start-jarvis.bat" -- este ultimo es el
-# generico (puerto 3777, sin el PORT=3778 fijado a mano). La tarea ya
-# registrada apuntaba al -locti correcto; este script tenia el nombre
-# viejo/equivocado y lo hubiera roto si se volvia a correr. Corregido de paso
-# al migrar fuera de OneDrive (2026-08-17).
-$batPath    = Join-Path $projectDir "start-jarvis-locti.bat"
-
-$action    = New-ScheduledTaskAction -Execute $batPath -WorkingDirectory $projectDir
-$trigger   = New-ScheduledTaskTrigger -AtStartup
-$settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
-$principal = New-ScheduledTaskPrincipal -UserId "$env:COMPUTERNAME\locti" -LogonType S4U -RunLevel Limited
-
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
-
-Write-Output "Tarea '$taskName' reconfigurada: arranca con Windows, sin necesitar login en locti."
-Get-ScheduledTask -TaskName $taskName | Select-Object TaskName, State
-Write-Output ""
-Write-Output "Presione Enter para cerrar..."
-Read-Host | Out-Null
+Write-Output "Este script esta obsoleto y no hace nada -- usar setup-locti-tasks-with-password.ps1 en su lugar."
+Write-Output "Ver el comentario de este archivo para la explicacion completa."
+Read-Host "Presione Enter para cerrar"
+exit 1

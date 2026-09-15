@@ -10,6 +10,15 @@
   --bubble-ai: #2f3f4a;
   --accent:    #25d366;
   --codex-accent: #10a37f;
+  --antigravity-accent: #7c5cff;
+  /* Brillo de "no leído" en las pestañas (#pane-tabs) — variable propia, NO
+     --accent: #pane-tabs vive adentro de #panel-list, y body.codex-list-theme
+     redefine --accent ahí (más abajo) para teñir de teal la pestaña Codex
+     mientras la mirás. Si el brillo de las OTRAS pestañas (Chats, Sala...)
+     usara --accent, se pintaría teal por error cada vez que estás parado en
+     Codex — el bug real que reportó Diego ("el brillo respeta el color de
+     quien habla, pero siempre en la pestaña Chats"). */
+  --tab-alert: #25d366;
   --text:      #e9edef;
   --text2:     #8696a0;
   --border:    #2a3942;
@@ -31,6 +40,9 @@ body.codex-list-theme #panel-list {
 }
 #panel-chat.codex-chat-theme { --accent: var(--codex-accent); }
 #panel-chat.codex-chat-theme #chat-header { background: var(--codex-accent); }
+body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
+#panel-chat.antigravity-chat-theme { --accent: var(--antigravity-accent); }
+#panel-chat.antigravity-chat-theme #chat-header { background: var(--antigravity-accent); }
 
 /* ── App shell ── */
 #app { display: flex; height: 100dvh; position: relative; overflow: hidden; }
@@ -169,13 +181,32 @@ body.codex-list-theme #panel-list {
   background: var(--header);
   border-bottom: 1px solid var(--border);
 }
+.account-status-top { display: flex; align-items: center; gap: 6px; }
 #account-status-email {
   font-size: 11px;
   color: var(--text2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
 }
+#account-status-refresh {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text2);
+  cursor: pointer;
+  border-radius: 50%;
+}
+#account-status-refresh:hover { color: var(--text1); background: var(--border); }
+#account-status-refresh.loading svg { animation: spin .6s linear infinite; }
 .usage-row { display: flex; gap: 14px; }
 .usage-bar { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
 .usage-bar-label { font-size: 10px; color: var(--text2); flex-shrink: 0; }
@@ -212,7 +243,7 @@ body.codex-list-theme #panel-list {
   .pane-tab:hover { color: var(--text); }
   .pane-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
   .pane-tab.has-unread {
-    --pane-alert: var(--accent);
+    --pane-alert: var(--tab-alert);
     color: #bcebdd;
     background: color-mix(in srgb, var(--pane-alert) 22%, transparent);
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pane-alert) 65%, transparent), 0 0 12px color-mix(in srgb, var(--pane-alert) 45%, transparent);
@@ -226,6 +257,9 @@ body.codex-list-theme #panel-list {
     background: color-mix(in srgb, var(--codex-accent) 22%, transparent);
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--codex-accent) 65%, transparent), 0 0 12px color-mix(in srgb, var(--codex-accent) 45%, transparent);
   }
+  .pane-tab[data-pane="6"] { color: var(--antigravity-accent); }
+  .pane-tab[data-pane="6"].active { color: var(--antigravity-accent); border-bottom-color: var(--antigravity-accent); }
+  .pane-tab[data-pane="6"].has-unread { --pane-alert: var(--antigravity-accent); color: color-mix(in srgb, var(--antigravity-accent) 35%, white); background: color-mix(in srgb, var(--antigravity-accent) 22%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--antigravity-accent) 65%, transparent), 0 0 12px color-mix(in srgb, var(--antigravity-accent) 45%, transparent); }
   @keyframes pane-unread-glow {
     50% { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pane-alert) 90%, transparent), 0 0 20px color-mix(in srgb, var(--pane-alert) 75%, transparent); }
   }
@@ -282,17 +316,18 @@ body.codex-list-theme #panel-list {
    más y recalcula los translateX a k/N, N = cantidad total de paneles). */
 #tree-viewport-inner {
   display: flex;
-  width: 600%;
+  width: 700%;
   height: 100%;
   transition: transform .25s ease;
   touch-action: pan-y;
 }
-#tree-viewport-inner[data-pane="1"] { transform: translateX(calc(-100% / 6)); }
-#tree-viewport-inner[data-pane="2"] { transform: translateX(calc(-200% / 6)); }
-#tree-viewport-inner[data-pane="3"] { transform: translateX(calc(-300% / 6)); }
-#tree-viewport-inner[data-pane="4"] { transform: translateX(calc(-400% / 6)); }
-#tree-viewport-inner[data-pane="5"] { transform: translateX(calc(-500% / 6)); }
-.tree-pane { width: calc(100% / 6); flex: none; height: 100%; overflow-y: auto; }
+#tree-viewport-inner[data-pane="1"] { transform: translateX(calc(-100% / 7)); }
+#tree-viewport-inner[data-pane="2"] { transform: translateX(calc(-200% / 7)); }
+#tree-viewport-inner[data-pane="3"] { transform: translateX(calc(-300% / 7)); }
+#tree-viewport-inner[data-pane="4"] { transform: translateX(calc(-400% / 7)); }
+#tree-viewport-inner[data-pane="5"] { transform: translateX(calc(-500% / 7)); }
+#tree-viewport-inner[data-pane="6"] { transform: translateX(calc(-600% / 7)); }
+.tree-pane { width: calc(100% / 7); flex: none; height: 100%; overflow-y: auto; }
 .tree-pane::-webkit-scrollbar { width: 4px; }
 .tree-pane::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
@@ -945,7 +980,7 @@ body.codex-list-theme #panel-list {
 #input::-webkit-scrollbar { width: 3px; }
 #input.hidden-text { -webkit-text-security: disc; text-security: disc; }
 
-#send, #cancel-btn, #mic-btn, #attach-btn, #eye-btn {
+#send, #cancel-btn, #mic-btn, #attach-btn, #eye-btn, #sala-cancel-btn {
   border-radius: 50%; border: none; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0; transition: transform .1s, background .15s;
@@ -958,8 +993,8 @@ body.codex-list-theme #panel-list {
 #send:active { transform: scale(.92); }
 #send:disabled { background: var(--border); opacity: .5; cursor: default; transform: none; }
 
-#cancel-btn { background: #3d1a1d; color: var(--danger); width: 44px; height: 44px; }
-#cancel-btn:hover { background: #5a1f24; }
+#cancel-btn, #sala-cancel-btn { background: #3d1a1d; color: var(--danger); width: 44px; height: 44px; }
+#cancel-btn:hover, #sala-cancel-btn:hover { background: #5a1f24; }
 
 #mic-btn, #attach-btn, #eye-btn {
   background: none; color: var(--text2);
@@ -1232,10 +1267,18 @@ dialog button:hover { background: var(--border); }
   background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
   padding: 12px 14px;
 }
+/* <details> nativo: colapsado por default (sin atributo "open" en el HTML) —
+   el panel entra compacto, cada sección se expande sola al tocar el título.
+   Cerrado no gasta el padding vertical de abajo, solo el de arriba+label. */
+#settings-dialog .settings-section:not([open]) { padding-bottom: 12px; }
 #settings-dialog .settings-section-label {
   font-size: 12px; font-weight: 600; letter-spacing: .01em; color: var(--text2);
-  margin-bottom: 10px; text-transform: uppercase;
+  text-transform: uppercase; cursor: pointer; user-select: none;
 }
+#settings-dialog .settings-section[open] > .settings-section-label { margin-bottom: 10px; }
+/* Chrome/Firefox soportan ::marker acá — el triángulo nativo alcanza como
+   affordance de "esto se abre", sin inventar un ícono propio. */
+#settings-dialog .settings-section-label::marker { color: var(--text2); }
 /* "Voz de los mensajes" queda suelta, sin caja — el gap del .settings-body
    flex ya le da el mismo aire que a las secciones de al lado. */
 #settings-dialog .settings-loose { margin-bottom: 0; }
@@ -1299,6 +1342,41 @@ dialog button:hover { background: var(--border); }
 /* Una sola voz para agente y usuario — selector más chico que un input
    normal del dialog (antes se salía del cuadro con nombres de voz largos). */
 #settings-dialog #cfg-voice { font-size: 13px; padding: 7px 10px; }
+
+/* Panel "Voces" — dos líneas chicas por agente (nombre+on/off arriba, qué voz
+   + volumen abajo), reemplaza los accesos directos del escritorio. Se probó
+   una sola línea con los 5 controles y no entraba en el ancho del dialog en
+   mobile (el toggle se caía a una línea propia) — dos líneas cortas quedó
+   más compacto en la práctica que una larga que igual se parte sola.
+   Apagada la voz, se opaca el picker+slider (no tiene sentido tocarlos). */
+#settings-dialog .voice-rows { display: flex; flex-direction: column; gap: 4px; }
+#settings-dialog .voice-row { padding: 6px 0; }
+#settings-dialog .voice-row:not(:last-child) { border-bottom: 1px solid var(--border); }
+#settings-dialog .voice-row-top { display: flex; align-items: center; justify-content: space-between; }
+#settings-dialog .voice-row-name { font-size: 13.5px; }
+#settings-dialog .voice-row-controls { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+#settings-dialog .voice-select { font-size: 12.5px; padding: 4px 6px; flex: 1 1 auto; min-width: 0; }
+#settings-dialog .voice-volume { flex: 1 1 auto; min-width: 0; accent-color: var(--accent); cursor: pointer; }
+#settings-dialog .voice-volume-pct {
+  font-size: 12px; color: var(--text2); min-width: 34px; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+#settings-dialog .voice-on-toggle {
+  appearance: none; -webkit-appearance: none;
+  width: 36px; height: 21px; margin: 0; flex-shrink: 0; cursor: pointer;
+  background: var(--input-bg); border: 1px solid var(--border); border-radius: 11px;
+  position: relative; transition: background .15s;
+}
+#settings-dialog .voice-on-toggle::before {
+  content: ''; position: absolute; top: 2px; left: 2px;
+  width: 15px; height: 15px; border-radius: 50%; background: var(--text2);
+  transition: transform .15s, background .15s;
+}
+#settings-dialog .voice-on-toggle:checked { background: var(--accent); border-color: var(--accent); }
+#settings-dialog .voice-on-toggle:checked::before { transform: translateX(15px); background: #fff; }
+#settings-dialog .voice-row.voice-off .voice-select,
+#settings-dialog .voice-row.voice-off .voice-volume { opacity: .45; pointer-events: none; }
+#settings-dialog .voice-browser-tts { margin-top: 12px; margin-bottom: 0; }
 
 /* Botón que reemplaza al <select> nativo de tipografía: el <select> real
    sigue existiendo oculto (guarda el valor y dispara el "change" de

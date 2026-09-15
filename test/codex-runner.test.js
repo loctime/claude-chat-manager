@@ -126,11 +126,16 @@ test('close con código 0 emite status idle', () => {
 test('cancelar en cola vs. corriendo', () => {
   const spawned = [];
   const r = makeRunner(spawned, { maxConcurrent: 1 });
+  const statuses = [];
+  r.on('status', s => statuses.push(s));
   r.send({ convId: 'c1', sessionId: null, cwd: 'C:\\p', text: 'a' });
   r.send({ convId: 'c2', sessionId: null, cwd: 'C:\\p', text: 'b' });
   assert.equal(r.cancel('c2'), true); // en cola
   assert.equal(r.isBusy('c2'), false);
   assert.equal(r.cancel('c1'), true); // corriendo → taskkill contra el pid falso falla, cae a child.kill() (no-op en el fake)
+  spawned[0].child.emit('close', 1);
+  const idle = statuses.find(s => s.convId === 'c1' && s.status === 'idle');
+  assert.equal(idle.cancelled, true);
 });
 
 test('línea JSON corrupta en stdout no rompe el parseo', () => {

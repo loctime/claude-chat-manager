@@ -10,14 +10,76 @@
 # 5 minutos para siempre sin autocurarse -- paso real, 2224 reinicios acumulados
 # antes de que alguien lo notara. Solo se corre en esta rama (server realmente
 # caido), no en cada chequeo sano, para no pagar el costo cada 5 min porque si.
+#
+# Auto-reparacion del daemon de PM2 (agregado 2026-09-09, ver CLAUDE.local.md
+# "Root cause del EPERM de PM2 identificado"): el daemon de PM2 puede quedar
+# colgado (EPERM en \\.\pipe\rpc.sock) por procesos misterio de Session 0 que
+# le toman el pipe -- distinto del 3777 no respondiendo, la app puede seguir
+# sirviendo mientras el supervisor ya esta roto por debajo. Se chequea "pm2 ping"
+# en cada corrida (barato) y si esta roto se intenta reparar solo: matar
+# Daemon.js zombies a integridad normal, y si no alcanza, matar los procesos
+# Session 0 sospechosos (node/cloudflared con CommandLine vacio) via una
+# PowerShell elevada -- esta PC tiene UAC en "elevar sin preguntar"
+# (ConsentPromptBehaviorAdmin=0), asi que esto corre en silencio, sin que Diego
+# tenga que aprobar nada, SI la tarea programada tiene acceso a un escritorio
+# interactivo. Si no lo tiene (corre "no logueado"), la elevacion no deja
+# marcador y el script lo loguea en vez de asumir que funciono -- ahi si hace
+# falta "Reiniciar Jarvis (Admin).bat" a mano.
 $logFile = "$env:TEMP\jarvis-watchdog.log"
 $publicUrl = "https://jarvis.controlapps.ar"
 $projectDir = "C:\Users\User\Desktop\Proyectos\claude-chat-manager"
 $pm2 = "C:\Users\User\AppData\Roaming\npm\pm2.cmd"
 $npm = "C:\Program Files\nodejs\npm.cmd"
 
+. (Join-Path $PSScriptRoot 'session0-cleanup.ps1')
+
 function Log($msg) {
     "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg" | Out-File -FilePath $logFile -Append -Encoding utf8
+}
+
+function Test-Pm2Healthy {
+    $out = & $pm2 ping 2>&1 | Out-String
+    return ($out -notmatch 'EPERM')
+}
+
+function Repair-Pm2Daemon {
+    Log "PM2 daemon no responde (EPERM) -- iniciando reparacion automatica"
+
+    $daemons = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like '*pm2*Daemon.js*' }
+    foreach ($d in $daemons) {
+        try { Stop-Process -Id $d.ProcessId -Force -ErrorAction Stop } catch {}
+    }
+    if ($daemons.Count -gt 0) {
+        Log "Mate $($daemons.Count) daemon(s) PM2 zombie (integridad normal)"
+        Start-Sleep -Seconds 2
+    }
+
+    if (Test-Pm2Healthy) { Log "PM2 sano tras matar daemons zombie -- no hizo falta elevar"; return $true }
+
+    Log "Sigue roto -- buscando procesos Session 0 sospechosos (node/cloudflared con CommandLine ilegible)"
+    $killed = Repair-SessionZeroZombies -ProcessNames @('node.exe', 'cloudflared.exe')
+
+    if ($killed.Count -eq 0) {
+        Log "No se encontraron procesos Session 0 sospechosos, o no se pudo elevar -- requiere revision manual"
+        return $false
+    }
+
+    Log "Resultado elevacion: $($killed -join ' | ')"
+
+    Start-Sleep -Seconds 2
+    if (Test-Pm2Healthy) { Log "PM2 sano tras matar procesos Session 0"; return $true }
+
+    Log "PM2 sigue roto tras el intento automatico -- requiere 'Reiniciar Jarvis (Admin).bat' o reiniciar la PC"
+    return $false
+}
+
+if (-not (Test-Pm2Healthy)) {
+    if (Repair-Pm2Daemon) {
+        & $pm2 resurrect 2>&1 | Out-Null
+        Start-Sleep -Seconds 3
+        Log "pm2 resurrect corrido tras reparacion"
+    }
 }
 
 $localAlive = $false

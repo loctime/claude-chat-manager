@@ -18,9 +18,12 @@ const icon = require('./icon');
 const { Runner } = require('./runner');
 const { CLAUDE_CMD } = require('./claude-cmd');
 const { CodexRunner } = require('./codex-runner');
+const { GeminiRunner } = require('./gemini-runner');
 const { CodexAvailability } = require('./codex-availability');
 const { CodexUsageService } = require('./codex-usage');
+const { AntigravityUsageService } = require('./antigravity-usage');
 const codexScanner = require('./codex-scanner');
+const geminiScanner = require('./gemini-scanner');
 const searchIndex = require('./search-index');
 const { getReplySuggestions } = require('./groq-suggest');
 const gitSync = require('./git-sync');
@@ -51,11 +54,11 @@ const PORT = Number(process.env.PORT || 3777);
 const ACCESS_PIN = process.env.ACCESS_PIN || '';
 // Nombre mostrado en título/manifest/PWA/toasts. Prioridad: lo guardado desde
 // la pantalla de Configuración (~/.ccm-config.json) > env var CCM_APP_NAME >
-// default. Se lee del archivo en cada request (no una constante al boot) para
+// default genérico. Se lee del archivo en cada request (no una constante al boot) para
 // que guardar desde la UI aplique sin reiniciar el server.
 function getAppName() {
   const name = (config.load().appName || '').trim();
-  return name || process.env.CCM_APP_NAME || 'J.A.R.V.I.S';
+  return name || process.env.CCM_APP_NAME || 'Claude Chat Manager';
 }
 
 // Tu propio nombre (no el del agente) — usado para etiquetar tus mensajes
@@ -372,10 +375,14 @@ function readAccountAuth(acc) {
   return { email, accessToken };
 }
 
-async function fetchAccountUsage(acc) {
+async function fetchAccountUsage(acc, { force = false } = {}) {
   const now = Date.now();
   const cached = usageCache.get(acc);
-  if (cached && now < cached.nextAt) return cached;
+  // force=true (botón de refresco manual) salta nuestro piso propio de 55min,
+  // pero NO el rate limit real de Anthropic — si están muy encima del último
+  // pedido real, la rama de abajo (429) sigue respondiendo con el error tal
+  // cual y sin gastar nada extra.
+  if (!force && cached && now < cached.nextAt) return cached;
 
   const { email, accessToken } = readAccountAuth(acc);
   if (!accessToken) {
@@ -408,26 +415,29 @@ async function fetchAccountUsage(acc) {
 
 app.get('/api/usage', async (req, res) => {
   const acc = req.query.account || activeAccount;
-  const entry = await fetchAccountUsage(acc);
+  const force = req.query.force === '1';
+  const entry = await fetchAccountUsage(acc, { force });
   const d = entry.data;
   res.json({
     email: entry.email || '',
     fiveHour: d && d.five_hour ? { pct: d.five_hour.utilization, resetsAt: d.five_hour.resets_at } : null,
     sevenDay: d && d.seven_day ? { pct: d.seven_day.utilization, resetsAt: d.seven_day.resets_at } : null,
     fetchedAt: entry.fetchedAt,
+    error: entry.error || null,
   });
 });
 
 // Límites de la cuenta ChatGPT con la que está logueado Codex. Se lee del
 // App Server local oficial, no de los límites de Claude ni de una API key.
 const codexUsage = new CodexUsageService();
+const antigravityUsage = new AntigravityUsageService();
 const codexAvailability = new CodexAvailability();
 app.get('/api/codex/status', async (req, res) => {
   res.json(await codexAvailability.get());
 });
 app.get('/api/codex/usage', async (req, res) => {
   try {
-    res.json(await codexUsage.get());
+    res.json(await codexUsage.get({ force: req.query.force === '1' }));
   } catch (err) {
     res.status(503).json({ error: 'No se pudo consultar el uso de Codex: ' + err.message });
   }
@@ -705,11 +715,158 @@ const runner = new Runner({ selfHost: HOST, selfPort: PORT });
 const sseClients = new Map(); // convId → Set<res>
 
 const CODEX_META_FILE = path.join(os.homedir(), '.claude', 'session-manager', 'codex-meta.json');
+const GEMINI_META_FILE = path.join(os.homedir(), '.claude', 'session-manager', 'gemini-meta.json');
 const SALA_META_FILE = path.join(os.homedir(), '.claude', 'session-manager', 'sala-meta.json');
 const codexRunner = new CodexRunner({ selfHost: HOST, selfPort: PORT });
 const codexSseClients = new Map(); // convId → Set<res>
+const geminiRunner = new GeminiRunner({ selfHost: HOST, selfPort: PORT });
+const geminiSseClients = new Map();
+// convId → Date.now() de cuando se despachó el mensaje. Sirve para distinguir
+// una respuesta real (aunque gemini-runner haya perdido el hilo del stream)
+// de una vieja: ver findFreshGeminiAnswer más abajo.
+const geminiTurnStartedAt = new Map();
 const CODEX_TTS_SCRIPT = path.join(os.homedir(), '.claude', 'scripts', 'speak-response.py');
 const CODEX_TTS_VOICE = 'es-AR-TomasNeural';
+const GEMINI_TTS_VOICE = 'es-UY-ValentinaNeural';
+const CLAUDE_SETTINGS_FILE = path.join(HOME_DIR, '.claude', 'settings.json');
+// El on/off ya existía como archivo por voz (el switch que checkea el propio
+// speak-response.py, ver arriba) — el panel de Configuración solo le agrega
+// una UI encima, sin cambiar el mecanismo (así los accesos directos viejos
+// del escritorio y el panel nunca se desincronizan, tocan el mismo archivo).
+const VOICE_FLAG_FILES = {
+  claude: path.join(HOME_DIR, '.claude', 'voice-on'),
+  codex: path.join(HOME_DIR, '.claude', 'codex-voice-on'),
+  antigravity: path.join(HOME_DIR, '.claude', 'antigravity-voice-on'),
+};
+// El volumen de Codex/AgY solo lo necesita este mismo proceso (es quien
+// spawnea el narrador con env explícito, ver narrateCodexResponse/
+// narrateGeminiResponse) — un archivo de texto plano alcanza. El de Claude
+// es distinto: lo lee el Stop hook del CLI real (cualquier terminal, no solo
+// Jarvis), que solo hereda variables de entorno — por eso vive en
+// settings.json → env.CLAUDE_TTS_VOLUME, mismo lugar que ya usa
+// CLAUDE_TTS_VOICE (Elena) para ese mismo hook.
+const VOICE_VOLUME_FILES = {
+  codex: path.join(HOME_DIR, '.claude', 'codex-voice-volume'),
+  antigravity: path.join(HOME_DIR, '.claude', 'antigravity-voice-volume'),
+};
+// Mismo razonamiento que el volumen (arriba): Codex/AgY en archivo propio
+// porque Jarvis es quien arma el env del narrador; Claude en settings.json
+// porque lo lee el Stop hook real, sea o no a través de Jarvis.
+const VOICE_NAME_FILES = {
+  codex: path.join(HOME_DIR, '.claude', 'codex-voice-name'),
+  antigravity: path.join(HOME_DIR, '.claude', 'antigravity-voice-name'),
+};
+const DEFAULT_VOICE_NAME = { claude: 'es-AR-ElenaNeural', codex: CODEX_TTS_VOICE, antigravity: GEMINI_TTS_VOICE };
+// edge-tts no tiene endpoint de validación — lista fija de las voces es-*
+// reales (`edge-tts --list-voices`, revisado a mano el 2026-09-14). Evita
+// persistir un nombre inventado que silenciosamente no sintetice nada.
+const ALLOWED_VOICE_NAMES = new Set([
+  'es-AR-ElenaNeural', 'es-AR-TomasNeural',
+  'es-UY-ValentinaNeural', 'es-UY-MateoNeural',
+  'es-MX-DaliaNeural', 'es-MX-JorgeNeural',
+  'es-ES-ElviraNeural', 'es-ES-AlvaroNeural', 'es-ES-XimenaNeural',
+  'es-CO-SalomeNeural', 'es-CO-GonzaloNeural',
+  'es-CL-CatalinaNeural', 'es-CL-LorenzoNeural',
+  'es-PY-TaniaNeural', 'es-PY-MarioNeural',
+  'es-VE-PaolaNeural', 'es-VE-SebastianNeural',
+  'es-PE-CamilaNeural', 'es-PE-AlexNeural',
+  'es-US-PalomaNeural', 'es-US-AlonsoNeural',
+]);
+
+function clampVolume(v) {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 100;
+}
+
+function readVoiceName(voice) {
+  if (voice === 'claude') {
+    try {
+      const s = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_FILE, 'utf8'));
+      const v = s.env && s.env.CLAUDE_TTS_VOICE;
+      return ALLOWED_VOICE_NAMES.has(v) ? v : DEFAULT_VOICE_NAME.claude;
+    } catch { return DEFAULT_VOICE_NAME.claude; }
+  }
+  try {
+    const v = fs.readFileSync(VOICE_NAME_FILES[voice], 'utf8').trim();
+    return ALLOWED_VOICE_NAMES.has(v) ? v : DEFAULT_VOICE_NAME[voice];
+  } catch { return DEFAULT_VOICE_NAME[voice]; }
+}
+
+function writeVoiceName(voice, value) {
+  if (!ALLOWED_VOICE_NAMES.has(value)) throw new Error('voz de edge-tts desconocida: ' + value);
+  if (voice === 'claude') {
+    let s = {};
+    try { s = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_FILE, 'utf8')); } catch {}
+    s.env = s.env || {};
+    s.env.CLAUDE_TTS_VOICE = value;
+    fs.writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify(s, null, 2) + '\n', 'utf8');
+  } else {
+    const file = VOICE_NAME_FILES[voice];
+    if (!file) throw new Error('voz desconocida');
+    fs.writeFileSync(file, value, 'utf8');
+  }
+  return value;
+}
+
+function readVoiceOn(voice) {
+  const file = VOICE_FLAG_FILES[voice];
+  return !!file && fs.existsSync(file);
+}
+
+function writeVoiceOn(voice, on) {
+  const file = VOICE_FLAG_FILES[voice];
+  if (!file) throw new Error('voz desconocida');
+  if (on) fs.writeFileSync(file, '', 'utf8');
+  else { try { fs.unlinkSync(file); } catch {} }
+}
+
+function readVoiceVolume(voice) {
+  if (voice === 'claude') {
+    try {
+      const s = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_FILE, 'utf8'));
+      const v = s.env && s.env.CLAUDE_TTS_VOLUME;
+      return v != null ? clampVolume(v) : 100;
+    } catch { return 100; }
+  }
+  const file = VOICE_VOLUME_FILES[voice];
+  try { return clampVolume(fs.readFileSync(file, 'utf8').trim()); } catch { return 100; }
+}
+
+function writeVoiceVolume(voice, value) {
+  const volume = clampVolume(value);
+  if (voice === 'claude') {
+    // Reescribe solo env.CLAUDE_TTS_VOLUME — settings.json tiene TODOS los
+    // tokens de API del usuario, no se toca nada más de lo necesario.
+    let s = {};
+    try { s = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_FILE, 'utf8')); } catch {}
+    s.env = s.env || {};
+    s.env.CLAUDE_TTS_VOLUME = String(volume);
+    fs.writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify(s, null, 2) + '\n', 'utf8');
+  } else {
+    const file = VOICE_VOLUME_FILES[voice];
+    if (!file) throw new Error('voz desconocida');
+    fs.writeFileSync(file, String(volume), 'utf8');
+  }
+  return volume;
+}
+
+app.get('/api/voice-settings', (req, res) => {
+  const out = {};
+  for (const v of Object.keys(VOICE_FLAG_FILES)) out[v] = { on: readVoiceOn(v), volume: readVoiceVolume(v), name: readVoiceName(v) };
+  res.json({ voices: out, options: [...ALLOWED_VOICE_NAMES] });
+});
+app.patch('/api/voice-settings/:voice', (req, res) => {
+  const voice = req.params.voice;
+  if (!VOICE_FLAG_FILES[voice]) return res.status(404).json({ error: 'voz desconocida' });
+  try {
+    if ('on' in req.body) writeVoiceOn(voice, !!req.body.on);
+    if ('volume' in req.body) writeVoiceVolume(voice, req.body.volume);
+    if ('name' in req.body) writeVoiceName(voice, req.body.name);
+    res.json({ on: readVoiceOn(voice), volume: readVoiceVolume(voice), name: readVoiceName(voice) });
+  } catch (err) {
+    res.status(500).json({ error: 'no se pudo guardar: ' + err.message });
+  }
+});
 
 function codexBroadcast(convId, payload) {
   const set = codexSseClients.get(convId);
@@ -744,13 +901,49 @@ function narrateCodexResponse(convId) {
       windowsHide: true,
       env: {
         ...process.env,
-        CLAUDE_TTS_VOICE: CODEX_TTS_VOICE,
-        CLAUDE_TTS_FLAG_FILE: path.join(os.homedir(), '.claude', 'codex-voice-on'),
+        CLAUDE_TTS_VOICE: readVoiceName('codex'),
+        CLAUDE_TTS_VOLUME: String(readVoiceVolume('codex')),
+        CLAUDE_TTS_FLAG_FILE: VOICE_FLAG_FILES.codex,
       },
     });
     child.unref();
   } catch (err) {
     console.error('[codex-tts] no se pudo lanzar el narrador:', err.message);
+  }
+}
+
+// Mismo mecanismo que narrateCodexResponse (Antigravity tampoco tiene hooks
+// propios) — voz propia (Valentina, uruguaya/rioplatense) para distinguirse
+// de Elena (Claude) y Tomás (Codex). A diferencia de Codex, el texto ya está
+// en meta.json (gemini-runner.js lo persiste ahí) — no hace falta ir a buscar
+// un archivo de sesión aparte.
+function narrateGeminiResponse(convId) {
+  if (!IS_WIN || !fs.existsSync(CODEX_TTS_SCRIPT)) return;
+  try {
+    const data = meta.load(GEMINI_META_FILE);
+    const conv = data.conversations[convId];
+    const messages = conv && conv.messages;
+    if (!messages) return;
+    const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && m.text && m.text.trim());
+    if (!lastAssistant) return;
+    const assistantIndex = messages.lastIndexOf(lastAssistant);
+    const user = [...messages.slice(0, assistantIndex)].reverse().find(m => m.role === 'user');
+    const inputFile = path.join(os.tmpdir(), `agy-tts-${process.pid}-${Date.now()}-${crypto.randomUUID()}.json`);
+    fs.writeFileSync(inputFile, JSON.stringify({ user: user?.text || '', assistant: lastAssistant.text }), { encoding: 'utf8', mode: 0o600 });
+    const child = spawn('python', [CODEX_TTS_SCRIPT, '--say-json', inputFile], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      env: {
+        ...process.env,
+        CLAUDE_TTS_VOICE: readVoiceName('antigravity'),
+        CLAUDE_TTS_VOLUME: String(readVoiceVolume('antigravity')),
+        CLAUDE_TTS_FLAG_FILE: VOICE_FLAG_FILES.antigravity,
+      },
+    });
+    child.unref();
+  } catch (err) {
+    console.error('[antigravity-tts] no se pudo lanzar el narrador:', err.message);
   }
 }
 
@@ -936,7 +1129,12 @@ async function checkSalaMentions() {
       if (!mentioned) continue;
 
       const outgoing = `${buildContextBlock(messages)}\n\n${mentionNotice(getAppName())}`;
-      runner.send({ convId, sessionId: conv.currentSessionId, cwd: accountHomeDir(activeAccount), text: outgoing, account: activeAccount });
+      // restrictedTools: este turno lo disparó una mención de OTRA persona
+      // (Fernando/FerStark), no un mensaje que Diego mandó desde su propio
+      // dispositivo — ver runner.js para el detalle de qué bloquea y por
+      // qué. El envío humano normal (POST /api/sala/rooms/:id/message,
+      // más abajo en este archivo) NO lleva esta restricción.
+      runner.send({ convId, sessionId: conv.currentSessionId, cwd: accountHomeDir(activeAccount), text: outgoing, account: activeAccount, isSala: true, appName: getAppName(), restrictedTools: true });
 
       const fresh = meta.load(SALA_META_FILE);
       if (fresh.conversations[convId]) {
@@ -974,6 +1172,19 @@ runner.on('status', s => {
       if (conv && conv.currentSessionId) {
         conv.unread = true;
         meta.save(data, metaFile);
+      } else {
+        // No está en el store de la cuenta — puede ser una conversación de
+        // Sala (vive en SALA_META_FILE, no en accountMetaFile, mismo caso ya
+        // resuelto para el evento 'session_id' más arriba). Sin esto, la
+        // pestaña "Sala" nunca se enteraba de que FerStark/Jarvis contestó
+        // mientras nadie miraba — Diego reportó "siempre brilla Chats" y
+        // ESTA era la mitad real del bug: Sala directamente nunca brillaba.
+        const salaData = meta.load(SALA_META_FILE);
+        const salaConv = salaData.conversations[s.convId];
+        if (salaConv) {
+          salaConv.unread = true;
+          meta.save(salaData, SALA_META_FILE);
+        }
       }
     }
   }
@@ -998,12 +1209,11 @@ codexRunner.on('status', s => {
   codexBroadcast(s.convId, { kind: 'status', ...s });
   if (s.status === 'idle' && s.code === 0 && !s.cancelled) {
     narrateCodexResponse(s.convId);
+    maybeGenerateCodexTitle(s.convId).catch(() => {});
   }
   // Mismo criterio de "no leído" que ya usa Claude (ver runner.on('status', ...)
   // más arriba en este archivo): un turno terminó sin nadie mirando esta convId
-  // por SSE ahora mismo → se marca unread. No se replica la generación de título
-  // por IA ni el resync del índice de búsqueda — ninguno de los dos existe para
-  // Codex en v1 (fuera de alcance, ver spec).
+  // por SSE ahora mismo → se marca unread.
   if (s.status === 'idle' && !s.cancelled) {
     const hasViewer = (codexSseClients.get(s.convId)?.size || 0) > 0;
     if (!hasViewer) {
@@ -1022,13 +1232,13 @@ codexRunner.on('status', s => {
 
 // ── Título automático vía Groq ──
 const _lastTitleAttempt = new Map(); // convId → timestamp
-const TITLE_MIN_MSGS = 3;
+const TITLE_MIN_MSGS = 2;
 const TITLE_RETRY_MS = 30_000;
 
 function _groqTitle(excerpt) {
   return new Promise((resolve) => {
     const body = JSON.stringify({
-      model: 'llama-3.1-8b-instant',
+      model: 'qwen/qwen3.8-27b',
       messages: [
         { role: 'system', content: 'Sos un generador de títulos. El usuario te va a pasar el inicio de una conversación y vos respondés SOLO con un título corto (3 a 6 palabras) en español que la resuma. Nada de comillas, puntos, emojis, ni explicaciones. Ejemplo:\n\nEntrada:\nuser: Cómo instalo Docker en Ubuntu?\nassistant: Ejecutá sudo apt install docker.io\n\nTítulo: Instalación de Docker en Ubuntu' },
         { role: 'user', content: excerpt },
@@ -1135,6 +1345,58 @@ async function maybeGenerateTitle(convId, acc = activeAccount) {
   latestConv.aiTitle = true;
   meta.save(latest, metaFile);
   broadcast(convId, { kind: 'meta', name: title, aiTitle: true });
+}
+
+async function maybeGenerateCodexTitle(convId) {
+  if (!GROQ_API_KEY) return;
+  const last = _lastTitleAttempt.get(convId) || 0;
+  if (Date.now() - last < TITLE_RETRY_MS) return;
+  const data = meta.load(CODEX_META_FILE);
+  const conv = data.conversations[convId];
+  if (!conv || conv.name || conv.aiTitle) return;
+  const file = conv.currentSessionId ? codexScanner.findSessionFile(conv.currentSessionId) : null;
+  if (!file) return;
+  const messages = codexScanner.getMessages(file).filter(m => m.role !== 'tool');
+  if (messages.length < TITLE_MIN_MSGS) return;
+  _lastTitleAttempt.set(convId, Date.now());
+  const excerpt = messages.slice(0, 6).map(m => `${m.role}: ${(m.text || '').slice(0, 400)}`).join('\n\n').slice(0, 2000);
+  const title = await _groqTitle(excerpt);
+  if (!title) return;
+  const latest = meta.load(CODEX_META_FILE);
+  const latestConv = latest.conversations[convId];
+  if (!latestConv || latestConv.name) return;
+  latestConv.name = title;
+  latestConv.aiTitle = true;
+  meta.save(latest, CODEX_META_FILE);
+  codexBroadcast(convId, { kind: 'meta', name: title, aiTitle: true });
+}
+
+async function maybeGenerateGeminiTitle(convId) {
+  if (!GROQ_API_KEY) return;
+  const last = _lastTitleAttempt.get(convId) || 0;
+  if (Date.now() - last < TITLE_RETRY_MS) return;
+  const data = meta.load(GEMINI_META_FILE);
+  const conv = data.conversations[convId];
+  if (!conv || conv.name || conv.aiTitle) return;
+  let messages = [];
+  if (conv.currentSessionId) {
+    const realMessages = geminiScanner.getMessages(conv.currentSessionId);
+    if (realMessages && realMessages.length > 0) messages = realMessages;
+  }
+  if (!messages.length && conv.messages) messages = conv.messages;
+  messages = messages.filter(m => m.role !== 'tool');
+  if (messages.length < TITLE_MIN_MSGS) return;
+  _lastTitleAttempt.set(convId, Date.now());
+  const excerpt = messages.slice(0, 6).map(m => `${m.role}: ${(m.text || '').slice(0, 400)}`).join('\n\n').slice(0, 2000);
+  const title = await _groqTitle(excerpt);
+  if (!title) return;
+  const latest = meta.load(GEMINI_META_FILE);
+  const latestConv = latest.conversations[convId];
+  if (!latestConv || latestConv.name) return;
+  latestConv.name = title;
+  latestConv.aiTitle = true;
+  meta.save(latest, GEMINI_META_FILE);
+  geminiBroadcast(convId, { kind: 'meta', name: title, aiTitle: true });
 }
 
 function resolveConv(convId, acc = activeAccount) {
@@ -1870,15 +2132,32 @@ const MAX_TREE_LIMIT = 500;
 // una conversación pero no esté en el registro (auto-adopción, cubre datos
 // viejos o creados por otro cliente). El conteo sí se calcula al vuelo desde
 // las conversaciones — eso no se persiste aparte.
+//
+// Cada entrada de data.projects puede venir en dos formas: un string pelado
+// (formato viejo, de antes del 09/09) o {name, hideFromAll} (formato nuevo —
+// ver hideFromAll más abajo). projectEntry() normaliza cualquiera de las dos
+// a la forma objeto, así el resto del código no tiene que preguntar el tipo.
+function projectEntry(p) {
+  return typeof p === 'string' ? { name: p, hideFromAll: false } : p;
+}
+
 // Da de alta una etiqueta en el registro si todavía no está (comparación sin
 // mayúsculas/minúsculas) — se llama cada vez que una conversación queda
 // etiquetada con un proyecto, así el registro nunca queda desincronizado con
 // lo que realmente se está usando, aunque el alta explícita por /api/projects
 // se haya salteado (ej. un cliente viejo que solo mande `project` en el PATCH).
-function registerProject(data, name) {
+// hideFromAll solo se pisa si se pasa explícito (ej. el toggle al crear desde
+// la UI) — el alta automática por etiquetar una conversación no lo toca, para
+// no resetear sin querer un proyecto que alguien ya marcó oculto.
+function registerProject(data, name, hideFromAll) {
   if (!name) return;
   if (!Array.isArray(data.projects)) data.projects = [];
-  if (!data.projects.some(p => p.toLowerCase() === name.toLowerCase())) data.projects.push(name);
+  const idx = data.projects.findIndex(p => projectEntry(p).name.toLowerCase() === name.toLowerCase());
+  if (idx === -1) {
+    data.projects.push({ name, hideFromAll: !!hideFromAll });
+  } else if (hideFromAll !== undefined) {
+    data.projects[idx] = { name: projectEntry(data.projects[idx]).name, hideFromAll: !!hideFromAll };
+  }
 }
 
 function projectsWithCounts(data) {
@@ -1887,10 +2166,18 @@ function projectsWithCounts(data) {
     if (c.hidden || !c.project) continue;
     counts.set(c.project, (counts.get(c.project) || 0) + 1);
   }
-  const names = new Set([...(data.projects || []), ...counts.keys()]);
+  const registered = new Map((data.projects || []).map(p => { const e = projectEntry(p); return [e.name, e.hideFromAll]; }));
+  const names = new Set([...registered.keys(), ...counts.keys()]);
   return [...names]
-    .map(name => ({ name, count: counts.get(name) || 0 }))
+    .map(name => ({ name, count: counts.get(name) || 0, hideFromAll: !!registered.get(name) }))
     .sort((a, b) => a.name.localeCompare(b.name, 'es'));
+}
+
+// Nombres de proyecto marcados hideFromAll=true — /api/tree los salta cuando
+// se está mirando "Todos los proyectos" (sin filtro puesto). Filtrando
+// específicamente por ESE proyecto sí se ven (ver ?project= más abajo).
+function hiddenProjectNames(data) {
+  return new Set((data.projects || []).filter(p => projectEntry(p).hideFromAll).map(p => projectEntry(p).name));
 }
 
 app.get('/api/projects', (req, res) => {
@@ -1902,20 +2189,17 @@ app.get('/api/projects', (req, res) => {
 // Crea (o reactiva) una etiqueta de proyecto en el registro persistido, sin
 // necesidad de que ya exista una conversación con ese nombre — así "+ Nuevo
 // proyecto…" no desaparece la próxima vez que se abre el selector si todavía
-// no se etiquetó nada con él.
+// no se etiquetó nada con él. hideFromAll (opcional): si viene true, ese
+// proyecto queda oculto de "Todos los proyectos" desde el arranque — ver
+// hiddenProjectNames()/registerProject() arriba.
 app.post('/api/projects', (req, res) => {
   const acc = req.body.account || activeAccount;
   const name = (req.body.name || '').trim();
   if (!name) return res.status(400).json({ error: 'nombre vacío' });
   const metaFile = accountMetaFile(acc);
   const data = meta.load(metaFile);
-  if (!Array.isArray(data.projects)) data.projects = [];
-  // Sin duplicar por mayúsculas/minúsculas — "ferzep" y "FERZEP" son el mismo proyecto.
-  const exists = data.projects.some(p => p.toLowerCase() === name.toLowerCase());
-  if (!exists) {
-    data.projects.push(name);
-    meta.save(data, metaFile);
-  }
+  registerProject(data, name, 'hideFromAll' in req.body ? !!req.body.hideFromAll : undefined);
+  meta.save(data, metaFile);
   res.status(201).json({ projects: projectsWithCounts(data) });
 });
 
@@ -1925,7 +2209,7 @@ app.delete('/api/projects/:name', (req, res) => {
   const acc = req.query.account || activeAccount;
   const metaFile = accountMetaFile(acc);
   const data = meta.load(metaFile);
-  data.projects = (data.projects || []).filter(p => p !== req.params.name);
+  data.projects = (data.projects || []).filter(p => projectEntry(p).name !== req.params.name);
   meta.save(data, metaFile);
   res.json({ projects: projectsWithCounts(data) });
 });
@@ -1934,6 +2218,19 @@ app.get('/api/tree', (req, res) => {
   const acc = req.query.account || activeAccount;
   const data = meta.load(accountMetaFile(acc));
   const sessions = scanner.listSessions(accountProjectsDir(acc));
+  // Sesiones de Sala (viven en SALA_META_FILE, no en accountMetaFile — ver
+  // resolveOrCreateSalaConv) — sin esto, caían en el segundo loop de abajo
+  // como "huérfanas" sin proyecto. Ahora se agrupan bajo el proyecto "Salas",
+  // registrado (una sola vez) con hideFromAll:true — así no ensucian "Todos
+  // los proyectos" pero siguen disponibles filtrando por ese proyecto
+  // puntual, para cuando haga falta ver cómo se arma la conversación.
+  const salaSessionIds = new Set(
+    Object.values(meta.load(SALA_META_FILE).conversations).map(c => c.currentSessionId).filter(Boolean)
+  );
+  if (salaSessionIds.size > 0 && !(data.projects || []).some(p => projectEntry(p).name === 'Salas')) {
+    registerProject(data, 'Salas', true);
+    meta.save(data, accountMetaFile(acc));
+  }
   const referenced = new Set(data.superseded);
   for (const c of Object.values(data.conversations)) referenced.add(c.currentSessionId);
   const byId = new Map(sessions.map(s => [s.sessionId, s]));
@@ -1995,7 +2292,7 @@ app.get('/api/tree', (req, res) => {
       lastModel: s.lastModel || null,
       pinned: false,
       archived: false,
-      project: null,
+      project: salaSessionIds.has(s.sessionId) ? 'Salas' : null,
       contextPct: contextPctFor(s),
       status: convStatus(s.sessionId),
     });
@@ -2014,6 +2311,11 @@ app.get('/api/tree', (req, res) => {
     filtered = projectFilter === '__none__'
       ? filtered.filter(c => !c.project)
       : filtered.filter(c => c.project === projectFilter);
+  } else {
+    // "Todos los proyectos": saltar los marcados hideFromAll (ej. "Salas").
+    // Filtrando específicamente por ESE proyecto (rama de arriba) sí se ven.
+    const hidden = hiddenProjectNames(data);
+    if (hidden.size > 0) filtered = filtered.filter(c => !c.project || !hidden.has(c.project));
   }
 
   // Sort: pinned primero, después lastActivity desc.
@@ -2495,6 +2797,13 @@ app.get('/api/codex/tree', async (req, res) => {
       pinned: !!c.pinned,
       archived: !!c.archived,
       unread: !!c.unread,
+      aiTitle: !!c.aiTitle,
+      // currentSessionId: NO se manda en la respuesta (el cliente no lo usa),
+      // pero hace falta acá adentro — el filtro de unreadTotal más abajo lo
+      // exige, y como nunca se agregaba a este objeto, esa condición daba
+      // falso SIEMPRE: la pestaña Codex jamás se prendía, para ninguna
+      // conversación, desde que existe esta función. Bug real, no de caché.
+      currentSessionId: c.currentSessionId || null,
       status: codexConvStatus(convId),
     });
   }
@@ -2518,6 +2827,10 @@ app.patch('/api/codex/conversations/:id', (req, res) => {
   const data = meta.load(CODEX_META_FILE);
   const conv = data.conversations[req.params.id];
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  if ('name' in req.body) {
+    conv.name = (req.body.name || '').trim() || undefined;
+    conv.aiTitle = false;
+  }
   if ('pinned' in req.body) conv.pinned = !!req.body.pinned;
   if ('archived' in req.body) conv.archived = !!req.body.archived;
   if ('unread' in req.body) conv.unread = !!req.body.unread;
@@ -2614,6 +2927,354 @@ app.get('/api/codex/conversations/:id/stream', (req, res) => {
   });
 });
 
+// ── Gemini CLI ──
+function geminiBroadcast(convId, payload) { for (const res of geminiSseClients.get(convId) || []) res.write(`data: ${JSON.stringify(payload)}\n\n`); }
+function geminiConvStatus(convId) { return geminiRunner.isBusy(convId) ? 'running' : 'idle'; }
+function resolveGeminiConv(data, id) {
+  if (data.conversations[id]) return { convId: id, conv: data.conversations[id] };
+  if (data.merged && data.merged[id] && data.conversations[data.merged[id]]) {
+    return { convId: data.merged[id], conv: data.conversations[data.merged[id]] };
+  }
+  return { convId: id, conv: null };
+}
+geminiRunner.on('session', ({ convId, sessionId }) => {
+  const data = meta.load(GEMINI_META_FILE), conv = data.conversations[convId];
+  if (conv && !conv.currentSessionId) {
+    conv.currentSessionId = sessionId;
+    meta.save(data, GEMINI_META_FILE);
+  }
+});
+// Bug real 2026-09-15: Diego reportó que la voz de AgY a veces avisa "se
+// detuvo antes de entregar la respuesta final" pero el mensaje SÍ le llega
+// bien en el chat. Causa: dos fuentes de verdad desincronizadas. Lo que ve
+// Diego en /messages sale de geminiScanner (el transcript real de
+// Antigravity en disco) — pero "incomplete" lo decide gemini-runner.js
+// mirando solo el stdout de ESTE proceso, y Antigravity puede reportar un
+// error de stream ("the stream was interrupted", ver 2026-09-14 más arriba)
+// y aun así terminar escribiendo la respuesta completa en su propio
+// transcript un instante después. Antes de tratar un turno como fallido,
+// esta función chequea si el transcript real ya tiene una respuesta nueva
+// (más nueva que cuando se mandó el mensaje) — si la tiene, es un éxito real
+// aunque gemini-runner se haya confundido.
+function findFreshGeminiAnswer(conv, turnStartedAt) {
+  if (!conv || !conv.currentSessionId || !turnStartedAt) return null;
+  let messages;
+  try { messages = geminiScanner.getMessages(conv.currentSessionId); } catch { return null; }
+  if (!messages || !messages.length) return null;
+  const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && m.text && m.text.trim());
+  if (!lastAssistant || !lastAssistant.ts) return null;
+  const ts = new Date(lastAssistant.ts).getTime();
+  // -2000ms de margen: Antigravity puede escribir la entrada del transcript
+  // un toque antes de que nuestro `send()` termine de registrar el arranque.
+  if (!Number.isFinite(ts) || ts < turnStartedAt - 2000) return null;
+  return lastAssistant.text;
+}
+geminiRunner.on('event', ({ convId, event }) => geminiBroadcast(convId, { kind: 'gemini', event }));
+geminiRunner.on('status', rawStatus => {
+  const turnStartedAt = geminiTurnStartedAt.get(rawStatus.convId);
+  if (rawStatus.status === 'idle') geminiTurnStartedAt.delete(rawStatus.convId);
+  let status = rawStatus;
+  if (status.status === 'idle' && status.incomplete && !status.cancelled) {
+    const conv = meta.load(GEMINI_META_FILE).conversations[status.convId];
+    const freshAnswer = findFreshGeminiAnswer(conv, turnStartedAt);
+    if (freshAnswer) status = { ...status, incomplete: false, response: freshAnswer };
+  }
+  // Antes exigía code===0 — con el fix del 2026-09-14 (gemini-runner.js) el
+  // código de salida del proceso ya no es la señal confiable de éxito (ver
+  // comentario ahí); lo que importa es que gemini-runner NO lo haya marcado
+  // incomplete (result real, sin status:"ERROR").
+  if (status.status === 'idle' && !status.incomplete && !status.cancelled && status.response) {
+    const data = meta.load(GEMINI_META_FILE), conv = data.conversations[status.convId];
+    if (conv) { conv.messages.push({ role: 'assistant', text: status.response, ts: new Date().toISOString() }); conv.currentSessionId = status.conversationId || conv.currentSessionId; conv.lastActivity = new Date().toISOString(); meta.save(data, GEMINI_META_FILE); }
+  }
+  // Bug real del 2026-09-14: un pedido grande se cortó sin dejar NINGÚN
+  // rastro — ni mensaje de error en el historial, ni toast (nadie miraba en
+  // ese momento). Este mensaje ahora es el "siempre queda algo" para
+  // cualquier motivo de corte (timeout, límite de herramientas, error de
+  // Antigravity) — incluye el motivo real cuando gemini-runner lo trae.
+  // Si fue cancelado a propósito por el usuario, no se agrega advertencia.
+  if (status.status === 'idle' && status.incomplete && !status.cancelled) {
+    const data = meta.load(GEMINI_META_FILE), conv = data.conversations[status.convId];
+    if (conv) {
+      conv.currentSessionId = status.conversationId || conv.currentSessionId;
+      const motivo = status.stderr ? ` (motivo: ${status.stderr})` : '';
+      conv.messages.push({ role: 'assistant', text: `Antigravity se detuvo antes de entregar la respuesta final${motivo}. Podés enviar “continuá y dame la respuesta final” para retomar el trabajo.`, ts: new Date().toISOString(), incomplete: true });
+      conv.lastActivity = new Date().toISOString();
+      meta.save(data, GEMINI_META_FILE);
+    }
+  }
+  // Mismo criterio que Codex (narrateCodexResponse, arriba): narrar también
+  // el caso "incomplete" (cualquier motivo, no solo code===0 — ver arriba)
+  // porque ya le agregamos un mensaje real al historial avisando que no hubo
+  // respuesta final — tiene sentido que Diego se entere por voz igual que
+  // por texto, sobre todo si es el único aviso que va a recibir.
+  if (status.status === 'idle' && !status.cancelled) {
+    narrateGeminiResponse(status.convId);
+    maybeGenerateGeminiTitle(status.convId).catch(() => {});
+  }
+  // Mismo criterio que Chats (ver comentario ahí): un turno terminó sin nadie
+  // mirando esta convId por SSE → marcarla no leída. Faltaba acá — la pestaña
+  // AgY nunca prendía el punto de "no leído" aunque el backend ya lo soporta.
+  if (status.status === 'idle' && !status.cancelled) {
+    const hasViewer = (geminiSseClients.get(status.convId)?.size || 0) > 0;
+    if (!hasViewer) {
+      const data = meta.load(GEMINI_META_FILE), conv = data.conversations[status.convId];
+      if (conv) { conv.unread = true; meta.save(data, GEMINI_META_FILE); }
+    }
+  }
+  geminiBroadcast(status.convId, { kind: 'status', ...status });
+});
+const AGY_MODELS = [
+  { id: 'claude-sonnet-4-6', name: 'Sonnet' },
+  { id: 'gemini-3.8-flash-high', name: 'Flash High' },
+  { id: 'gemini-3.8-flash-medium', name: 'Flash Medium' },
+];
+
+app.get('/api/antigravity/models', (req, res) => {
+  res.json({ models: AGY_MODELS });
+});
+
+app.get('/api/antigravity/usage', async (req, res) => {
+  try { res.json(await antigravityUsage.get({ force: req.query.force === '1' })); }
+  catch (err) { res.status(503).json({ error: 'No se pudo consultar el uso de Antigravity: ' + err.message }); }
+});
+
+app.post('/api/gemini/conversations', (req, res) => {
+  const convId = crypto.randomUUID(), data = meta.load(GEMINI_META_FILE);
+  const projectDir = req.body.projectDir || process.env.CCM_DEFAULT_PROJECT_DIR || os.homedir();
+  const model = req.body.model || 'gemini-3.8-flash-high';
+  data.conversations[convId] = {
+    currentSessionId: null,
+    projectDir,
+    model,
+    messages: [],
+    lastActivity: null,
+  };
+  meta.save(data, GEMINI_META_FILE);
+  res.status(201).json({ convId, projectDir, model });
+});
+
+app.get('/api/gemini/tree', async (req, res) => {
+  const data = meta.load(GEMINI_META_FILE);
+  let metadataChanged = false;
+
+  // 1. Limpiar borradores vacíos abandonados y deduplicar conversaciones por currentSessionId
+  const bySession = new Map(); // sessionId -> [convId]
+  for (const [convId, c] of Object.entries(data.conversations)) {
+    // Si es un borrador vacío abandonado (sin sesión, sin mensajes y no está corriendo ahora mismo)
+    if (!c.currentSessionId && (!c.messages || c.messages.length === 0) && !geminiRunner.isBusy(convId)) {
+      delete data.conversations[convId];
+      metadataChanged = true;
+      continue;
+    }
+    if (c.currentSessionId) {
+      if (!bySession.has(c.currentSessionId)) bySession.set(c.currentSessionId, []);
+      bySession.get(c.currentSessionId).push(convId);
+    }
+  }
+
+  for (const [sessionId, convIds] of bySession) {
+    if (convIds.length > 1) {
+      // Elegir la entrada canónica: más mensajes primero, luego actividad más reciente
+      convIds.sort((a, b) => {
+        const ca = data.conversations[a], cb = data.conversations[b];
+        const msgsA = ca.messages?.length || 0, msgsB = cb.messages?.length || 0;
+        if (msgsB !== msgsA) return msgsB - msgsA;
+        return String(cb.lastActivity || '').localeCompare(String(ca.lastActivity || ''));
+      });
+      const canonicalId = convIds[0];
+      const canonical = data.conversations[canonicalId];
+      data.merged = data.merged || {};
+      for (let i = 1; i < convIds.length; i++) {
+        const dupId = convIds[i];
+        const dup = data.conversations[dupId];
+        if (!canonical.name && dup.name) canonical.name = dup.name;
+        if (!canonical.gitRepo && dup.gitRepo) canonical.gitRepo = dup.gitRepo;
+        if (dup.pinned) canonical.pinned = true;
+        if (dup.unread) canonical.unread = true;
+        data.merged[dupId] = canonicalId;
+        delete data.conversations[dupId];
+      }
+      metadataChanged = true;
+    }
+  }
+
+  // 2. Auto-descubrir sesiones creadas en Antigravity CLI que no estén registradas en gemini-meta.json
+  const knownSessions = new Set(Object.values(data.conversations).map(c => c.currentSessionId).filter(Boolean));
+  for (const sId of geminiRunner.getActiveSessionIds()) knownSessions.add(sId);
+
+  // Si hay una conversación en vuelo que arrancó sin sessionId, cualquier sesión nueva en disco le pertenece
+  const pendingConvId = Object.keys(data.conversations).find(id => geminiRunner.isBusy(id) && !data.conversations[id].currentSessionId);
+
+  for (const session of geminiScanner.listSessions()) {
+    if (knownSessions.has(session.sessionId)) continue;
+
+    if (pendingConvId) {
+      const pendingConv = data.conversations[pendingConvId];
+      pendingConv.currentSessionId = session.sessionId;
+      knownSessions.add(session.sessionId);
+      metadataChanged = true;
+      continue;
+    }
+
+    const convId = crypto.randomUUID();
+    data.conversations[convId] = {
+      currentSessionId: session.sessionId,
+      projectDir: session.workspace || process.env.CCM_DEFAULT_PROJECT_DIR || os.homedir(),
+      name: session.snippet || '(conversación externa)',
+      messages: [],
+      lastActivity: session.lastActivity,
+      model: 'gemini-3.8-flash-high',
+    };
+    knownSessions.add(session.sessionId);
+    metadataChanged = true;
+  }
+
+  const conversations = [];
+  const seenSessions = new Set();
+  for (const [convId, c] of Object.entries(data.conversations)) {
+    if (c.hidden) continue;
+    if (c.currentSessionId) {
+      if (seenSessions.has(c.currentSessionId)) continue;
+      seenSessions.add(c.currentSessionId);
+    }
+    const s = (c.currentSessionId && geminiScanner.sessionInfo(c.currentSessionId)) || {};
+    if (!c.gitRepo && (c.projectDir || s.workspace)) {
+      const candidateDir = c.projectDir || s.workspace;
+      const repo = await gitSync.resolveRepo([candidateDir]);
+      if (repo) {
+        c.gitRepo = repo;
+        metadataChanged = true;
+      }
+    }
+    const snippet = s.snippet || c.messages?.at(-1)?.text.slice(0, 90) || '';
+    conversations.push({
+      convId,
+      name: c.name || s.snippet || c.messages?.find(m => m.role === 'user')?.text.slice(0, 60) || '(nueva conversación)',
+      snippet,
+      lastActivity: s.lastActivity || c.lastActivity || null,
+      messageCount: s.messageCount || c.messages?.length || 0,
+      pinned: !!c.pinned,
+      unread: !!c.unread,
+      aiTitle: !!c.aiTitle,
+      status: geminiConvStatus(convId),
+      projectDir: c.projectDir || s.workspace || null,
+      gitRepo: c.gitRepo || null,
+      model: c.model || 'gemini-3.8-flash-high',
+    });
+  }
+
+  if (metadataChanged) meta.save(data, GEMINI_META_FILE);
+
+  conversations.sort((a, b) => Number(b.pinned) - Number(a.pinned) || String(b.lastActivity || '').localeCompare(String(a.lastActivity || '')));
+  res.json({ conversations, unreadTotal: conversations.filter(c => c.unread).length });
+});
+
+app.patch('/api/gemini/conversations/:id', (req, res) => {
+  const data = meta.load(GEMINI_META_FILE);
+  const { conv: c } = resolveGeminiConv(data, req.params.id);
+  if (!c) return res.status(404).json({ error: 'conversación no encontrada' });
+  for (const key of ['pinned', 'unread', 'hidden']) {
+    if (key in req.body) c[key] = !!req.body[key];
+  }
+  for (const key of ['model', 'projectDir', 'gitRepo', 'name']) {
+    if (key in req.body && typeof req.body[key] === 'string') {
+      c[key] = req.body[key];
+      if (key === 'name') c.aiTitle = false;
+    }
+  }
+  meta.save(data, GEMINI_META_FILE);
+  res.json({ ok: true });
+});
+
+app.get('/api/gemini/conversations/:id/messages', (req, res) => {
+  const data = meta.load(GEMINI_META_FILE);
+  const { conv: c } = resolveGeminiConv(data, req.params.id);
+  if (!c) return res.status(404).json({ error: 'conversación no encontrada' });
+  if (c.currentSessionId) {
+    const realMessages = geminiScanner.getMessages(c.currentSessionId);
+    if (realMessages && realMessages.length > 0) {
+      return res.json(realMessages);
+    }
+  }
+  res.json(c.messages || []);
+});
+
+app.get('/api/gemini/conversations/:id/repo', async (req, res) => {
+  const data = meta.load(GEMINI_META_FILE);
+  const { conv } = resolveGeminiConv(data, req.params.id);
+  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  let repo = conv.gitRepo || null;
+  if (!repo && conv.projectDir) {
+    repo = await gitSync.resolveRepo([conv.projectDir]);
+  }
+  if (!repo && conv.currentSessionId) {
+    const ws = geminiScanner.findSessionWorkspace(conv.currentSessionId);
+    if (ws) repo = await gitSync.resolveRepo([ws]);
+  }
+  if (!repo) {
+    const msgs = (conv.currentSessionId && geminiScanner.getMessages(conv.currentSessionId)) || conv.messages || [];
+    repo = await inferRepoFromMessages(msgs);
+  }
+  if (repo && conv.gitRepo !== repo) {
+    conv.gitRepo = repo;
+    meta.save(data, GEMINI_META_FILE);
+  }
+  res.json({ repo: repo || conv.projectDir || null });
+});
+
+app.post('/api/gemini/conversations/:id/message', async (req, res) => {
+  const text = String(req.body.text || '').trim();
+  if (!text) return res.status(400).json({ error: 'mensaje vacío' });
+  const data = meta.load(GEMINI_META_FILE);
+  const { convId, conv: c } = resolveGeminiConv(data, req.params.id);
+  if (!c) return res.status(404).json({ error: 'conversación no encontrada' });
+  if (geminiRunner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación ya está procesando un mensaje' });
+  if (!c.gitRepo) {
+    const inferredRepo = await inferRepoFromMessage(text);
+    if (inferredRepo) {
+      c.gitRepo = inferredRepo;
+      meta.save(data, GEMINI_META_FILE);
+    }
+  }
+  c.messages.push({ role: 'user', text, ts: new Date().toISOString() });
+  c.lastActivity = new Date().toISOString();
+  meta.save(data, GEMINI_META_FILE);
+  const cwd = c.projectDir || os.homedir();
+  geminiTurnStartedAt.set(convId, Date.now());
+  geminiRunner.send({
+    convId,
+    sessionId: c.currentSessionId,
+    cwd,
+    text,
+    model: c.model || 'gemini-3.8-flash-high',
+  });
+  res.status(202).json({ queued: true });
+});
+
+app.delete('/api/gemini/conversations/:id/message', (req, res) => {
+  const data = meta.load(GEMINI_META_FILE);
+  const { convId } = resolveGeminiConv(data, req.params.id);
+  res.json({ cancelled: geminiRunner.cancel(convId) });
+});
+app.get('/api/gemini/conversations/:id/stream', (req, res) => {
+  const data = meta.load(GEMINI_META_FILE);
+  const { convId: id } = resolveGeminiConv(data, req.params.id);
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  if (!geminiSseClients.has(id)) geminiSseClients.set(id, new Set());
+  geminiSseClients.get(id).add(res);
+  res.write(`data: ${JSON.stringify({ kind: 'status', status: geminiConvStatus(id) })}\n\n`);
+  const heartbeat = setInterval(() => res.write(':heartbeat\n\n'), 20000);
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    const set = geminiSseClients.get(id);
+    if (set) {
+      set.delete(res);
+      if (!set.size) geminiSseClients.delete(id);
+    }
+  });
+});
+
 // ── Sala compartida (Jarvis ↔ FerStark) ──
 // Cada "sala" es una conversación de Claude local normal (mismo runner,
 // mismo --resume) — lo único distinto es que antes de cada turno se le
@@ -2647,12 +3308,39 @@ app.get('/api/sala/rooms', async (req, res) => {
       // un turno para esa sala ahora mismo — mismo criterio que el ping-dot
       // de Chats/Codex (runner.isBusy), no hay forma de saber si el OTRO
       // agente está procesando, eso vive en su propia PC.
-      return { ...r, convId, busy: convId ? runner.isBusy(convId) : false };
+      // unread = un turno de ESTA instancia terminó en esta sala mientras
+      // nadie la miraba (runner.on('status', ...), mismo criterio que Chats/
+      // Codex) — se prende la pestaña "Sala" y se apaga sola al abrir la sala
+      // (ver PATCH .../rooms/:id, llamado desde openRoom() en el cliente).
+      return {
+        ...r, convId,
+        busy: convId ? runner.isBusy(convId) : false,
+        hidden: convId ? !!data.conversations[convId].hidden : false,
+        unread: convId ? !!data.conversations[convId].unread : false,
+      };
     });
-    res.json({ rooms: withConv });
+    // "Ocultar" (menú contextual, ver PATCH .../rooms/:id abajo) es una
+    // preferencia LOCAL de esta instancia — vive en SALA_META_FILE, no en la
+    // sala compartida del VPS — así que ocultar acá no le saca la sala a
+    // Fernando/FerStark del lado de él. Mismo patrón que notes.listNotebooks().
+    res.json({ rooms: withConv.filter(r => !r.hidden) });
   } catch (err) {
     res.status(502).json({ error: 'no se pudo contactar la sala: ' + err.message });
   }
+});
+
+// Ocultar/mostrar una sala, y/o marcarla leída — preferencias locales (ver
+// comentario en GET /api/sala/rooms de arriba). resolveOrCreateSalaConv
+// garantiza que exista la entrada aunque esta instancia nunca haya hablado
+// ahí todavía (el auto-descubrimiento del poller de menciones normalmente ya
+// la creó, esto es solo una red de seguridad).
+app.patch('/api/sala/rooms/:id', (req, res) => {
+  const { convId } = resolveOrCreateSalaConv(req.params.id);
+  const data = meta.load(SALA_META_FILE);
+  if ('hidden' in req.body) data.conversations[convId].hidden = !!req.body.hidden;
+  if ('unread' in req.body) data.conversations[convId].unread = !!req.body.unread;
+  meta.save(data, SALA_META_FILE);
+  res.json({ ok: true });
 });
 
 // Nombres de instancia configurados (Jarvis/FerStark) — lo usa el
@@ -2695,7 +3383,12 @@ app.get('/api/sala/rooms/:id/messages', async (req, res) => {
     // en SALA_META_FILE, no crea la conv si todavía no existe.
     const data = meta.load(SALA_META_FILE);
     const convId = Object.keys(data.conversations).find(id => data.conversations[id].roomId === req.params.id) || null;
-    res.json({ messages, busy: convId ? runner.isBusy(convId) : false });
+    // convId también viaja acá (no solo en GET /api/sala/rooms) — el cliente
+    // lo necesita para poder abrir /api/conversations/:id/stream y mostrar
+    // las tarjetas de herramienta (Read/Bash/Edit) en vivo mientras esta
+    // instancia arma la respuesta; null si esta sala todavía no tiene ningún
+    // turno local (recién se crea al primer mensaje/mención).
+    res.json({ messages, busy: convId ? runner.isBusy(convId) : false, convId });
   } catch (err) {
     res.status(502).json({ error: 'no se pudo leer la sala: ' + err.message });
   }
@@ -2742,7 +3435,7 @@ app.post('/api/sala/rooms/:id/message', async (req, res) => {
       ? `${contextBlock}\n\n[Mensaje actual de ${getUserName()}]\n${text}`
       : text;
 
-    runner.send({ convId, sessionId: conv.currentSessionId, cwd: accountHomeDir(activeAccount), text: outgoing, account: activeAccount });
+    runner.send({ convId, sessionId: conv.currentSessionId, cwd: accountHomeDir(activeAccount), text: outgoing, account: activeAccount, isSala: true, appName: getAppName() });
     res.status(202).json({ queued: true });
   } catch (err) {
     res.status(502).json({ error: 'no se pudo publicar en la sala: ' + err.message });

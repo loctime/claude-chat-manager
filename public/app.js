@@ -1,3 +1,4 @@
+const $ = id => document.getElementById(id);
 let currentConv = null;
 function gitSyncToast(result) {
   const repo = (result.repo || '').split(/[\\/]/).filter(Boolean).pop() || 'repo';
@@ -14,7 +15,7 @@ let archivedTotal = 0;
 let archivedTreeLimit = 100;
 let archivedTreeHasMore = false;
 let archivedTreeTotal = 0;
-let activePane = 0; // 0=chats 1=archived 2=codex 3=notas 4=agenda 5=sala
+let activePane = 0; // 0=chats 1=archived 2=codex 3=notas 4=agenda 5=sala 6=gemini
 // Etiqueta de "proyecto" activa (filtro del sidebar) — '' = todos, '__none__' =
 // sin etiquetar, o el nombre elegido. Persiste entre recargas/dispositivos vía
 // localStorage porque es justo lo que resuelve "no veo dónde estoy parado".
@@ -537,7 +538,10 @@ function roomElement(room) {
   // lista de Chats (badge()), así se ve desde la lista sin tener que abrir
   // la sala. No hay forma de saber si el OTRO agente (del otro lado) está
   // procesando, eso vive en su propia PC.
-  const b = badge(room.busy ? 'running' : null);
+  // Mismo criterio que convElement(): el badge de "procesando" tiene
+  // prioridad visual sobre el punto de "no leído" (mientras corre, "no
+  // leído" todavía no aplica).
+  const b = badge(room.busy ? 'running' : null) || (room.unread ? '<span class="unread-dot" title="Sin leer"></span>' : '');
   const div = document.createElement('div');
   div.className = 'conv notebook-row';
   div.innerHTML = `
@@ -553,7 +557,105 @@ function roomElement(room) {
     ? new Date(room.lastActivity).toLocaleString('es', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
     : 'Sin mensajes todavía';
   div.onclick = () => openRoom(room.id, room.name);
+  attachRoomGestures(div, room);
   return div;
+}
+
+// Click derecho / long-press en una fila de sala → 🙈 Ocultar. Mismo patrón
+// que attachNotebookGestures/showNotebookMenu (sin arrastre horizontal, la
+// sala no se archiva). "Ocultar" es una preferencia LOCAL de esta instancia
+// (ver comentario en server.js, GET /api/sala/rooms) — no borra ni afecta la
+// sala compartida del VPS, ni lo que ve Fernando/FerStark del otro lado.
+function attachRoomGestures(el, room) {
+  let touchTimer = null;
+  let longPressed = false;
+  let startX = 0, startY = 0;
+
+  el.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    showRoomMenu(e.clientX, e.clientY, room);
+  });
+
+  el.addEventListener('touchstart', e => {
+    longPressed = false;
+    const t = e.touches[0];
+    startX = t.clientX; startY = t.clientY;
+    touchTimer = setTimeout(() => {
+      longPressed = true;
+      touchTimer = null;
+      showRoomMenu(startX, startY, room);
+      if (navigator.vibrate) { try { navigator.vibrate(30); } catch {} }
+    }, 500);
+  }, { passive: true });
+
+  el.addEventListener('touchmove', e => {
+    if (!touchTimer) return;
+    const t = e.touches[0];
+    if (Math.abs(t.clientX - startX) > 10 || Math.abs(t.clientY - startY) > 10) {
+      clearTimeout(touchTimer); touchTimer = null;
+    }
+  }, { passive: true });
+
+  el.addEventListener('touchend', () => {
+    if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
+  });
+
+  el.addEventListener('click', e => {
+    if (longPressed) {
+      longPressed = false;
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }, { capture: true });
+}
+
+function showRoomMenu(x, y, room) {
+  document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  menu.innerHTML = `<button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`;
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  const maxX = window.innerWidth - rect.width - 8;
+  const maxY = window.innerHeight - rect.height - 8;
+  menu.style.left = Math.min(x, maxX) + 'px';
+  menu.style.top = Math.min(y, maxY) + 'px';
+
+  const doAction = async (action) => {
+    menu.remove();
+    document.removeEventListener('click', dismiss, true);
+    document.removeEventListener('touchstart', dismiss, true);
+    if (action !== 'hide') return;
+    try {
+      await api(`/sala/rooms/${room.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hidden: true }),
+      });
+      rooms = rooms.filter(r => r.id !== room.id);
+      renderRoomList();
+      if (currentRoom && currentRoom.id === room.id) closeChat();
+      toast('Sala ocultada', 'info', 2500);
+    } catch (err) { toast('No se pudo ocultar: ' + err.message); }
+  };
+
+  menu.addEventListener('click', e => {
+    e.stopPropagation();
+    const action = e.target.dataset && e.target.dataset.action;
+    if (action) doAction(action);
+  });
+  menu.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+
+  function dismiss(e) {
+    if (menu.contains(e.target)) return;
+    menu.remove();
+    document.removeEventListener('click', dismiss, true);
+    document.removeEventListener('touchstart', dismiss, true);
+  }
+  setTimeout(() => {
+    document.addEventListener('click', dismiss, true);
+    document.addEventListener('touchstart', dismiss, true);
+  }, 350);
 }
 
 function renderRoomList() {
@@ -573,6 +675,11 @@ async function loadRoomList() {
   const { rooms: list } = await api('/sala/rooms');
   rooms = list;
   renderRoomList();
+  // Prende/apaga la pestaña "Sala" en la barra de arriba (mismo mecanismo
+  // que Chats/Codex, ver setPaneUnread) — se llama tanto desde acá (sala
+  // abierta) como desde el poll liviano global (pollTrees), así se entera
+  // aunque nunca hayas entrado a la pestaña.
+  setPaneUnread('5', list.some(r => r.unread));
 }
 
 async function safeLoadRoomList() {
@@ -602,12 +709,18 @@ function showSalaView(show) {
   $('composer-attachments').hidden = show;
   $('composer').hidden = show;
   $('sala-view').hidden = !show;
+  if (!show) closeSalaStream(); // se cierra el stream en vivo (ver más abajo) — no tiene sentido seguir suscripto a una sala que no se está mirando
+}
+
+let salaBusy = false;
+function updateSalaComposerLock() {
+  $('sala-send').disabled = !salaOnline || salaBusy;
 }
 
 function setSalaOnline(online) {
   salaOnline = online;
   $('sala-offline-banner').hidden = online;
-  $('sala-send').disabled = !online;
+  updateSalaComposerLock();
 }
 
 // El texto de cada mensaje de sala llega con un prefijo mecánico "Autor:
@@ -652,8 +765,19 @@ function roomMessageBubble(m) {
   return { author, text, role: mine ? 'user' : 'assistant' };
 }
 
+// Se llama en cada refresco (poll cada 5s de la sala abierta + fin de turno
+// vía el stream en vivo) — sin cuidado, cada addMsg() de más abajo fuerza
+// wrap.scrollTop al fondo (mismo comportamiento ya documentado y resuelto
+// para Chats en loadMessages(), ver ahí el comentario) y te saca de donde
+// estabas leyendo en medio de la sala. Mismo criterio: si ya estabas pegado
+// al fondo (margen de 48px, para no exigir el pixel exacto) se sigue
+// auto-scrolleando solo con cada mensaje nuevo; si no, se vuelve al lugar
+// exacto de antes del refresco.
 function renderRoomMessages() {
   const wrap = $('sala-messages');
+  const STICK_THRESHOLD = 48;
+  const wasStuck = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < STICK_THRESHOLD;
+  const prevTop = wrap.scrollTop;
   wrap.innerHTML = '';
   if (roomMessages.length === 0) {
     const empty = document.createElement('div');
@@ -667,19 +791,28 @@ function renderRoomMessages() {
     const { author, text, role } = roomMessageBubble(m);
     addMsg(role, text, { container: wrap, composerId: 'sala-input', author, authorColor: colors.get(author), ts: m.ts });
   }
+  wrap.scrollTop = wasStuck ? wrap.scrollHeight : prevTop;
 }
 
 function setSalaBusy(busy) {
+  salaBusy = busy;
   const el = $('sala-busy');
   el.innerHTML = busy ? badge('running') : '';
   el.hidden = !busy;
+  $('sala-cancel-btn').hidden = !busy;
+  updateSalaComposerLock();
 }
 
 async function loadRoomMessages() {
-  const { messages, busy } = await api(`/sala/rooms/${currentRoom.id}/messages`);
+  const { messages, busy, convId } = await api(`/sala/rooms/${currentRoom.id}/messages`);
   roomMessages = messages;
   renderRoomMessages();
   setSalaBusy(busy);
+  if (currentRoom) currentRoom.convId = convId;
+  // convId recién existe después del primer turno local en esta sala — se
+  // engancha el stream en vivo apenas aparece (antes de eso solo hay busy,
+  // sin detalle de qué se está haciendo). Ver openSalaStream() más abajo.
+  if (convId) openSalaStream(convId);
 }
 
 async function safeLoadRoomMessages() {
@@ -693,18 +826,90 @@ async function safeLoadRoomMessages() {
 }
 
 async function openRoom(id, name) {
-  currentRoom = { id, name };
+  currentRoom = { id, name, convId: null };
   $('sala-title').textContent = name;
   roomMessages = [];
   renderRoomMessages();
   setSalaBusy(false); // se actualiza de verdad con lo que traiga el primer loadRoomMessages() de abajo — evita mostrar el estado de la sala anterior mientras carga
+  closeSalaStream(); // por si venía de otra sala con un stream abierto — el de esta se reengancha solo dentro de loadRoomMessages() de abajo
   closeSalaMentionMenu(); // si venía abierto de otra sala, no tiene sentido acá
   showNotebookView(false); // si había una libreta abierta, se cierra — mismo bug que reportó Diego, en la otra dirección
   showSalaView(true);
   openChat();
+  // Marcar leída — mismo criterio que selectConv() con conv.unread: se
+  // dispara al abrir, sin esperar (no tiene sentido bloquear la apertura de
+  // la sala por esto). Actualiza el estado local ya mismo (no hay que
+  // esperar el próximo poll) y reevalúa si la pestaña sigue teniendo que
+  // brillar por OTRA sala.
+  const roomRef = rooms.find(r => r.id === id);
+  if (roomRef && roomRef.unread) {
+    roomRef.unread = false;
+    setPaneUnread('5', rooms.some(r => r.unread));
+  }
+  api(`/sala/rooms/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ unread: false }),
+  }).catch(() => {});
   try { await loadRoomMessages(); setSalaOnline(true); }
   catch (err) { setSalaOnline(false); toast('No se pudieron cargar los mensajes de la sala: ' + err.message); }
 }
+
+// ── Sala: stream en vivo (tarjetas Read/Bash/Edit) + cancelar ──
+// Deliberadamente más chico que openStream() (Chats): Sala no tiene cola de
+// mensajes ni badge de costo, así que no hace falta replicar esa parte —
+// solo mostrar lo que ESTA instancia está haciendo ahora mismo mientras
+// arma la respuesta, y poder cancelarla. Al terminar el turno (status:
+// 'idle') se recarga el log real de la sala (loadRoomMessages) — las
+// tarjetas transitorias quedan reemplazadas por el mensaje final publicado,
+// mismo criterio que "recargar antes de mostrar el resultado" de Chats.
+let salaEventSource = null;
+let salaStreamConvId = null; // convId al que está suscripto ahora mismo, o null
+
+function closeSalaStream() {
+  if (salaEventSource) { salaEventSource.close(); salaEventSource = null; }
+  salaStreamConvId = null;
+}
+
+function openSalaStream(convId) {
+  if (salaStreamConvId === convId) return; // ya suscripto a este mismo turno/sala
+  closeSalaStream();
+  salaStreamConvId = convId;
+  const roomId = currentRoom ? currentRoom.id : null;
+  salaEventSource = new EventSource(`/api/conversations/${convId}/stream`);
+  salaEventSource.onmessage = e => {
+    // La sala pudo cambiar (o cerrarse) mientras este stream seguía
+    // conectado — mismo guard que openStream() hace con currentConv.
+    if (!currentRoom || currentRoom.id !== roomId || salaStreamConvId !== convId) return;
+    const payload = JSON.parse(e.data);
+    if (payload.kind === 'claude') {
+      const ev = payload.event;
+      if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
+        const wrap = $('sala-messages');
+        for (const b of ev.message.content) {
+          if (b.type === 'text' && b.text.trim()) addMsg('assistant', b.text, { container: wrap, composerId: 'sala-input' });
+          else if (b.type === 'tool_use') addTool(b.name, b.input, '', { container: wrap });
+        }
+      }
+    } else if (payload.kind === 'status') {
+      setSalaBusy(payload.status !== 'idle');
+      if (payload.status === 'idle') loadRoomMessages().catch(() => {});
+    }
+  };
+  salaEventSource.onerror = () => {
+    // El túnel de Cloudflare puede cortar el SSE en turnos largos — EventSource
+    // reconecta solo pero cualquier evento emitido durante el corte se pierde;
+    // mismo criterio que openStream(): refrescar por las dudas al reconectar.
+    if (!currentRoom || currentRoom.id !== roomId) return;
+    setTimeout(() => { if (currentRoom && currentRoom.id === roomId) loadRoomMessages().catch(() => {}); }, 1500);
+  };
+}
+
+$('sala-cancel-btn').onclick = async () => {
+  if (!currentRoom || !currentRoom.convId) return;
+  try { await api(`/conversations/${currentRoom.convId}/message`, { method: 'DELETE' }); }
+  catch (err) { toast('No se pudo cancelar: ' + err.message); }
+};
 
 async function sendRoomMessage() {
   if (!salaOnline) return; // el botón ya está disabled, pero Enter en el textarea igual dispara este handler
@@ -766,13 +971,18 @@ let archivedPaneLoaded = false;
 let codexTreeLoaded = false;
 let codexTreeLoading = null;
 let codexAvailable = false;
+let geminiTreeLoaded = false;
+let currentGeminiConv = null;
+let geminiStream = null;
+let geminiMainBusy = false;
 let activeAccount = null;
 const drafts = new Map();
 const codexDrafts = new Map();
+const antigravityDrafts = new Map();
 // Nombre de la app configurado del lado del server (CCM_APP_NAME) — index.html
 // y manifest.json ya vienen con el nombre correcto server-rendered; esto es
 // solo para los pedacitos que arma el JS después (título dinámico, toasts).
-let APP_NAME = 'J.A.R.V.I.S';
+let APP_NAME = 'Claude Chat Manager';
 // Color de identidad server-side (ídem APP_NAME) — se usa solo para
 // precargar el input de Configuración; el pintado real ya viene hecho por el
 // <style> inline server-rendered de index.html.
@@ -788,7 +998,6 @@ let GROQ_KEY_SET = false;
 let SALA_URL = '';
 let SALA_TOKEN_SET = false;
 
-const $ = id => document.getElementById(id);
 const messagesEl = $('messages');
 
 // ── Selector de cuentas ──
@@ -852,8 +1061,11 @@ function usageTone(pct) {
 function formatCountdown(ms) {
   if (ms == null || ms <= 0) return '¡ya!';
   const totalMin = Math.floor(ms / 60000);
-  const h = Math.floor(totalMin / 60);
+  const totalHours = Math.floor(totalMin / 60);
+  const days = Math.floor(totalHours / 24);
+  const h = totalHours % 24;
   const m = totalMin % 60;
+  if (days) return `${days} d ${h} h`;
   return `${h} : ${String(m).padStart(2, '0')} min`;
 }
 // La ventana corta conserva una cuenta regresiva. Para la semanal es mucho
@@ -874,7 +1086,7 @@ function updateCountdownLabel(el) {
   const resetsAt = el.dataset.resetsAt ? Number(el.dataset.resetsAt) : null;
   if (!resetsAt) {
     label.textContent = label.dataset.staticLabel;
-  } else if (el.id === 'usage-7d') {
+  } else if (el.id === 'usage-7d' || el.dataset.usageWindow === 'weekly') {
     label.textContent = resetsAt <= Date.now() ? '¡ya!' : formatWeeklyReset(resetsAt);
   } else {
     label.textContent = formatCountdown(resetsAt - Date.now());
@@ -887,6 +1099,7 @@ function renderUsageBar(el, info) {
   // Codex informa la duración real de cada ventana. Claude conserva las
   // etiquetas fijas 5h/Semana que ya venía usando esta pantalla.
   label.dataset.staticLabel = info.label || (el.id === 'usage-5h' ? '5h' : 'Semana');
+  if (info.window) el.dataset.usageWindow = info.window; else delete el.dataset.usageWindow;
   const pct = Math.max(0, Math.min(100, info.pct));
   const tone = usageTone(pct);
   const fill = el.querySelector('.usage-bar-fill');
@@ -905,27 +1118,39 @@ setInterval(() => {
   if (b5 && !b5.hidden) updateCountdownLabel(b5);
   if (b7 && !b7.hidden) updateCountdownLabel(b7);
 }, 30000);
-async function loadUsage() {
-  const provider = activePane === 2 ? 'codex' : 'claude';
+// force=true salta el cache propio del server (piso de 55min en Claude, 10min
+// en Codex) y pega un pedido real — lo usa el botón de refresco manual. El
+// rate limit real de Anthropic lo sigue respetando el server (ver comentario
+// en fetchAccountUsage/server.js), acá solo se refleja si vino con error.
+async function loadUsage(force) {
+  const provider = activePane === 2 ? 'codex' : activePane === 6 ? 'antigravity' : 'claude';
+  const btn = $('account-status-refresh');
+  if (force && btn) btn.classList.add('loading');
   try {
-    const d = provider === 'codex'
-      ? await api('/codex/usage')
-      : await api(withAccount('/usage'));
+    const path = provider === 'codex' ? '/codex/usage' : provider === 'antigravity' ? '/antigravity/usage' : withAccount('/usage');
+    const d = await api(force ? path + (path.includes('?') ? '&' : '?') + 'force=1' : path);
     // Si se cambió de pestaña mientras la consulta estaba en vuelo, no dejar
     // que el header quede mostrando el proveedor anterior.
-    if ((activePane === 2 ? 'codex' : 'claude') !== provider) return;
+    if ((activePane === 2 ? 'codex' : activePane === 6 ? 'antigravity' : 'claude') !== provider) return;
     const box = $('account-status');
-    const first = provider === 'codex' ? d.primary : d.fiveHour;
-    const second = provider === 'codex' ? d.secondary : d.sevenDay;
+    const first = provider === 'codex' || provider === 'antigravity' ? d.primary : d.fiveHour;
+    const second = provider === 'codex' || provider === 'antigravity' ? d.secondary : d.sevenDay;
     if (!d.email && !first && !second) { box.hidden = true; return; }
     box.hidden = false;
     $('account-status-email').textContent = provider === 'codex'
       ? `Codex${d.plan ? ' · ' + d.plan : ''}`
+      : provider === 'antigravity' ? `Antigravity${d.plan ? ' · ' + d.plan : ''}`
       : (d.email || '');
     renderUsageBar($('usage-5h'), first);
     renderUsageBar($('usage-7d'), second);
-  } catch {}
+    if (force) toast(d.error ? `Todavía no: ${d.error}` : 'Consumo actualizado', 'info', 3000);
+  } catch (err) {
+    if (force) toast('No se pudo actualizar: ' + err.message, 'error', 4000);
+  } finally {
+    if (btn) btn.classList.remove('loading');
+  }
 }
+$('account-status-refresh').onclick = () => loadUsage(true);
 
 // Codex es opcional: en una instalación sin CLI o sin login la pestaña no se
 // muestra. El endpoint usa `codex login status`, no inicia un agente ni gasta
@@ -951,6 +1176,7 @@ function openChat() {
   if (isMobile() && !wasOpen) history.pushState({ view: 'chat' }, '');
 }
 function closeChat() {
+  saveCurrentDraft();
   // Si estamos en el estado 'chat' de la history, delegar al popstate handler
   // vía history.back() para no romper la sincronización.
   if (isMobile() && history.state && history.state.view === 'chat') {
@@ -986,6 +1212,7 @@ const CHAT_SWIPE_THRESHOLD = 80;
 let chatStartX = 0, chatStartY = 0, chatAxisLocked = null, chatDragging = false, chatCurrentTranslate = 0;
 
 function closeChatAfterSwipe() {
+  saveCurrentDraft();
   const panel = $('panel-chat');
   // Se saca la clase y el estilo inline en el mismo tick (no en dos pasos)
   // para que la transición CSS de .25s arranque desde donde el dedo lo soltó
@@ -1100,6 +1327,7 @@ window.addEventListener('popstate', (e) => {
   // lista de Codex (no en Chats) — recién el atrás siguiente, ya en esa
   // lista sin nada abierto, pasa a Chats (rama de abajo).
   if ($('panel-chat').classList.contains('open')) {
+    saveCurrentDraft();
     $('panel-chat').classList.remove('open');
     flashConvRow(currentConv);
     _exitArmed = false; // veníamos de otro lado — no cuenta como el "segundo atrás" de salir
@@ -1399,6 +1627,13 @@ async function codexApi(path, opts) {
   return res.json();
 }
 
+async function geminiApi(path, opts) {
+  const method = (opts && opts.method) || 'GET';
+  const res = method === 'GET' ? await netFetch('/api/gemini' + path, opts) : await fetch('/api/gemini' + path, opts).catch(err => { throw netError(err); });
+  if (!res.ok && res.status !== 202) throw new Error((await res.json()).error || res.statusText);
+  return res.json();
+}
+
 async function codexTogglePin(convId, pinned) {
   await codexApi(`/conversations/${convId}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
@@ -1658,6 +1893,7 @@ function setPaneUnread(pane, hasUnread) {
 }
 
 function codexConversationLabel(conv) {
+  if (conv.name) return conv.name;
   const project = codexProjectName(conv);
   return project || 'Sin proyecto';
 }
@@ -1667,7 +1903,8 @@ function codexSharedRow(c) {
   const div = document.createElement('div');
   div.className = 'conv' + (currentCodexConv && c.convId === currentCodexConv.id ? ' active' : '');
   const pin = c.pinned ? '<span class="conv-pin" title="Fijada">📌</span>' : '';
-  div.innerHTML = `<div class="conv-avatar"></div><div class="conv-body"><div class="name">${pin}<span class="conv-name-text"></span></div><div class="sub"><span class="conv-date"></span></div></div>${badge(c.status) || (c.unread ? '<span class="unread-dot" title="Sin leer"></span>' : '')}`;
+  const ai = c.aiTitle ? '<span class="conv-ai" title="Título generado por IA">✨</span>' : '';
+  div.innerHTML = `<div class="conv-avatar"></div><div class="conv-body"><div class="name">${pin}${ai}<span class="conv-name-text"></span></div><div class="sub"><span class="conv-date"></span></div></div>${badge(c.status) || (c.unread ? '<span class="unread-dot" title="Sin leer"></span>' : '')}`;
   div.querySelector('.conv-avatar').textContent = avatarChar(label);
   div.querySelector('.conv-name-text').textContent = label;
   div.querySelector('.conv-date').textContent = c.snippet || (c.lastActivity || '').slice(0, 16).replace('T', ' ');
@@ -1846,6 +2083,16 @@ function openCodexSharedStream(convId) {
       }
       return;
     }
+    if (payload.kind === 'meta') {
+      if (payload.name) {
+        if (currentCodexConv && currentCodexConv.id === convId) {
+          currentCodexConv.name = payload.name;
+          $('conv-title').textContent = payload.name;
+        }
+        loadCodexSharedTree();
+      }
+      return;
+    }
     if (payload.kind !== 'codex') return;
     const item = payload.event && payload.event.item;
     if (!item || payload.event.type !== 'item.completed') return;
@@ -1859,16 +2106,18 @@ function openCodexSharedStream(convId) {
 }
 
 async function selectCodexShared(convId, name, projectDir = '') {
+  saveCurrentDraft();
   $('panel-chat').classList.add('codex-chat-theme');
+  $('panel-chat').classList.remove('antigravity-chat-theme');
   if (eventSource) { eventSource.close(); eventSource = null; }
   if (codexStream) codexStream.close();
-  if (currentCodexConv && currentCodexConv.id) codexDrafts.set(currentCodexConv.id, $('input').value);
+  if (geminiStream) { geminiStream.close(); geminiStream = null; }
+  currentGeminiConv = null;
   currentConv = null;
   currentCodexConv = { id: convId, name };
   $('conv-title').textContent = name;
-  $('input').value = codexDrafts.get(convId) || '';
   $('input').placeholder = 'Escribile a Codex…';
-  autoResize($('input'));
+  restoreDraft(codexDrafts.get(convId));
   $('model-select').hidden = true;
   setConversationRepoChip(projectDir);
   $('cost-badge').hidden = true;
@@ -1883,7 +2132,6 @@ async function selectCodexShared(convId, name, projectDir = '') {
   // aparte). Mismo `accept` repetido en selectConv() y
   // createCodexSharedConversation() — 2026-09-07.
   $('file-input').accept = 'image/*,text/*,application/*,audio/*,video/*';
-  clearAttachments();
   $('queued-bar').hidden = true;
   $('last-user-pin').hidden = true;
   setCodexMainBusy(false);
@@ -1909,24 +2157,23 @@ async function createCodexSharedConversation() {
     await loadCodexSharedTree();
     return;
   }
+  saveCurrentDraft();
   if (eventSource) { eventSource.close(); eventSource = null; }
   if (codexStream) { codexStream.close(); codexStream = null; }
-  if (currentCodexConv && currentCodexConv.id) codexDrafts.set(currentCodexConv.id, $('input').value);
   const { convId } = await codexApi('/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   currentConv = null;
+  currentGeminiConv = null;
   $('panel-chat').classList.add('codex-chat-theme');
   currentCodexConv = { id: convId, name: 'Nueva conversación' };
   $('conv-title').textContent = currentCodexConv.name;
-  $('input').value = '';
   $('input').placeholder = 'Escribile a Codex…';
-  autoResize($('input'));
+  restoreDraft(null);
   $('model-select').hidden = true;
   $('conv-folder').hidden = true;
   $('cost-badge').hidden = true;
   $('mic-btn').hidden = true;
   $('attach-btn').hidden = false;
   $('file-input').accept = 'image/*,text/*,application/*,audio/*,video/*';
-  clearAttachments();
   $('queued-bar').hidden = true;
   $('last-user-pin').hidden = true;
   messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Codex</p></div>';
@@ -1937,11 +2184,121 @@ async function createCodexSharedConversation() {
   loadCodexSharedTree();
 }
 
+const CLAUDE_MODELS = [
+  { value: 'sonnet', label: 'Sonnet' },
+  { value: 'opus', label: 'Opus' },
+  { value: 'fable', label: 'Fable' },
+  { value: 'haiku', label: 'Haiku' },
+];
+
+const AGY_MODELS = [
+  { value: 'claude-sonnet-4-6', label: 'Sonnet' },
+  { value: 'gemini-3.8-flash-high', label: 'Flash High' },
+  { value: 'gemini-3.8-flash-medium', label: 'Flash Medium' },
+];
+
+function setModelSelectOptions(options, selectedValue) {
+  const sel = $('model-select');
+  sel.innerHTML = options.map(o => `<option value="${o.value}">${o.label}</option>`).join('');
+  const exists = options.some(o => o.value === selectedValue);
+  sel.value = exists ? selectedValue : (options.find(o => o.value === 'gemini-3.8-flash-high') ? 'gemini-3.8-flash-high' : options[0]?.value);
+}
+
+function setGeminiBusy(value) { geminiMainBusy = value; $('input').disabled = !currentGeminiConv || value; $('send').disabled = !currentGeminiConv || value; $('attach-btn').disabled = !currentGeminiConv || value; $('cancel-btn').hidden = !value; $('conv-status').textContent = value ? 'escribiendo…' : ''; }
+async function loadGeminiMessages(id) {
+  messagesEl.innerHTML = '';
+  const messages = await geminiApi(`/conversations/${id}/messages`);
+  if (!messages.length) {
+    messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Antigravity</p></div>';
+  } else {
+    for (const m of messages) {
+      if (m.role === 'tool') addTool(m.name, m.input, m.output);
+      else addMsg(m.role, m.text, { ts: m.ts });
+    }
+  }
+  scrollToBottom();
+}
+function openGeminiStream(id) { let live = '', bubble = null; const seenTools = new Set(); const stream = new EventSource(`/api/gemini/conversations/${id}/stream`); stream.onmessage = e => { if (!currentGeminiConv || currentGeminiConv.id !== id) return; const payload = JSON.parse(e.data); if (payload.kind === 'gemini') { const step = payload.event?.step_update; const delta = step?.text_delta; if (typeof delta === 'string') { live += delta; if (!bubble) bubble = addMsg('assistant', ''); const text = bubble.querySelector('.msg-text'); if (text) text.textContent = live; autoScroll(); }
+    // Antigravity entrega las herramientas como step_update, con el estado real
+    // en step.state (ACTIVE/DONE/ERROR) — no step.status, que es la convención
+    // de otro lado de este archivo y no existe acá. Con el nombre de campo
+    // equivocado la condición de abajo daba siempre true (step.status es
+    // undefined), así que la tool se agregaba en ACTIVE (sin output todavía) y
+    // el chequeo de "ya visto" descartaba el DONE real con el resultado.
+    const tool = step?.tool_info; const toolKey = step?.step_index ?? step?.id;
+    if (tool && (step?.state === 'DONE' || step?.state === 'ERROR') && !seenTools.has(toolKey)) { seenTools.add(toolKey); addTool(tool.name || step.tool_name || step.step_type || 'herramienta', tool.parameters || tool.args || {}, tool.output || tool.error?.message || tool.result || ''); autoScroll(); }
+    return; }
+    if (payload.kind === 'status') { setGeminiBusy(payload.status !== 'idle'); if (payload.status === 'idle') { if (payload.incomplete && !payload.cancelled) toast(payload.stderr || 'Antigravity no entregó una respuesta final.'); loadGeminiMessages(id).then(loadGeminiTree); } return; }
+    if (payload.kind === 'meta') { if (payload.name) { if (currentGeminiConv && currentGeminiConv.id === id) { currentGeminiConv.name = payload.name; $('conv-title').textContent = payload.name; } loadGeminiTree(); } return; }
+  }; stream.onerror = () => setTimeout(() => { if (currentGeminiConv?.id === id) loadGeminiMessages(id); }, 1500); return stream; }
+function geminiRow(c) {
+  const div = document.createElement('div');
+  div.className = 'conv' + (currentGeminiConv?.id === c.convId ? ' active' : '');
+  const label = c.name || c.snippet || '(nueva conversación)';
+  const pin = c.pinned ? '<span class="conv-pin" title="Fijada">📌</span>' : '';
+  const ai = c.aiTitle ? '<span class="conv-ai" title="Título generado por IA">✨</span>' : '';
+  div.innerHTML = `<div class="conv-avatar">A</div><div class="conv-body"><div class="name">${pin}${ai}<span class="conv-name-text"></span></div><div class="sub"></div></div>${badge(c.status) || (c.unread ? '<span class="unread-dot"></span>' : '')}`;
+  div.querySelector('.conv-name-text').textContent = label;
+  div.querySelector('.sub').textContent = c.snippet;
+  div.onclick = () => {
+    currentGeminiConv = { id: c.convId, name: label, model: c.model || 'gemini-3.8-flash-high' };
+    selectGemini(c.convId, label, c.gitRepo || c.projectDir);
+  };
+  attachGeminiRowGestures(div, c);
+  return div;
+}
+async function loadGeminiTree() { const { conversations, unreadTotal } = await geminiApi('/tree'); setPaneUnread('6', unreadTotal > 0); const pane = $('gemini-pane'); if (!conversations.length) pane.innerHTML = '<div id="empty-state"><p>Sin conversaciones de Antigravity todavía</p></div>'; else pane.replaceChildren(...conversations.map(geminiRow)); geminiTreeLoaded = true; }
+function attachGeminiRowGestures(el, conv) { let timer = null, longPressed = false; const show = (x, y) => showGeminiConvMenu(x, y, conv); el.addEventListener('contextmenu', e => { e.preventDefault(); show(e.clientX, e.clientY); }); el.addEventListener('touchstart', e => { const t = e.touches[0]; longPressed = false; timer = setTimeout(() => { longPressed = true; show(t.clientX, t.clientY); if (navigator.vibrate) navigator.vibrate(30); }, 500); }, { passive: true }); el.addEventListener('touchmove', () => { if (timer) { clearTimeout(timer); timer = null; } }, { passive: true }); el.addEventListener('touchend', () => { if (timer) clearTimeout(timer); timer = null; }); el.addEventListener('click', e => { if (longPressed) { longPressed = false; e.preventDefault(); e.stopPropagation(); } }, { capture: true }); }
+function showGeminiConvMenu(x, y, conv) { document.querySelectorAll('.ctx-menu').forEach(m => m.remove()); const menu = document.createElement('div'); menu.className = 'ctx-menu'; menu.innerHTML = `<button data-action="copy">📋 Copiar conversación</button><button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button><button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`; document.body.appendChild(menu); const rect = menu.getBoundingClientRect(); menu.style.left = Math.min(x, window.innerWidth - rect.width - 8) + 'px'; menu.style.top = Math.min(y, window.innerHeight - rect.height - 8) + 'px'; const dismiss = () => { menu.remove(); document.removeEventListener('click', dismiss, true); document.removeEventListener('touchstart', dismiss, true); }; menu.addEventListener('click', async e => { const action = e.target.dataset.action; if (!action) return; dismiss(); try { if (action === 'copy') await copyConversationMessages(() => geminiApi(`/conversations/${conv.convId}/messages`)); else { await geminiApi(`/conversations/${conv.convId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(action === 'pin' ? { pinned: !conv.pinned } : { hidden: true }) }); if (action === 'hide' && currentGeminiConv?.id === conv.convId) closeChat(); loadGeminiTree(); } } catch (err) { toast('No se pudo actualizar: ' + err.message); } }); setTimeout(() => { document.addEventListener('click', dismiss, true); document.addEventListener('touchstart', dismiss, true); }, 250); }
+async function selectGemini(id, name, projectDir = '') {
+  saveCurrentDraft();
+  if (eventSource) { eventSource.close(); eventSource = null; }
+  if (codexStream) codexStream.close();
+  if (geminiStream) geminiStream.close();
+  currentConv = null;
+  currentCodexConv = null;
+  const currentModel = (id ? currentGeminiConv?.model : 'gemini-3.8-flash-high') || 'gemini-3.8-flash-high';
+  currentGeminiConv = { id, name, model: currentModel };
+  $('panel-chat').classList.remove('codex-chat-theme');
+  $('panel-chat').classList.add('antigravity-chat-theme');
+  $('conv-title').textContent = name;
+  $('input').placeholder = 'Escribile a Antigravity…';
+  setModelSelectOptions(AGY_MODELS, currentModel);
+  $('model-select').hidden = false;
+  setConversationRepoChip(projectDir);
+  $('mic-btn').hidden = true;
+  $('cost-badge').hidden = true;
+  $('attach-btn').hidden = false;
+  $('file-input').accept = 'image/*,text/*,application/*,audio/*,video/*';
+  restoreDraft(antigravityDrafts.get(id || '__new__'));
+  setGeminiBusy(false);
+  showNotebookView(false);
+  showSalaView(false);
+  openChat();
+  if (id) {
+    await geminiApi(`/conversations/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ unread: false }) });
+    geminiApi(`/conversations/${id}/repo`).then(({ repo }) => {
+      if (currentGeminiConv?.id === id && repo) setConversationRepoChip(repo);
+    }).catch(() => {});
+    await loadGeminiMessages(id);
+    geminiStream = openGeminiStream(id);
+    loadGeminiTree();
+  } else {
+    messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Antigravity</p></div>';
+  }
+  if (!isMobile()) $('input').focus();
+}
+async function createGeminiConversation() {
+  saveCurrentDraft();
+  await selectGemini(null, 'Nueva conversación');
+}
+
 let paneNavGeneration = 0;
 let paneNavTarget = 0; // pane que debe quedar activo una vez termine la navegación en curso
 
 async function goToPane(index) {
   if (index === paneNavTarget) return;
+  saveCurrentDraft();
   // paneNavTarget (no activePane) es lo que compara el guard de arriba: activePane
   // recién se actualiza al final, así que si hay una navegación en vuelo (p.ej.
   // click rápido Archivado→Notas→Chats) activePane todavía dice "0" aunque ya
@@ -1982,6 +2339,7 @@ async function goToPane(index) {
         .finally(() => { codexTreeLoading = null; });
     }
   }
+  if (index === 6 && !geminiTreeLoaded) loadGeminiTree().catch(err => toast('No se pudo cargar Antigravity: ' + err.message));
   if (index === 4 && !agendaListLoaded) {
     try {
       await loadAgendaList();
@@ -2008,6 +2366,7 @@ async function goToPane(index) {
   // El acento identifica la pestaña visible, no el chat que haya quedado
   // abierto en el panel principal.
   document.body.classList.toggle('codex-list-theme', index === 2);
+  document.body.classList.toggle('antigravity-list-theme', index === 6);
   // El selector de proyecto solo aplica a conversaciones (Chats/Archivado) —
   // Notas, Codex, Agenda y Sala son modelos de datos distintos, sin esta etiqueta.
   $('project-bar').hidden = index !== 0 && index !== 1;
@@ -2375,17 +2734,28 @@ function updateProjectBar() {
 // el filtro activo, no etiqueta ninguna charla) desaparecía apenas se
 // navegaba a otro lado: no había ninguna conversación con esa etiqueta que
 // lo mantuviera vivo en /api/projects.
-async function createProject(name) {
+async function createProject(name, hideFromAll) {
   try {
     const resp = await api('/projects', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(withAccountBody({ name })),
+      body: JSON.stringify(withAccountBody({ name, hideFromAll: !!hideFromAll })),
     });
     knownProjects = resp.projects || knownProjects;
   } catch (err) {
     toast('No se pudo crear el proyecto: ' + err.message);
   }
+}
+
+// Pide nombre + si hay que ocultarlo de "Todos los proyectos" (ej. "Salas",
+// que usa exactamente esto) — mismos dos prompts nativos que ya usaba el
+// flujo viejo (esta app no tiene modales custom para inputs cortos), solo se
+// agregó el segundo. Devuelve null si se canceló el nombre.
+function promptNewProjectName() {
+  const name = (prompt('Nombre del proyecto (ej: FERZEP, Maximia, ControlApps):') || '').trim();
+  if (!name) return null;
+  const hideFromAll = confirm(`¿Ocultar "${name}" de "Todos los proyectos"? (vas a poder verlo igual filtrando por él)`);
+  return { name, hideFromAll };
 }
 
 function setActiveProject(name) {
@@ -2418,7 +2788,7 @@ function showProjectBarMenu() {
     const hr = document.createElement('hr');
     menu.appendChild(hr);
     for (const p of knownProjects) {
-      menu.appendChild(projectMenuItem(`${p.name} (${p.count})`, p.name));
+      menu.appendChild(projectMenuItem(`${p.name} (${p.count})${p.hideFromAll ? ' 🙈' : ''}`, p.name));
     }
   }
   const hr2 = document.createElement('hr');
@@ -2439,8 +2809,8 @@ function showProjectBarMenu() {
     if (!btn) return;
     menu.remove();
     if (btn.dataset.action === 'new-project') {
-      const name = (prompt('Nombre del proyecto (ej: FERZEP, Maximia, ControlApps):') || '').trim();
-      if (name) createProject(name).then(() => setActiveProject(name));
+      const p = promptNewProjectName();
+      if (p) createProject(p.name, p.hideFromAll).then(() => setActiveProject(p.name));
       return;
     }
     if ('project' in btn.dataset) setActiveProject(btn.dataset.project);
@@ -2515,8 +2885,8 @@ function showAssignProjectMenu(x, y, conv) {
     if (!btn) return;
     menu.remove();
     if (btn.dataset.action === 'new-project') {
-      const name = (prompt('Nombre del proyecto (ej: FERZEP, Maximia, ControlApps):') || '').trim();
-      if (name) createProject(name).then(() => assign(name));
+      const p = promptNewProjectName();
+      if (p) createProject(p.name, p.hideFromAll).then(() => assign(p.name));
       return;
     }
     if ('project' in btn.dataset) assign(btn.dataset.project);
@@ -2692,7 +3062,7 @@ function quoteIntoComposer(text, role, composerId = 'input') {
   const quoted = label + '\n' + t.split('\n').map(l => '> ' + l).join('\n') + '\n\n';
   input.value = quoted + input.value;
   autoResize(input);
-  if (composerId === 'input' && currentConv) drafts.set(currentConv, input.value);
+  if (composerId === 'input') saveCurrentDraft();
   input.focus();
   input.selectionStart = input.selectionEnd = input.value.length;
 }
@@ -3043,7 +3413,7 @@ async function revealInFolder(filePath) {
     }
     toast('Abriendo carpeta…', 'info', 1200);
   } catch {
-    toast('No se pudo contactar a Jarvis', 'error', 2500);
+    toast(`No se pudo contactar a ${APP_NAME}`, 'error', 2500);
   }
 }
 
@@ -3082,7 +3452,7 @@ async function downloadFolderZip(folderPath) {
     a.click();
     URL.revokeObjectURL(url);
   } catch {
-    toast('No se pudo contactar a Jarvis', 'error', 2500);
+    toast(`No se pudo contactar a ${APP_NAME}`, 'error', 2500);
   }
 }
 
@@ -4020,6 +4390,11 @@ function openStream(convId) {
         });
         refreshVisibleTrees();
         refreshCostBadge(convId);
+        // Gratis: el server ya actualizó su cache de %consumo con los
+        // rate_limits que vinieron pegados a este mismo turno (ingestStreamRateLimits
+        // en server.js), sin gastar el pedido limitado a Anthropic — esto solo
+        // hace que la UI lo refleje ya, en vez de esperar hasta 10min de poll.
+        loadUsage();
       } else {
         setBusy(true);
         refreshVisibleTrees();
@@ -4084,11 +4459,15 @@ document.addEventListener('visibilitychange', () => {
   }
   hiddenScrollTop = null;
   // Mismo mecanismo que arriba pero para la pestaña Codex — mismo problema de
-  // stream/túnel muerto al volver del background.
   if (currentCodexConv && currentCodexConv.id) {
     if (codexStream) codexStream.close();
     codexStream = openCodexSharedStream(currentCodexConv.id);
     loadCodexSharedMessages(currentCodexConv.id);
+  }
+  if (currentGeminiConv && currentGeminiConv.id) {
+    if (geminiStream) geminiStream.close();
+    geminiStream = openGeminiStream(currentGeminiConv.id);
+    loadGeminiMessages(currentGeminiConv.id);
   }
 });
 
@@ -4145,25 +4524,26 @@ function setConversationRepoChip(repoPath) {
 }
 
 async function selectConv(convId, name, model, lastModel, projectDir) {
+  saveCurrentDraft();
   $('panel-chat').classList.remove('codex-chat-theme');
+  $('panel-chat').classList.remove('antigravity-chat-theme');
   if (codexStream) { codexStream.close(); codexStream = null; }
-  if (currentCodexConv && currentCodexConv.id) codexDrafts.set(currentCodexConv.id, $('input').value);
+  if (geminiStream) { geminiStream.close(); geminiStream = null; }
+  currentGeminiConv = null;
   currentCodexConv = null;
   $('input').placeholder = 'Mensaje…';
+  setModelSelectOptions(CLAUDE_MODELS, model || 'sonnet');
   $('model-select').hidden = false;
   $('mic-btn').hidden = false;
   $('attach-btn').hidden = false;
   $('file-input').accept = 'image/*,text/*,application/*,audio/*,video/*';
   exitMultiSelectMode(); // los elementos marcados quedan del chat anterior, no tiene sentido arrastrarlos
-  if (currentConv) drafts.set(currentConv, $('input').value);
   currentConv = convId;
-  $('input').value = drafts.get(convId) || '';
-  autoResize($('input'));
+  restoreDraft(drafts.get(convId));
   $('conv-title').textContent = name;
   $('model-select').value = model || 'sonnet';
   setConversationRepoChip(projectDir);
   setBusy(false);
-  clearAttachments();
   renderQueuedBar();
   // Si esta conversación tenía un mensaje en cola y el turno terminó mientras
   // no la mirabas, el reconnect de abajo (dentro de openChat→openStream) solo
@@ -4228,7 +4608,7 @@ function autoResize(el) {
 $('input').addEventListener('input', () => {
   const input = $('input');
   autoResize(input);
-  if (currentCodexConv && currentCodexConv.id) codexDrafts.set(currentCodexConv.id, input.value);
+  saveCurrentDraft();
 });
 
 // ── Keyboard ──
@@ -4246,6 +4626,11 @@ $('input').addEventListener('keydown', e => {
 
 // ── Cancel ──
 $('cancel-btn').onclick = async () => {
+  if (currentGeminiConv) {
+    try { await geminiApi(`/conversations/${currentGeminiConv.id}/message`, { method: 'DELETE' }); }
+    catch (err) { addMsg('error', 'No se pudo cancelar: ' + err.message); }
+    return;
+  }
   if (currentCodexConv) {
     try { await codexApi(`/conversations/${currentCodexConv.id}/message`, { method: 'DELETE' }); }
     catch (err) { addMsg('error', 'No se pudo cancelar: ' + err.message); }
@@ -4257,9 +4642,12 @@ $('cancel-btn').onclick = async () => {
 };
 
 // ── Attachments ──
-const pendingAttachments = []; // [{ path, name }]
+const pendingAttachments = []; // [{ path, name, file }]
 
 function clearAttachments() {
+  for (const chip of $('composer-attachments').querySelectorAll('.attach-chip')) {
+    if (chip._objUrl) URL.revokeObjectURL(chip._objUrl);
+  }
   pendingAttachments.length = 0;
   $('composer-attachments').innerHTML = '';
 }
@@ -4280,6 +4668,12 @@ function addAttachmentChip(name, filePath, localFile) {
     img.onload = () => {}; // keep object URL alive until chip removed
     chip._objUrl = objUrl;
     chip.appendChild(img);
+  } else if (isImg && filePath) {
+    const img = document.createElement('img');
+    img.className = 'attach-preview-img';
+    img.alt = name;
+    img.src = '/api/thumbnail?path=' + encodeURIComponent(filePath);
+    chip.appendChild(img);
   } else {
     chip.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5a2.5 2.5 0 0 1 5 0v10.5c0 .83-.67 1.5-1.5 1.5s-1.5-.67-1.5-1.5V6H9v9.5a2.5 2.5 0 0 0 5 0V5c0-2.21-1.79-4-4-4S6 2.79 6 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>`;
   }
@@ -4299,11 +4693,55 @@ function addAttachmentChip(name, filePath, localFile) {
     const idx = pendingAttachments.findIndex(a => a.path === filePath);
     if (idx >= 0) pendingAttachments.splice(idx, 1);
     chip.remove();
+    saveCurrentDraft();
   };
 
   chip.appendChild(nameSpan);
   chip.appendChild(removeBtn);
   $('composer-attachments').appendChild(chip);
+}
+
+function saveCurrentDraft() {
+  const input = $('input');
+  if (!input) return;
+  const text = input.value;
+  const attachments = [...pendingAttachments];
+  const hasContent = text.length > 0 || attachments.length > 0;
+  if (currentGeminiConv) {
+    const key = currentGeminiConv.id || '__new__';
+    if (hasContent) antigravityDrafts.set(key, { text, attachments });
+    else antigravityDrafts.delete(key);
+  } else if (currentCodexConv && currentCodexConv.id) {
+    if (hasContent) codexDrafts.set(currentCodexConv.id, { text, attachments });
+    else codexDrafts.delete(currentCodexConv.id);
+  } else if (currentConv) {
+    if (hasContent) drafts.set(currentConv, { text, attachments });
+    else drafts.delete(currentConv);
+  }
+}
+
+function restoreDraft(draftData) {
+  clearAttachments();
+  const input = $('input');
+  if (!input) return;
+  if (!draftData) {
+    input.value = '';
+    autoResize(input);
+    return;
+  }
+  if (typeof draftData === 'string') {
+    input.value = draftData;
+    autoResize(input);
+    return;
+  }
+  input.value = draftData.text || '';
+  autoResize(input);
+  if (Array.isArray(draftData.attachments)) {
+    for (const a of draftData.attachments) {
+      pendingAttachments.push(a);
+      addAttachmentChip(a.name, a.path, a.file);
+    }
+  }
 }
 
 // Un File que sale del selector de fotos del celu no es un archivo en memoria:
@@ -4373,7 +4811,7 @@ async function prepareForUpload(file, displayName) {
 }
 
 async function uploadAttachment(file) {
-  if (!currentConv && !currentCodexConv) { addMsg('error', 'Elegí una conversación antes de adjuntar'); return; }
+  if (!currentConv && !currentCodexConv && !currentGeminiConv) { addMsg('error', 'Elegí una conversación antes de adjuntar'); return; }
   const displayName = file.name || `pegado-${Date.now()}.${(file.type.split('/')[1] || 'bin')}`;
   const loadingChip = document.createElement('div');
   loadingChip.className = 'attach-chip attach-chip-loading';
@@ -4395,6 +4833,7 @@ async function uploadAttachment(file) {
     loadingChip.remove();
     pendingAttachments.push({ path: filePath, name, file });
     addAttachmentChip(name, filePath, file);
+    saveCurrentDraft();
   } catch (err) {
     loadingChip.remove();
     // Dejamos rastro de tamaño y duración: si falla al instante es el archivo o
@@ -4450,7 +4889,7 @@ $('input').addEventListener('paste', (e) => {
   // composer del chat — que en ese momento está hidden —, o sea que
   // desaparecía sin dejar rastro visible.
   const notebookOpen = () => !$('notebook-view').hidden;
-  const canDrop = () => (notebookOpen() ? !!currentNotebook : !!(currentConv || currentCodexConv));
+  const canDrop = () => (notebookOpen() ? !!currentNotebook : !!(currentConv || currentCodexConv || currentGeminiConv));
   const acceptDrop = (files) => {
     if (notebookOpen()) return (async () => { for (const f of files) await uploadNoteFile(f); })();
     return uploadFiles(files);
@@ -4640,13 +5079,13 @@ function restoreComposer(text, attachments) {
   if (text) {
     input.value = input.value ? text + '\n' + input.value : text;
     autoResize(input);
-    if (currentConv) drafts.set(currentConv, input.value);
   }
   for (const a of attachments) {
     if (pendingAttachments.some(p => p.path === a.path)) continue;
     pendingAttachments.push(a);
     addAttachmentChip(a.name, a.path, a.file);
   }
+  saveCurrentDraft();
 }
 
 // Arma el texto final (con los prefijos [Archivo adjunto: ...]), muestra la
@@ -4679,6 +5118,29 @@ async function performSend(convId, rawText, attachments) {
 $('composer').onsubmit = async e => {
   e.preventDefault();
   const rawText = $('input').value.trim();
+  if (currentGeminiConv) {
+    const attachments = [...pendingAttachments];
+    if ((!rawText && attachments.length === 0) || geminiMainBusy) return;
+    let id = currentGeminiConv.id; const draft = currentGeminiConv;
+    const attachmentText = attachments.map(a => `[Archivo adjunto disponible localmente: ${a.path}]`).join('\n');
+    const text = attachmentText + (rawText ? (attachmentText ? '\n\n' : '') + rawText : '');
+    $('input').value = ''; autoResize($('input')); clearAttachments(); setGeminiBusy(true);
+    try {
+      if (!id) {
+        const body = {
+          model: $('model-select').value || 'gemini-3.8-flash-high',
+        };
+        const created = await geminiApi('/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (currentGeminiConv !== draft) return;
+        id = created.convId; currentGeminiConv = { id, name: 'Nueva conversación', model: body.model }; geminiStream = openGeminiStream(id);
+      }
+      addUserMsgWithFiles(rawText, attachments);
+      await geminiApi(`/conversations/${id}/message`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+      antigravityDrafts.delete(id); antigravityDrafts.delete('__new__');
+    }
+    catch (err) { addMsg('error', 'No se pudo enviar: ' + err.message); setGeminiBusy(false); }
+    return;
+  }
   if (currentCodexConv) {
     const attachments = [...pendingAttachments];
     if ((!rawText && attachments.length === 0) || codexMainBusy) return;
@@ -4737,6 +5199,19 @@ $('composer').onsubmit = async e => {
 
 // ── Model change ──
 $('model-select').onchange = async () => {
+  if (currentGeminiConv) {
+    currentGeminiConv.model = $('model-select').value;
+    if (currentGeminiConv.id) {
+      try {
+        await geminiApi(`/conversations/${currentGeminiConv.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: $('model-select').value }),
+        });
+      } catch (err) { addMsg('error', 'No se pudo cambiar el modelo: ' + err.message); }
+    }
+    return;
+  }
   if (!currentConv) return;
   try {
     await api(`/conversations/${currentConv}`, {
@@ -4786,6 +5261,11 @@ $('new-conv').onclick = async () => {
     }
     if (activePane === 2) {
       await createCodexSharedConversation();
+      $('input').focus();
+      return;
+    }
+    if (activePane === 6) {
+      await createGeminiConversation();
       $('input').focus();
       return;
     }
@@ -4874,7 +5354,7 @@ function paneSwipeStart(clientX, clientY) {
   return true;
 }
 
-const PANE_COUNT = 6; // Chats/Archivado/Codex/Notas/Agenda/Sala.
+const PANE_COUNT = 7; // Chats/Archivado/Codex/Notas/Agenda/Sala/Gemini.
 
 function paneSwipeMove(clientX, clientY) {
   if (!paneDragging) return false;
@@ -4956,6 +5436,13 @@ function pollTrees() {
     // Todavía no se abrió la pestaña: alcanza con encender su aviso liviano.
     codexApi('/tree').then(({ unreadTotal }) => setPaneUnread('2', unreadTotal > 0)).catch(() => {});
   }
+  // Sala: mismo criterio liviano de arriba — si el pane ya está abierto,
+  // pollSalaPane (más abajo) ya trae la lista completa cada 5s (que también
+  // prende/apaga el aviso, ver loadRoomList); esto solo cubre el caso de
+  // nunca haber entrado a la pestaña, igual que la rama de Codex. Sin esto
+  // Sala no se enteraba NUNCA de que llegó una respuesta mientras no la
+  // mirabas — era la otra mitad real del bug que reportó Diego.
+  api('/sala/rooms').then(({ rooms: list }) => setPaneUnread('5', list.some(r => r.unread))).catch(() => {});
 }
 loadAccounts().then(() => safeLoadTree());
 loadCodexAvailability();
@@ -4997,6 +5484,7 @@ const DEFAULT_SETTINGS = {
   voice: '', // una sola voz para mensajes propios y del agente (antes voiceAssistant/voiceUser separados)
   colorAccent: '',
   colorCodex: '#10a37f',
+  colorAntigravity: '#7c5cff',
   colorMe: '',
   colorAi: '',
   fontFamily: '',
@@ -5127,7 +5615,7 @@ function contrastTextColor(hex) {
 function applySettings() {
   document.body.classList.toggle('hide-tools', !settings.showTools);
   const root = document.documentElement;
-  const vars = { '--accent': settings.colorAccent, '--codex-accent': settings.colorCodex, '--bubble-me': settings.colorMe, '--bubble-ai': settings.colorAi };
+  const vars = { '--accent': settings.colorAccent, '--codex-accent': settings.colorCodex, '--antigravity-accent': settings.colorAntigravity, '--bubble-me': settings.colorMe, '--bubble-ai': settings.colorAi };
   for (const [k, v] of Object.entries(vars)) {
     if (v) root.style.setProperty(k, v);
     else root.style.removeProperty(k);
@@ -5242,6 +5730,7 @@ function openSettings() {
   $('cfg-voice').value = settings.voice;
   $('cfg-color-accent').value = settings.colorAccent || readComputedColor('--accent');
   $('cfg-color-codex').value = settings.colorCodex || readComputedColor('--codex-accent');
+  $('cfg-color-antigravity').value = settings.colorAntigravity || readComputedColor('--antigravity-accent');
   $('cfg-color-me').value = settings.colorMe || readComputedColor('--bubble-me');
   $('cfg-color-ai').value = settings.colorAi || readComputedColor('--bubble-ai');
   $('cfg-font-family').value = settings.fontFamily;
@@ -5255,7 +5744,76 @@ function openSettings() {
   $('cfg-sala-url').value = SALA_URL;
   $('cfg-sala-token').value = '';
   updateSalaTokenStatus();
+  loadVoiceSettings();
   $('settings-dialog').showModal();
+}
+
+// Panel "Voces" — reemplaza los accesos directos sueltos del escritorio
+// ("Voz Claude/Codex/AgY"). No cachea nada localmente a propósito: se puede
+// haber tocado un icono viejo o el panel desde otro dispositivo, así que se
+// lee fresco cada vez que se abre Configuración.
+// Nombre lindo para cada voz de edge-tts — el select del server solo manda
+// el id crudo (`options`, mismo whitelist que valida el PATCH).
+const VOICE_NAME_LABELS = {
+  'es-AR-ElenaNeural': 'Elena (Argentina)', 'es-AR-TomasNeural': 'Tomás (Argentina)',
+  'es-UY-ValentinaNeural': 'Valentina (Uruguay)', 'es-UY-MateoNeural': 'Mateo (Uruguay)',
+  'es-MX-DaliaNeural': 'Dalia (México)', 'es-MX-JorgeNeural': 'Jorge (México)',
+  'es-ES-ElviraNeural': 'Elvira (España)', 'es-ES-AlvaroNeural': 'Álvaro (España)', 'es-ES-XimenaNeural': 'Ximena (España)',
+  'es-CO-SalomeNeural': 'Salomé (Colombia)', 'es-CO-GonzaloNeural': 'Gonzalo (Colombia)',
+  'es-CL-CatalinaNeural': 'Catalina (Chile)', 'es-CL-LorenzoNeural': 'Lorenzo (Chile)',
+  'es-PY-TaniaNeural': 'Tania (Paraguay)', 'es-PY-MarioNeural': 'Mario (Paraguay)',
+  'es-VE-PaolaNeural': 'Paola (Venezuela)', 'es-VE-SebastianNeural': 'Sebastián (Venezuela)',
+  'es-PE-CamilaNeural': 'Camila (Perú)', 'es-PE-AlexNeural': 'Alex (Perú)',
+  'es-US-PalomaNeural': 'Paloma (EE.UU.)', 'es-US-AlonsoNeural': 'Alonso (EE.UU.)',
+};
+
+async function loadVoiceSettings() {
+  let data;
+  try { data = await api('/voice-settings'); }
+  catch (err) { toast('No se pudo leer el estado de las voces: ' + err.message); return; }
+  for (const row of document.querySelectorAll('.voice-row')) {
+    const info = data.voices[row.dataset.voice];
+    if (!info) continue;
+    const select = row.querySelector('.voice-select');
+    if (!select.options.length) {
+      for (const id of data.options) {
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = VOICE_NAME_LABELS[id] || id;
+        select.appendChild(opt);
+      }
+    }
+    select.value = info.name;
+    row.querySelector('.voice-on-toggle').checked = info.on;
+    row.querySelector('.voice-volume').value = info.volume;
+    row.querySelector('.voice-volume-pct').textContent = info.volume + '%';
+    row.classList.toggle('voice-off', !info.on);
+  }
+}
+
+async function patchVoiceSetting(voice, patch) {
+  try {
+    await api(`/voice-settings/${voice}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) });
+  } catch (err) {
+    toast('No se pudo guardar: ' + err.message);
+  }
+}
+
+for (const row of document.querySelectorAll('.voice-row')) {
+  const voice = row.dataset.voice;
+  const toggle = row.querySelector('.voice-on-toggle');
+  const slider = row.querySelector('.voice-volume');
+  const pct = row.querySelector('.voice-volume-pct');
+  const select = row.querySelector('.voice-select');
+  toggle.addEventListener('change', () => {
+    row.classList.toggle('voice-off', !toggle.checked);
+    patchVoiceSetting(voice, { on: toggle.checked });
+  });
+  // 'input' solo actualiza el número mientras arrastrás (feedback instantáneo);
+  // el PATCH real va en 'change' (soltar el slider), no en cada tick del drag.
+  slider.addEventListener('input', () => { pct.textContent = slider.value + '%'; });
+  slider.addEventListener('change', () => { patchVoiceSetting(voice, { volume: Number(slider.value) }); });
+  select.addEventListener('change', () => { patchVoiceSetting(voice, { name: select.value }); });
 }
 
 // Placeholder + badge "✓ Configurada" junto al label — dos señales para lo
@@ -5416,6 +5974,7 @@ $('cfg-voice').onchange = e => {
 };
 $('cfg-color-accent').oninput = e => { settings.colorAccent = e.target.value; applySettings(); saveSettings(); };
 $('cfg-color-codex').oninput = e => { settings.colorCodex = e.target.value; applySettings(); saveSettings(); };
+$('cfg-color-antigravity').oninput = e => { settings.colorAntigravity = e.target.value; applySettings(); saveSettings(); };
 $('cfg-color-me').oninput = e => { settings.colorMe = e.target.value; applySettings(); saveSettings(); };
 $('cfg-color-ai').oninput = e => { settings.colorAi = e.target.value; applySettings(); saveSettings(); };
 $('cfg-font-family').onchange = e => { settings.fontFamily = e.target.value; applySettings(); saveSettings(); };
