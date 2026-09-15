@@ -3824,7 +3824,7 @@ function contrastTextColor(hex) {
 function applySettings() {
   document.body.classList.toggle('hide-tools', !settings.showTools);
   const root = document.documentElement;
-  const vars = { '--accent': settings.colorAccent, '--codex-accent': settings.colorCodex, '--antigravity-accent': settings.colorAntigravity, '--bubble-me': settings.colorMe, '--bubble-ai': settings.colorAi };
+  const vars = { '--accent': settings.colorAccent, '--tab-alert': settings.colorAccent, '--codex-accent': settings.colorCodex, '--antigravity-accent': settings.colorAntigravity, '--bubble-me': settings.colorMe, '--bubble-ai': settings.colorAi };
   for (const [k, v] of Object.entries(vars)) {
     if (v) root.style.setProperty(k, v);
     else root.style.removeProperty(k);
