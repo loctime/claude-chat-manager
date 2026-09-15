@@ -387,6 +387,8 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
   color: var(--text); font-family: var(--chat-font); font-size: 13px; box-sizing: border-box;
 }
 .agenda-warning { font-size: 12px; color: #e67e22; }
+.agenda-draft input[type="text"] { padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--input-bg); color: inherit; font: inherit; }
+.agenda-run-dryrun-banner { font-size: 12px; color: var(--text2); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .agenda-header { padding: 2px 2px 8px; }
 .agenda-header button {
   width: 100%; font-size: 13px; padding: 8px 10px; border-radius: var(--radius);

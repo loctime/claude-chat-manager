@@ -54,11 +54,14 @@ async function refreshAgendaBadge() {
 // botón abre una conversación real nueva (mismo mecanismo que "+ Nueva
 // conversación") con un mensaje inicial que le explica a esa sesión cómo
 // registrar la tarea en el catálogo una vez que quede clara.
-const AGENDA_LEARN_PROMPT = `Te quiero enseñar una rutina nueva para la pestaña Agenda de FerStark (semáforo de tareas recurrentes mensuales).
+// Función, no const: APP_NAME se resuelve asíncronamente desde /config.
+function buildAgendaLearnPrompt() {
+  return `Quiero crear una tarea nueva para la pestaña Task de ${APP_NAME} (semáforo de tareas recurrentes).
 
-Preguntame lo que haga falta — puedo pegarte links, capturas, explicarte los pasos. Cuando ya tengas claro de qué se trata (nombre, si tiene un día fijo del mes o no, y qué grupo la agrupa), agregala vos mismo al catálogo: es el módulo \`src/agenda.js\` dentro de \`/mnt/c/Users/Fernando/Desktop/claude/claude-chat-manager/\`, tiene una función \`addCustomTask({title, group, day, kind, insumoNota})\` — la podés invocar con \`node -e\` desde esa carpeta. Confirmame cuando quedó guardada (no hace falta reiniciar FerStark para que aparezca, ese catálogo se lee de un JSON en vivo).
+Usá la skill "crear-tarea" de este repo para armarla: investigá cómo automatizarla gastando lo menos posible (¿hay una API oficial del sistema destino? ¿se puede scriptear de forma determinística?), y si corresponde escribí el script y dejalo listo para probar en modo prueba antes de activarlo. Si no se puede scriptear con confianza, dejala como tarea de chat, como las que ya existen.
 
-Empecemos: contame qué rutina es.`;
+Empecemos: contame qué tarea es.`;
+}
 
 // Abre una conversación real nueva (mismo mecanismo que "+ Nueva
 // conversación") y le manda un primer mensaje ya armado — reusado tanto por
@@ -79,7 +82,7 @@ async function agendaLearnNewRoutine() {
   const btn = $('agenda-learn-btn');
   btn.disabled = true;
   try {
-    await agendaSpawnConversation(AGENDA_LEARN_PROMPT, 'Agenda');
+    await agendaSpawnConversation(buildAgendaLearnPrompt(), 'Agenda');
   } catch (err) {
     toast('No se pudo abrir el chat: ' + err.message);
   } finally {
@@ -148,6 +151,11 @@ function agendaCardActions(task) {
       </div>
       <div class="agenda-draft" id="agenda-macarena-draft" hidden></div>
     `;
+  }
+  if (task.execution === 'script') {
+    const runLabel = task.verified ? '▶️ Hacer ahora' : '🧪 Probar';
+    const doneLabel = task.state === 'hecho' ? '↩️ Desmarcar' : '✅ Marcar hecho';
+    return `<div class="agenda-actions"><button type="button" class="primary" onclick="agendaRunScript('${task.id}')">${runLabel}</button><button type="button" onclick="agendaToggleDone('${task.id}', ${task.state !== 'hecho'})">${doneLabel}</button></div><div class="agenda-run-box"></div>`;
   }
   const label = task.state === 'hecho' ? '↩️ Desmarcar' : '✅ Marcar hecho';
   // "Marcar hecho" queda siempre como fallback manual (por si lo resolviste
@@ -226,7 +234,94 @@ function renderAgendaList() {
       }
     }
     wrap.appendChild(card);
+    if (task.execution === 'script') agendaRenderRunBox(task, card);
   }
+}
+
+function agendaRenderRunBox(task, card) {
+  const box = card.querySelector('.agenda-run-box');
+  if (!box) return;
+  box.innerHTML = '';
+  if (task.runStatus === 'error') {
+    const wrap = document.createElement('div');
+    wrap.className = 'agenda-draft';
+    const warning = document.createElement('div');
+    warning.className = 'agenda-warning';
+    warning.textContent = task.runError || 'Error desconocido';
+    const actions = document.createElement('div');
+    actions.className = 'agenda-actions';
+    const retry = document.createElement('button');
+    retry.type = 'button'; retry.textContent = 'Reintentar'; retry.onclick = () => agendaRunScript(task.id);
+    const reset = document.createElement('button');
+    reset.type = 'button'; reset.textContent = 'Reiniciar'; reset.onclick = () => agendaResetRun(task.id);
+    actions.append(retry, reset); wrap.append(warning, actions); box.appendChild(wrap);
+    return;
+  }
+  if (task.runUi) agendaRenderRunStep(task, task.runUi, box);
+  if (!task.verified && task.runStatus === 'waiting') {
+    const banner = document.createElement('div');
+    banner.className = 'agenda-run-dryrun-banner';
+    banner.append('🧪 Esto no ejecutó nada real todavía. ');
+    const confirm = document.createElement('button');
+    confirm.type = 'button'; confirm.className = 'primary'; confirm.textContent = '✅ Confirmar y activar';
+    confirm.onclick = () => agendaVerifyTask(task.id);
+    banner.appendChild(confirm); box.appendChild(banner);
+  }
+}
+
+function agendaRenderRunStep(task, ui, box) {
+  const wrap = document.createElement('div');
+  wrap.className = 'agenda-draft';
+  if (ui.type === 'texto-editable') {
+    const textarea = document.createElement('textarea'); textarea.value = ui.texto || '';
+    const confirm = document.createElement('button');
+    confirm.type = 'button'; confirm.className = 'primary'; confirm.textContent = 'Confirmar';
+    confirm.onclick = () => agendaRunScript(task.id, textarea.value);
+    wrap.append(textarea, agendaActionContainer(confirm));
+  } else if (ui.type === 'pedir-dato') {
+    const label = document.createElement('div'); label.className = 'agenda-meta'; label.textContent = ui.pregunta || '';
+    const input = document.createElement('input'); input.type = 'text';
+    const send = document.createElement('button');
+    send.type = 'button'; send.className = 'primary'; send.textContent = 'Enviar';
+    send.onclick = () => agendaRunScript(task.id, input.value);
+    wrap.append(label, input, agendaActionContainer(send));
+  } else if (ui.type === 'accion') {
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'primary'; button.textContent = ui.boton || 'Continuar';
+    button.onclick = () => agendaRunScript(task.id);
+    wrap.appendChild(agendaActionContainer(button));
+  } else {
+    return;
+  }
+  box.appendChild(wrap);
+}
+
+function agendaActionContainer(button) {
+  const actions = document.createElement('div');
+  actions.className = 'agenda-actions';
+  actions.appendChild(button);
+  return actions;
+}
+
+async function agendaRunScript(id, input) {
+  try {
+    await api(`/agenda/${id}/run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input === undefined ? {} : { input }) });
+    await loadAgendaList();
+  } catch (err) { toast('No se pudo ejecutar la tarea: ' + err.message); }
+}
+
+async function agendaVerifyTask(id) {
+  try {
+    await api(`/agenda/${id}/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    await loadAgendaList();
+  } catch (err) { toast('No se pudo confirmar: ' + err.message); }
+}
+
+async function agendaResetRun(id) {
+  try {
+    await api(`/agenda/${id}/reset-run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    await loadAgendaList();
+  } catch (err) { toast('No se pudo reiniciar: ' + err.message); }
 }
 
 async function agendaToggleDone(id, done) {
