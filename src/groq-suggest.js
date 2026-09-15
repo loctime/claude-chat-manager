@@ -7,7 +7,7 @@
 // sin red, JSON roto, timeout) cae a [] en silencio — es una mejora
 // cosmética, no una funcionalidad crítica.
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const DEFAULT_MODEL = 'llama-3.3-70b-versatile';
+const DEFAULT_MODEL = 'qwen/qwen3.8-27b';
 const DEFAULT_TIMEOUT_MS = 3000;
 const MAX_SUGGESTIONS = 3;
 const MAX_INPUT_CHARS = 4000; // el último mensaje puede ser largo; no hace falta mandarlo entero

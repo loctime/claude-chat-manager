@@ -1827,6 +1827,7 @@ function setPaneUnread(pane, hasUnread) {
 }
 
 function codexConversationLabel(conv) {
+  if (conv.name) return conv.name;
   const project = codexProjectName(conv);
   return project || 'Sin proyecto';
 }
@@ -1836,7 +1837,8 @@ function codexSharedRow(c) {
   const div = document.createElement('div');
   div.className = 'conv' + (currentCodexConv && c.convId === currentCodexConv.id ? ' active' : '');
   const pin = c.pinned ? '<span class="conv-pin" title="Fijada">📌</span>' : '';
-  div.innerHTML = `<div class="conv-avatar"></div><div class="conv-body"><div class="name">${pin}<span class="conv-name-text"></span></div><div class="sub"><span class="conv-date"></span></div></div>${badge(c.status) || (c.unread ? '<span class="unread-dot" title="Sin leer"></span>' : '')}`;
+  const ai = c.aiTitle ? '<span class="conv-ai" title="Título generado por IA">✨</span>' : '';
+  div.innerHTML = `<div class="conv-avatar"></div><div class="conv-body"><div class="name">${pin}${ai}<span class="conv-name-text"></span></div><div class="sub"><span class="conv-date"></span></div></div>${badge(c.status) || (c.unread ? '<span class="unread-dot" title="Sin leer"></span>' : '')}`;
   div.querySelector('.conv-avatar').textContent = avatarChar(label);
   div.querySelector('.conv-name-text').textContent = label;
   div.querySelector('.conv-date').textContent = c.snippet || (c.lastActivity || '').slice(0, 16).replace('T', ' ');
@@ -2015,6 +2017,16 @@ function openCodexSharedStream(convId) {
       }
       return;
     }
+    if (payload.kind === 'meta') {
+      if (payload.name) {
+        if (currentCodexConv && currentCodexConv.id === convId) {
+          currentCodexConv.name = payload.name;
+          $('conv-title').textContent = payload.name;
+        }
+        loadCodexSharedTree();
+      }
+      return;
+    }
     if (payload.kind !== 'codex') return;
     const item = payload.event && payload.event.item;
     if (!item || payload.event.type !== 'item.completed') return;
@@ -2150,13 +2162,17 @@ function openGeminiStream(id) { let live = '', bubble = null; const seenTools = 
     const tool = step?.tool_info; const toolKey = step?.step_index ?? step?.id;
     if (tool && (step?.state === 'DONE' || step?.state === 'ERROR') && !seenTools.has(toolKey)) { seenTools.add(toolKey); addTool(tool.name || step.tool_name || step.step_type || 'herramienta', tool.parameters || tool.args || {}, tool.output || tool.error?.message || tool.result || ''); autoScroll(); }
     return; }
-    if (payload.kind === 'status') { setGeminiBusy(payload.status !== 'idle'); if (payload.status === 'idle') { if (payload.incomplete) toast(payload.stderr || 'Antigravity no entregó una respuesta final.'); loadGeminiMessages(id).then(loadGeminiTree); } } }; stream.onerror = () => setTimeout(() => { if (currentGeminiConv?.id === id) loadGeminiMessages(id); }, 1500); return stream; }
+    if (payload.kind === 'status') { setGeminiBusy(payload.status !== 'idle'); if (payload.status === 'idle') { if (payload.incomplete) toast(payload.stderr || 'Antigravity no entregó una respuesta final.'); loadGeminiMessages(id).then(loadGeminiTree); } return; }
+    if (payload.kind === 'meta') { if (payload.name) { if (currentGeminiConv && currentGeminiConv.id === id) { currentGeminiConv.name = payload.name; $('conv-title').textContent = payload.name; } loadGeminiTree(); } return; }
+  }; stream.onerror = () => setTimeout(() => { if (currentGeminiConv?.id === id) loadGeminiMessages(id); }, 1500); return stream; }
 function geminiRow(c) {
   const div = document.createElement('div');
   div.className = 'conv' + (currentGeminiConv?.id === c.convId ? ' active' : '');
   const label = c.name || c.snippet || '(nueva conversación)';
-  div.innerHTML = `<div class="conv-avatar">A</div><div class="conv-body"><div class="name"></div><div class="sub"></div></div>${badge(c.status) || (c.unread ? '<span class="unread-dot"></span>' : '')}`;
-  div.querySelector('.name').textContent = label;
+  const pin = c.pinned ? '<span class="conv-pin" title="Fijada">📌</span>' : '';
+  const ai = c.aiTitle ? '<span class="conv-ai" title="Título generado por IA">✨</span>' : '';
+  div.innerHTML = `<div class="conv-avatar">A</div><div class="conv-body"><div class="name">${pin}${ai}<span class="conv-name-text"></span></div><div class="sub"></div></div>${badge(c.status) || (c.unread ? '<span class="unread-dot"></span>' : '')}`;
+  div.querySelector('.conv-name-text').textContent = label;
   div.querySelector('.sub').textContent = c.snippet;
   div.onclick = () => {
     currentGeminiConv = { id: c.convId, name: label, model: c.model || 'gemini-3.8-flash-high' };

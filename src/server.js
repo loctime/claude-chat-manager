@@ -1205,12 +1205,11 @@ codexRunner.on('status', s => {
   codexBroadcast(s.convId, { kind: 'status', ...s });
   if (s.status === 'idle' && s.code === 0 && !s.cancelled) {
     narrateCodexResponse(s.convId);
+    maybeGenerateCodexTitle(s.convId).catch(() => {});
   }
   // Mismo criterio de "no leído" que ya usa Claude (ver runner.on('status', ...)
   // más arriba en este archivo): un turno terminó sin nadie mirando esta convId
-  // por SSE ahora mismo → se marca unread. No se replica la generación de título
-  // por IA ni el resync del índice de búsqueda — ninguno de los dos existe para
-  // Codex en v1 (fuera de alcance, ver spec).
+  // por SSE ahora mismo → se marca unread.
   if (s.status === 'idle' && !s.cancelled) {
     const hasViewer = (codexSseClients.get(s.convId)?.size || 0) > 0;
     if (!hasViewer) {
@@ -1229,13 +1228,13 @@ codexRunner.on('status', s => {
 
 // ── Título automático vía Groq ──
 const _lastTitleAttempt = new Map(); // convId → timestamp
-const TITLE_MIN_MSGS = 3;
+const TITLE_MIN_MSGS = 2;
 const TITLE_RETRY_MS = 30_000;
 
 function _groqTitle(excerpt) {
   return new Promise((resolve) => {
     const body = JSON.stringify({
-      model: 'llama-3.1-8b-instant',
+      model: 'qwen/qwen3.8-27b',
       messages: [
         { role: 'system', content: 'Sos un generador de títulos. El usuario te va a pasar el inicio de una conversación y vos respondés SOLO con un título corto (3 a 6 palabras) en español que la resuma. Nada de comillas, puntos, emojis, ni explicaciones. Ejemplo:\n\nEntrada:\nuser: Cómo instalo Docker en Ubuntu?\nassistant: Ejecutá sudo apt install docker.io\n\nTítulo: Instalación de Docker en Ubuntu' },
         { role: 'user', content: excerpt },
@@ -1342,6 +1341,58 @@ async function maybeGenerateTitle(convId, acc = activeAccount) {
   latestConv.aiTitle = true;
   meta.save(latest, metaFile);
   broadcast(convId, { kind: 'meta', name: title, aiTitle: true });
+}
+
+async function maybeGenerateCodexTitle(convId) {
+  if (!GROQ_API_KEY) return;
+  const last = _lastTitleAttempt.get(convId) || 0;
+  if (Date.now() - last < TITLE_RETRY_MS) return;
+  const data = meta.load(CODEX_META_FILE);
+  const conv = data.conversations[convId];
+  if (!conv || conv.name || conv.aiTitle) return;
+  const file = conv.currentSessionId ? codexScanner.findSessionFile(conv.currentSessionId) : null;
+  if (!file) return;
+  const messages = codexScanner.getMessages(file).filter(m => m.role !== 'tool');
+  if (messages.length < TITLE_MIN_MSGS) return;
+  _lastTitleAttempt.set(convId, Date.now());
+  const excerpt = messages.slice(0, 6).map(m => `${m.role}: ${(m.text || '').slice(0, 400)}`).join('\n\n').slice(0, 2000);
+  const title = await _groqTitle(excerpt);
+  if (!title) return;
+  const latest = meta.load(CODEX_META_FILE);
+  const latestConv = latest.conversations[convId];
+  if (!latestConv || latestConv.name) return;
+  latestConv.name = title;
+  latestConv.aiTitle = true;
+  meta.save(latest, CODEX_META_FILE);
+  codexBroadcast(convId, { kind: 'meta', name: title, aiTitle: true });
+}
+
+async function maybeGenerateGeminiTitle(convId) {
+  if (!GROQ_API_KEY) return;
+  const last = _lastTitleAttempt.get(convId) || 0;
+  if (Date.now() - last < TITLE_RETRY_MS) return;
+  const data = meta.load(GEMINI_META_FILE);
+  const conv = data.conversations[convId];
+  if (!conv || conv.name || conv.aiTitle) return;
+  let messages = [];
+  if (conv.currentSessionId) {
+    const realMessages = geminiScanner.getMessages(conv.currentSessionId);
+    if (realMessages && realMessages.length > 0) messages = realMessages;
+  }
+  if (!messages.length && conv.messages) messages = conv.messages;
+  messages = messages.filter(m => m.role !== 'tool');
+  if (messages.length < TITLE_MIN_MSGS) return;
+  _lastTitleAttempt.set(convId, Date.now());
+  const excerpt = messages.slice(0, 6).map(m => `${m.role}: ${(m.text || '').slice(0, 400)}`).join('\n\n').slice(0, 2000);
+  const title = await _groqTitle(excerpt);
+  if (!title) return;
+  const latest = meta.load(GEMINI_META_FILE);
+  const latestConv = latest.conversations[convId];
+  if (!latestConv || latestConv.name) return;
+  latestConv.name = title;
+  latestConv.aiTitle = true;
+  meta.save(latest, GEMINI_META_FILE);
+  geminiBroadcast(convId, { kind: 'meta', name: title, aiTitle: true });
 }
 
 function resolveConv(convId, acc = activeAccount) {
@@ -2732,6 +2783,7 @@ app.get('/api/codex/tree', async (req, res) => {
       pinned: !!c.pinned,
       archived: !!c.archived,
       unread: !!c.unread,
+      aiTitle: !!c.aiTitle,
       // currentSessionId: NO se manda en la respuesta (el cliente no lo usa),
       // pero hace falta acá adentro — el filtro de unreadTotal más abajo lo
       // exige, y como nunca se agregaba a este objeto, esa condición daba
@@ -2761,6 +2813,10 @@ app.patch('/api/codex/conversations/:id', (req, res) => {
   const data = meta.load(CODEX_META_FILE);
   const conv = data.conversations[req.params.id];
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+  if ('name' in req.body) {
+    conv.name = (req.body.name || '').trim() || undefined;
+    conv.aiTitle = false;
+  }
   if ('pinned' in req.body) conv.pinned = !!req.body.pinned;
   if ('archived' in req.body) conv.archived = !!req.body.archived;
   if ('unread' in req.body) conv.unread = !!req.body.unread;
@@ -2892,6 +2948,7 @@ geminiRunner.on('status', status => {
   // por texto, sobre todo si es el único aviso que va a recibir.
   if (status.status === 'idle' && !status.cancelled) {
     narrateGeminiResponse(status.convId);
+    maybeGenerateGeminiTitle(status.convId).catch(() => {});
   }
   // Mismo criterio que Chats (ver comentario ahí): un turno terminó sin nadie
   // mirando esta convId por SSE → marcarla no leída. Faltaba acá — la pestaña
@@ -2978,6 +3035,7 @@ app.get('/api/gemini/tree', async (req, res) => {
       messageCount: s.messageCount || c.messages?.length || 0,
       pinned: !!c.pinned,
       unread: !!c.unread,
+      aiTitle: !!c.aiTitle,
       status: geminiConvStatus(convId),
       projectDir: c.projectDir || s.workspace || null,
       gitRepo: c.gitRepo || null,
@@ -2998,7 +3056,10 @@ app.patch('/api/gemini/conversations/:id', (req, res) => {
     if (key in req.body) c[key] = !!req.body[key];
   }
   for (const key of ['model', 'projectDir', 'gitRepo', 'name']) {
-    if (key in req.body && typeof req.body[key] === 'string') c[key] = req.body[key];
+    if (key in req.body && typeof req.body[key] === 'string') {
+      c[key] = req.body[key];
+      if (key === 'name') c.aiTitle = false;
+    }
   }
   meta.save(data, GEMINI_META_FILE);
   res.json({ ok: true });
