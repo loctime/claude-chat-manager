@@ -1,6 +1,7 @@
 const express = require('express');
 const agenda = require('../agenda');
 const outlookClassic = require('../outlook-classic');
+const { runTaskScript } = require('../task-runner');
 
 const router = express.Router();
 
@@ -49,6 +50,39 @@ router.post('/tasks', (req, res) => {
 router.delete('/tasks/:id', (req, res) => {
   const ok = agenda.removeCustomTask(req.params.id);
   if (!ok) return res.status(404).json({ error: 'tarea no encontrada' });
+  res.json({ ok: true });
+});
+
+// Punto de entrada único para toda tarea determinística. El modo prueba se
+// decide exclusivamente del lado del servidor: el cliente no puede saltearlo.
+router.post('/:id/run', async (req, res) => {
+  const task = agenda.list().find(candidate => candidate.id === req.params.id);
+  if (!task) return res.status(404).json({ error: 'tarea no encontrada' });
+  if (task.execution !== 'script') return res.status(400).json({ error: 'esta tarea no se ejecuta por script' });
+  try {
+    const result = await runTaskScript(task, {
+      state: agenda.getRunState(task.id),
+      input: req.body ? req.body.input : undefined,
+      dryRun: !task.verified,
+    });
+    const updated = agenda.saveRunResult(task.id, result);
+    res.json({ ui: result.ui, runStatus: updated.run.status });
+  } catch (err) {
+    console.error(`[api/agenda/${task.id}/run]`, err.message);
+    agenda.saveRunError(task.id, err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/:id/verify', (req, res) => {
+  const updated = agenda.setTaskVerified(req.params.id, true);
+  if (!updated) return res.status(404).json({ error: 'tarea no encontrada o no es de tipo script' });
+  res.json({ ok: true, verified: updated.verified });
+});
+
+router.post('/:id/reset-run', (req, res) => {
+  const updated = agenda.resetRun(req.params.id);
+  if (!updated) return res.status(404).json({ error: 'tarea no encontrada' });
   res.json({ ok: true });
 });
 
