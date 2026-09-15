@@ -7,7 +7,7 @@ const os = require('os');
 const { execFile, execFileSync, exec, spawn } = require('child_process');
 const multer = require('multer');
 const archiver = require('archiver');
-const { PDFDocument } = require('pdf-lib');
+const { createScansRouter } = require('./routes/scans');
 const scanner = require('./scanner');
 const notes = require('./notes');
 const { createNotesRouter } = require('./routes/notes');
@@ -22,6 +22,13 @@ const { createCodexRouter } = require('./routes/codex');
 const { GeminiRunner } = require('./gemini-runner');
 const { createGeminiRouter, createAntigravityRouter } = require('./routes/gemini');
 const { createSalaRouter } = require('./routes/sala');
+const {
+  projectEntry,
+  registerProject,
+  projectsWithCounts,
+  hiddenProjectNames,
+  createProjectsRouter,
+} = require('./routes/projects');
 const codexScanner = require('./codex-scanner');
 const geminiScanner = require('./gemini-scanner');
 const searchIndex = require('./search-index');
@@ -711,156 +718,20 @@ const geminiSseClients = new Map();
 // de una vieja: ver findFreshGeminiAnswer más abajo.
 const geminiTurnStartedAt = new Map();
 const CODEX_TTS_SCRIPT = path.join(os.homedir(), '.claude', 'scripts', 'speak-response.py');
-const CODEX_TTS_VOICE = 'es-AR-TomasNeural';
-const GEMINI_TTS_VOICE = 'es-UY-ValentinaNeural';
-const CLAUDE_SETTINGS_FILE = path.join(HOME_DIR, '.claude', 'settings.json');
-// El on/off ya existía como archivo por voz (el switch que checkea el propio
-// speak-response.py, ver arriba) — el panel de Configuración solo le agrega
-// una UI encima, sin cambiar el mecanismo (así los accesos directos viejos
-// del escritorio y el panel nunca se desincronizan, tocan el mismo archivo).
-const VOICE_FLAG_FILES = {
-  claude: path.join(HOME_DIR, '.claude', 'voice-on'),
-  codex: path.join(HOME_DIR, '.claude', 'codex-voice-on'),
-  antigravity: path.join(HOME_DIR, '.claude', 'antigravity-voice-on'),
-};
-// El volumen de Codex/AgY solo lo necesita este mismo proceso (es quien
-// spawnea el narrador con env explícito, ver narrateCodexResponse/
-// narrateGeminiResponse) — un archivo de texto plano alcanza. El de Claude
-// es distinto: lo lee el Stop hook del CLI real (cualquier terminal, no solo
-// Jarvis), que solo hereda variables de entorno — por eso vive en
-// settings.json → env.CLAUDE_TTS_VOLUME, mismo lugar que ya usa
-// CLAUDE_TTS_VOICE (Elena) para ese mismo hook.
-const VOICE_VOLUME_FILES = {
-  codex: path.join(HOME_DIR, '.claude', 'codex-voice-volume'),
-  antigravity: path.join(HOME_DIR, '.claude', 'antigravity-voice-volume'),
-};
-// Mismo razonamiento que el volumen (arriba): Codex/AgY en archivo propio
-// porque Jarvis es quien arma el env del narrador; Claude en settings.json
-// porque lo lee el Stop hook real, sea o no a través de Jarvis.
-const VOICE_NAME_FILES = {
-  codex: path.join(HOME_DIR, '.claude', 'codex-voice-name'),
-  antigravity: path.join(HOME_DIR, '.claude', 'antigravity-voice-name'),
-};
-const DEFAULT_VOICE_NAME = { claude: 'es-AR-ElenaNeural', codex: CODEX_TTS_VOICE, antigravity: GEMINI_TTS_VOICE };
-// edge-tts no tiene endpoint de validación — lista fija de las voces es-*
-// reales (`edge-tts --list-voices`, revisado a mano el 2026-09-14). Evita
-// persistir un nombre inventado que silenciosamente no sintetice nada.
-const ALLOWED_VOICE_NAMES = new Set([
-  'es-AR-ElenaNeural', 'es-AR-TomasNeural',
-  'es-UY-ValentinaNeural', 'es-UY-MateoNeural',
-  'es-MX-DaliaNeural', 'es-MX-JorgeNeural',
-  'es-ES-ElviraNeural', 'es-ES-AlvaroNeural', 'es-ES-XimenaNeural',
-  'es-CO-SalomeNeural', 'es-CO-GonzaloNeural',
-  'es-CL-CatalinaNeural', 'es-CL-LorenzoNeural',
-  'es-PY-TaniaNeural', 'es-PY-MarioNeural',
-  'es-VE-PaolaNeural', 'es-VE-SebastianNeural',
-  'es-PE-CamilaNeural', 'es-PE-AlexNeural',
-  'es-US-PalomaNeural', 'es-US-AlonsoNeural',
-]);
+const {
+  createVoiceRouter,
+  readVoiceName,
+  readVoiceVolume,
+  getVoiceFlagFiles,
+} = require('./routes/voice');
+const VOICE_FLAG_FILES = getVoiceFlagFiles(HOME_DIR);
 
-function clampVolume(v) {
-  const n = Math.round(Number(v));
-  return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 100;
-}
-
-function readVoiceName(voice) {
-  if (voice === 'claude') {
-    try {
-      const s = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_FILE, 'utf8'));
-      const v = s.env && s.env.CLAUDE_TTS_VOICE;
-      return ALLOWED_VOICE_NAMES.has(v) ? v : DEFAULT_VOICE_NAME.claude;
-    } catch { return DEFAULT_VOICE_NAME.claude; }
-  }
-  try {
-    const v = fs.readFileSync(VOICE_NAME_FILES[voice], 'utf8').trim();
-    return ALLOWED_VOICE_NAMES.has(v) ? v : DEFAULT_VOICE_NAME[voice];
-  } catch { return DEFAULT_VOICE_NAME[voice]; }
-}
-
-function writeVoiceName(voice, value) {
-  if (!ALLOWED_VOICE_NAMES.has(value)) throw new Error('voz de edge-tts desconocida: ' + value);
-  if (voice === 'claude') {
-    let s = {};
-    try { s = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_FILE, 'utf8')); } catch {}
-    s.env = s.env || {};
-    s.env.CLAUDE_TTS_VOICE = value;
-    fs.writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify(s, null, 2) + '\n', 'utf8');
-  } else {
-    const file = VOICE_NAME_FILES[voice];
-    if (!file) throw new Error('voz desconocida');
-    fs.writeFileSync(file, value, 'utf8');
-  }
-  return value;
-}
-
-function readVoiceOn(voice) {
-  const file = VOICE_FLAG_FILES[voice];
-  return !!file && fs.existsSync(file);
-}
-
-function writeVoiceOn(voice, on) {
-  const file = VOICE_FLAG_FILES[voice];
-  if (!file) throw new Error('voz desconocida');
-  if (on) fs.writeFileSync(file, '', 'utf8');
-  else { try { fs.unlinkSync(file); } catch {} }
-}
-
-function readVoiceVolume(voice) {
-  if (voice === 'claude') {
-    try {
-      const s = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_FILE, 'utf8'));
-      const v = s.env && s.env.CLAUDE_TTS_VOLUME;
-      return v != null ? clampVolume(v) : 100;
-    } catch { return 100; }
-  }
-  const file = VOICE_VOLUME_FILES[voice];
-  try { return clampVolume(fs.readFileSync(file, 'utf8').trim()); } catch { return 100; }
-}
-
-function writeVoiceVolume(voice, value) {
-  const volume = clampVolume(value);
-  if (voice === 'claude') {
-    // Reescribe solo env.CLAUDE_TTS_VOLUME — settings.json tiene TODOS los
-    // tokens de API del usuario, no se toca nada más de lo necesario.
-    let s = {};
-    try { s = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_FILE, 'utf8')); } catch {}
-    s.env = s.env || {};
-    s.env.CLAUDE_TTS_VOLUME = String(volume);
-    fs.writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify(s, null, 2) + '\n', 'utf8');
-  } else {
-    const file = VOICE_VOLUME_FILES[voice];
-    if (!file) throw new Error('voz desconocida');
-    fs.writeFileSync(file, String(volume), 'utf8');
-  }
-  return volume;
-}
-
-app.get('/api/voice-settings', (req, res) => {
-  const out = {};
-  for (const v of Object.keys(VOICE_FLAG_FILES)) out[v] = { on: readVoiceOn(v), volume: readVoiceVolume(v), name: readVoiceName(v) };
-  res.json({ voices: out, options: [...ALLOWED_VOICE_NAMES] });
-});
-app.patch('/api/voice-settings/:voice', (req, res) => {
-  const voice = req.params.voice;
-  if (!VOICE_FLAG_FILES[voice]) return res.status(404).json({ error: 'voz desconocida' });
-  try {
-    if ('on' in req.body) writeVoiceOn(voice, !!req.body.on);
-    if ('volume' in req.body) writeVoiceVolume(voice, req.body.volume);
-    if ('name' in req.body) writeVoiceName(voice, req.body.name);
-    res.json({ on: readVoiceOn(voice), volume: readVoiceVolume(voice), name: readVoiceName(voice) });
-  } catch (err) {
-    res.status(500).json({ error: 'no se pudo guardar: ' + err.message });
-  }
-});
+app.use('/api/voice-settings', createVoiceRouter({ homeDir: HOME_DIR }));
 
 function codexBroadcast(convId, payload) {
   const set = codexSseClients.get(convId);
   if (!set) return;
   for (const res of set) res.write(`data: ${JSON.stringify(payload)}\n\n`);
-}
-
-function codexConvStatus(convId) {
-  return codexRunner.running.has(convId) ? 'running' : codexRunner.isBusy(convId) ? 'queued' : 'idle';
 }
 
 // Reusa el narrador del sistema de Claude Code: mismo switch ~/.claude/voice-on,
@@ -1743,281 +1614,21 @@ app.use('/api/notebooks', createNotesRouter({
 }));
 app.use('/api/agenda', agendaRouter);
 
-// ── Escáner de documentos (tipo CamScanner) ──
-// Detecta el documento en la foto, endereza la perspectiva y limpia el
-// contraste (canal rojo + umbral adaptivo — mismo enfoque que ya veníamos
-// usando para remitos, ver scripts/mejora-imagen/README.md). Todo corre
-// local con OpenCV vía un script Python — no pasa por Claude ni gasta
-// tokens. Vendorizado adentro del repo (antes vivía en una carpeta hermana
-// fuera de git, así que se rompía en cualquier checkout que no fuera el de
-// Fernando) — ver docs/superpowers/specs/2026-08-17-escaner-documentos-design.md.
-const PYTHON_CMD = IS_WIN ? 'python' : 'python3';
-const SCAN_SCRIPT = path.join(__dirname, '..', 'scripts', 'mejora-imagen', 'mejorar_imagen.py');
-const SCANS_DIR = path.join(HOME_DIR, '.ccm-notes', 'scans');
-
-const scanUpload = multer({
-  storage: multer.diskStorage({
-    // El id de cada escaneo se genera acá (no hay :id de ruta todavía en el
-    // POST inicial) y se cuelga del req para que el handler lo use después.
-    destination: (req, file, cb) => {
-      const id = crypto.randomUUID();
-      const dir = path.join(SCANS_DIR, id);
-      try {
-        fs.mkdirSync(dir, { recursive: true });
-        req.scanId = id;
-        req.scanDir = dir;
-        cb(null, dir);
-      } catch (err) { cb(err); }
-    },
-    filename: (req, file, cb) => {
-      const ext = (path.extname(file.originalname) || '.jpg').toLowerCase();
-      cb(null, 'original' + ext);
-    },
-  }),
-  limits: { fileSize: 25 * 1024 * 1024 },
-});
-
-app.post('/api/scan', scanUpload.single('photo'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'no se recibió foto' });
-  execFile(PYTHON_CMD, [SCAN_SCRIPT, req.file.path, req.scanDir, '--json'], { maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
-    if (err) {
-      console.error('[scan] error procesando', stderr || err.message);
-      return res.status(500).json({ error: 'no se pudo procesar la imagen: ' + (stderr || err.message).toString().slice(0, 300) });
-    }
-    let result;
-    try { result = JSON.parse(stdout); } catch { return res.status(500).json({ error: 'respuesta inválida del script de escaneo' }); }
-    if (result.error) return res.status(500).json({ error: result.error });
-    res.json({
-      id: req.scanId,
-      detectado: result.detectado,
-      recortada: result.recortada,
-      limpia: result['1x'],
-      limpia2x: result['2x'],
-    });
-  });
-});
-
-// Encuentra (o crea) la libreta "Escaneos" — ahí van a parar los documentos
-// que el usuario decide conservar desde la solapa Escáner.
-function findOrCreateScanNotebook() {
-  const existing = notes.listNotebooks().find(nb => nb.name === 'Escaneos');
-  if (existing) return existing;
-  const nb = notes.createNotebook();
-  return notes.renameNotebook(nb.id, 'Escaneos') || nb;
-}
-
-const SCAN_VARIANT_SUFFIX = { recortada: '_recortada.jpg', limpia: '_limpia.jpg', limpia2x: '_limpia_2x.jpg' };
-
-app.post('/api/scan/:id/keep', (req, res) => {
-  const suffix = SCAN_VARIANT_SUFFIX[req.body && req.body.variant];
-  if (!suffix) return res.status(400).json({ error: 'variante inválida' });
-  // El id de la URL es el nombre de carpeta que armamos nosotros mismos en
-  // destination() de arriba (crypto.randomUUID()) — nunca llega a un path
-  // fuera de SCANS_DIR aunque el cliente mande cualquier cosa acá, porque
-  // path.join + fs.existsSync sobre ese path fijo no puede "escaparse" de la
-  // carpeta con un id que no matchea ningún directorio real.
-  const dir = path.join(SCANS_DIR, req.params.id);
-  let files;
-  try { files = fs.readdirSync(dir); } catch { return res.status(404).json({ error: 'escaneo no encontrado' }); }
-  const fileName = files.find(f => f.endsWith(suffix));
-  if (!fileName) return res.status(404).json({ error: 'no se encontró el archivo procesado' });
-  const srcPath = path.join(dir, fileName);
-
-  notes.ensureFilesDir();
-  const destName = notes.resolveDestName(notes.FILES_DIR, `escaneo-${req.params.id.slice(0, 8)}.jpg`);
-  const destPath = path.join(notes.FILES_DIR, destName);
-  fs.copyFileSync(srcPath, destPath);
-
-  const notebook = findOrCreateScanNotebook();
-  const entry = {
-    id: crypto.randomUUID(),
-    ts: Date.now(),
-    type: 'file',
-    fileName: destName,
-    filePath: destPath,
-    mime: 'image/jpeg',
-    size: fs.statSync(destPath).size,
-  };
-  notes.append(entry, notes.notebookNotesFile(notebook.id));
-  syncSearchIndex(activeAccount, { reason: 'nota' });
-  res.status(201).json({ entry, notebook });
-});
-
-// ── Documento multi-página: juntar varios escaneos en un solo PDF ──
-// Cada página ya pasó por /api/scan (detectar borde + enderezar + limpiar);
-// esto solo arma el PDF a partir de los archivos que ya están en disco, sin
-// volver a tocar la imagen. Los PDF armados quedan en PDF_DRAFTS_DIR hasta
-// que el usuario decide guardarlo en Notas (mismo patrón que SCANS_DIR: sin
-// job de limpieza todavía si el usuario nunca lo guarda).
-const PDF_DRAFTS_DIR = path.join(HOME_DIR, '.ccm-notes', 'scan-pdfs');
-
-app.post('/api/scan/pdf', async (req, res) => {
-  const pages = Array.isArray(req.body && req.body.pages) ? req.body.pages : [];
-  if (!pages.length) return res.status(400).json({ error: 'no se recibió ninguna página' });
-  if (pages.length > 50) return res.status(400).json({ error: 'máximo 50 páginas por documento' });
-
-  // Resuelve cada página a un path real en disco ANTES de tocar el PDF —
-  // si una sola página tiene un id o variante inválida, se corta acá con un
-  // error claro en vez de generar un PDF a medio armar.
-  const resolved = [];
-  for (const p of pages) {
-    const suffix = SCAN_VARIANT_SUFFIX[p && p.variant];
-    if (!suffix) return res.status(400).json({ error: `variante inválida en página: ${p && p.variant}` });
-    const dir = path.join(SCANS_DIR, String(p.id || ''));
-    let files;
-    try { files = fs.readdirSync(dir); } catch { return res.status(404).json({ error: `escaneo no encontrado: ${p.id}` }); }
-    const fileName = files.find(f => f.endsWith(suffix));
-    if (!fileName) return res.status(404).json({ error: `no se encontró el archivo procesado de ${p.id}` });
-    resolved.push(path.join(dir, fileName));
-  }
-
-  try {
-    const pdfDoc = await PDFDocument.create();
-    for (const imgPath of resolved) {
-      const bytes = fs.readFileSync(imgPath);
-      const jpg = await pdfDoc.embedJpg(bytes);
-      // Página del tamaño exacto de la imagen (en puntos = píxeles) — evita
-      // deformar o dejar márgenes blancos, y es el truco estándar para
-      // "una imagen por página" en pdf-lib.
-      const page = pdfDoc.addPage([jpg.width, jpg.height]);
-      page.drawImage(jpg, { x: 0, y: 0, width: jpg.width, height: jpg.height });
-    }
-    const pdfBytes = await pdfDoc.save();
-
-    const id = crypto.randomUUID();
-    fs.mkdirSync(PDF_DRAFTS_DIR, { recursive: true });
-    const pdfPath = path.join(PDF_DRAFTS_DIR, `${id}.pdf`);
-    fs.writeFileSync(pdfPath, pdfBytes);
-
-    res.status(201).json({ id, path: pdfPath, pageCount: resolved.length });
-  } catch (err) {
-    console.error('[scan/pdf] error generando PDF', err.message);
-    res.status(500).json({ error: 'no se pudo generar el PDF: ' + err.message.slice(0, 300) });
-  }
-});
-
-app.post('/api/scan/pdf/:id/keep', (req, res) => {
-  // Mismo chequeo de path que /api/scan/:id/keep: el id de la URL es el
-  // nombre de archivo que generamos nosotros mismos (crypto.randomUUID())
-  // arriba — nunca se resuelve a nada fuera de PDF_DRAFTS_DIR.
-  const srcPath = path.join(PDF_DRAFTS_DIR, `${req.params.id}.pdf`);
-  if (!fs.existsSync(srcPath)) return res.status(404).json({ error: 'PDF no encontrado (¿ya se guardó o se generó de nuevo?)' });
-
-  notes.ensureFilesDir();
-  const destName = notes.resolveDestName(notes.FILES_DIR, `documento-${req.params.id.slice(0, 8)}.pdf`);
-  const destPath = path.join(notes.FILES_DIR, destName);
-  fs.copyFileSync(srcPath, destPath);
-
-  const notebook = findOrCreateScanNotebook();
-  const entry = {
-    id: crypto.randomUUID(),
-    ts: Date.now(),
-    type: 'file',
-    fileName: destName,
-    filePath: destPath,
-    mime: 'application/pdf',
-    size: fs.statSync(destPath).size,
-  };
-  notes.append(entry, notes.notebookNotesFile(notebook.id));
-  syncSearchIndex(activeAccount, { reason: 'nota' });
-  res.status(201).json({ entry, notebook });
-});
+app.use('/api/scan', createScansRouter({
+  homeDir: HOME_DIR,
+  isWin: IS_WIN,
+  syncSearchIndex,
+  getActiveAccount: () => activeAccount,
+}));
 
 const DEFAULT_TREE_LIMIT = 100;
 const MAX_TREE_LIMIT = 500;
 
-// Lista de etiquetas de proyecto: unión de `data.projects` (registro
-// persistido — existe apenas se crea, aunque todavía no haya ninguna
-// conversación con esa etiqueta) + cualquier etiqueta que ya esté en uso en
-// una conversación pero no esté en el registro (auto-adopción, cubre datos
-// viejos o creados por otro cliente). El conteo sí se calcula al vuelo desde
-// las conversaciones — eso no se persiste aparte.
-//
-// Cada entrada de data.projects puede venir en dos formas: un string pelado
-// (formato viejo, de antes del 09/09) o {name, hideFromAll} (formato nuevo —
-// ver hideFromAll más abajo). projectEntry() normaliza cualquiera de las dos
-// a la forma objeto, así el resto del código no tiene que preguntar el tipo.
-function projectEntry(p) {
-  return typeof p === 'string' ? { name: p, hideFromAll: false } : p;
-}
-
-// Da de alta una etiqueta en el registro si todavía no está (comparación sin
-// mayúsculas/minúsculas) — se llama cada vez que una conversación queda
-// etiquetada con un proyecto, así el registro nunca queda desincronizado con
-// lo que realmente se está usando, aunque el alta explícita por /api/projects
-// se haya salteado (ej. un cliente viejo que solo mande `project` en el PATCH).
-// hideFromAll solo se pisa si se pasa explícito (ej. el toggle al crear desde
-// la UI) — el alta automática por etiquetar una conversación no lo toca, para
-// no resetear sin querer un proyecto que alguien ya marcó oculto.
-function registerProject(data, name, hideFromAll) {
-  if (!name) return;
-  if (!Array.isArray(data.projects)) data.projects = [];
-  const idx = data.projects.findIndex(p => projectEntry(p).name.toLowerCase() === name.toLowerCase());
-  if (idx === -1) {
-    data.projects.push({ name, hideFromAll: !!hideFromAll });
-  } else if (hideFromAll !== undefined) {
-    data.projects[idx] = { name: projectEntry(data.projects[idx]).name, hideFromAll: !!hideFromAll };
-  }
-}
-
-function projectsWithCounts(data) {
-  const counts = new Map();
-  for (const c of Object.values(data.conversations)) {
-    if (c.hidden || !c.project) continue;
-    counts.set(c.project, (counts.get(c.project) || 0) + 1);
-  }
-  const registered = new Map((data.projects || []).map(p => { const e = projectEntry(p); return [e.name, e.hideFromAll]; }));
-  const names = new Set([...registered.keys(), ...counts.keys()]);
-  return [...names]
-    .map(name => ({ name, count: counts.get(name) || 0, hideFromAll: !!registered.get(name) }))
-    .sort((a, b) => a.name.localeCompare(b.name, 'es'));
-}
-
-// Nombres de proyecto marcados hideFromAll=true — /api/tree los salta cuando
-// se está mirando "Todos los proyectos" (sin filtro puesto). Filtrando
-// específicamente por ESE proyecto sí se ven (ver ?project= más abajo).
-function hiddenProjectNames(data) {
-  return new Set((data.projects || []).filter(p => projectEntry(p).hideFromAll).map(p => projectEntry(p).name));
-}
-
-app.get('/api/projects', (req, res) => {
-  const acc = req.query.account || activeAccount;
-  const data = meta.load(accountMetaFile(acc));
-  res.json({ projects: projectsWithCounts(data) });
-});
-
-// Carpetas reales para el picker de "+ Nuevo proyecto…" (ver listProjectFolderNames).
-app.get('/api/project-folders', (req, res) => {
-  res.json({ folders: listProjectFolderNames() });
-});
-
-// Crea (o reactiva) una etiqueta de proyecto en el registro persistido, sin
-// necesidad de que ya exista una conversación con ese nombre — así "+ Nuevo
-// proyecto…" no desaparece la próxima vez que se abre el selector si todavía
-// no se etiquetó nada con él. hideFromAll (opcional): si viene true, ese
-// proyecto queda oculto de "Todos los proyectos" desde el arranque — ver
-// hiddenProjectNames()/registerProject() arriba.
-app.post('/api/projects', (req, res) => {
-  const acc = req.body.account || activeAccount;
-  const name = (req.body.name || '').trim();
-  if (!name) return res.status(400).json({ error: 'nombre vacío' });
-  const metaFile = accountMetaFile(acc);
-  const data = meta.load(metaFile);
-  registerProject(data, name, 'hideFromAll' in req.body ? !!req.body.hideFromAll : undefined);
-  meta.save(data, metaFile);
-  res.status(201).json({ projects: projectsWithCounts(data) });
-});
-
-// Saca un proyecto del registro (no desetiqueta conversaciones existentes —
-// esas mantienen la etiqueta vieja hasta que se reasignen a mano).
-app.delete('/api/projects/:name', (req, res) => {
-  const acc = req.query.account || activeAccount;
-  const metaFile = accountMetaFile(acc);
-  const data = meta.load(metaFile);
-  data.projects = (data.projects || []).filter(p => projectEntry(p).name !== req.params.name);
-  meta.save(data, metaFile);
-  res.json({ projects: projectsWithCounts(data) });
-});
+app.use('/api', createProjectsRouter({
+  getActiveAccount: () => activeAccount,
+  accountMetaFile,
+  listProjectFolderNames,
+}));
 
 app.get('/api/tree', (req, res) => {
   const acc = req.query.account || activeAccount;
