@@ -4376,11 +4376,15 @@ document.addEventListener('visibilitychange', () => {
   }
   hiddenScrollTop = null;
   // Mismo mecanismo que arriba pero para la pestaña Codex — mismo problema de
-  // stream/túnel muerto al volver del background.
   if (currentCodexConv && currentCodexConv.id) {
     if (codexStream) codexStream.close();
     codexStream = openCodexSharedStream(currentCodexConv.id);
     loadCodexSharedMessages(currentCodexConv.id);
+  }
+  if (currentGeminiConv && currentGeminiConv.id) {
+    if (geminiStream) geminiStream.close();
+    geminiStream = openGeminiStream(currentGeminiConv.id);
+    loadGeminiMessages(currentGeminiConv.id);
   }
 });
 
@@ -4676,7 +4680,7 @@ async function prepareForUpload(file, displayName) {
 }
 
 async function uploadAttachment(file) {
-  if (!currentConv && !currentCodexConv) { addMsg('error', 'Elegí una conversación antes de adjuntar'); return; }
+  if (!currentConv && !currentCodexConv && !currentGeminiConv) { addMsg('error', 'Elegí una conversación antes de adjuntar'); return; }
   const displayName = file.name || `pegado-${Date.now()}.${(file.type.split('/')[1] || 'bin')}`;
   const loadingChip = document.createElement('div');
   loadingChip.className = 'attach-chip attach-chip-loading';
@@ -4743,7 +4747,7 @@ $('input').addEventListener('paste', (e) => {
   // composer del chat — que en ese momento está hidden —, o sea que
   // desaparecía sin dejar rastro visible.
   const notebookOpen = () => !$('notebook-view').hidden;
-  const canDrop = () => (notebookOpen() ? !!currentNotebook : !!(currentConv || currentCodexConv));
+  const canDrop = () => (notebookOpen() ? !!currentNotebook : !!(currentConv || currentCodexConv || currentGeminiConv));
   const acceptDrop = (files) => {
     if (notebookOpen()) return (async () => { for (const f of files) await uploadNoteFile(f); })();
     return uploadFiles(files);
