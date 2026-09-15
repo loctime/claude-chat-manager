@@ -2061,11 +2061,26 @@ async function loadCodexSharedMessages(convId) {
     messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Codex</p></div>';
     return;
   }
+  let lastAssistantDiv = null;
+  let lastAssistantMsg = null;
   for (const m of msgs) {
-    if (m.role === 'tool') addTool(m.name, m.input, m.output);
-    else addMsg(m.role, m.text, { ts: m.ts });
+    if (m.role === 'tool') {
+      addTool(m.name, m.input, m.output);
+      lastAssistantDiv = null;
+    } else {
+      const div = addMsg(m.role, m.text, { ts: m.ts });
+      if (m.role === 'assistant') {
+        lastAssistantDiv = div;
+        lastAssistantMsg = m;
+      } else {
+        lastAssistantDiv = null;
+      }
+    }
   }
   scrollToBottom();
+  if (lastAssistantDiv && !codexMainBusy) {
+    maybeShowReplySuggestions(convId, lastAssistantDiv, lastAssistantMsg.text, lastAssistantMsg.uuid || lastAssistantMsg.id, 'codex');
+  }
 }
 
 function openCodexSharedStream(convId) {
@@ -2211,9 +2226,24 @@ async function loadGeminiMessages(id) {
   if (!messages.length) {
     messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Antigravity</p></div>';
   } else {
+    let lastAssistantDiv = null;
+    let lastAssistantMsg = null;
     for (const m of messages) {
-      if (m.role === 'tool') addTool(m.name, m.input, m.output);
-      else addMsg(m.role, m.text, { ts: m.ts });
+      if (m.role === 'tool') {
+        addTool(m.name, m.input, m.output);
+        lastAssistantDiv = null;
+      } else {
+        const div = addMsg(m.role, m.text, { ts: m.ts });
+        if (m.role === 'assistant') {
+          lastAssistantDiv = div;
+          lastAssistantMsg = m;
+        } else {
+          lastAssistantDiv = null;
+        }
+      }
+    }
+    if (lastAssistantDiv && !geminiMainBusy) {
+      maybeShowReplySuggestions(id, lastAssistantDiv, lastAssistantMsg.text, lastAssistantMsg.uuid || lastAssistantMsg.id, 'gemini');
     }
   }
   scrollToBottom();
@@ -4214,15 +4244,15 @@ async function loadMessages(convId) {
 
 // ── Respuestas sugeridas por IA (Groq) ──
 // Se dispara solo para el ÚLTIMO mensaje de la conversación, cuando es de
-// Claude y el turno no sigue en curso (ver el llamado en loadMessages más
-// arriba). El server decide si corresponde sugerir algo — puede devolver []
-// (mensaje informativo, nada que confirmar) y ahí no se pinta nada. Sin
-// GROQ_KEY_SET ni siquiera pega al server.
-const suggestionCache = new Map(); // uuid -> string[] — vive mientras dure la pestaña, no se persiste
+// Claude/Codex/Antigravity y el turno no sigue en curso. El server decide si
+// corresponde sugerir algo — puede devolver [] (mensaje informativo, nada que
+// confirmar) y ahí no se pinta nada. Sin GROQ_KEY_SET ni siquiera pega al server.
+const suggestionCache = new Map(); // key -> string[] — vive mientras dure la pestaña, no se persiste
 
-async function maybeShowReplySuggestions(convId, div, text, uuid) {
+async function maybeShowReplySuggestions(convId, div, text, uuid, paneType = 'claude') {
   if (!GROQ_KEY_SET || !text || !text.trim()) return;
-  let suggestions = suggestionCache.get(uuid);
+  const key = uuid ? `${convId}:${uuid}` : `${convId}:${text.trim().slice(0, 150)}`;
+  let suggestions = suggestionCache.get(key);
   if (suggestions === undefined) {
     try {
       const r = await api('/suggest-replies', {
@@ -4234,17 +4264,22 @@ async function maybeShowReplySuggestions(convId, div, text, uuid) {
     } catch {
       suggestions = []; // nunca rompe el chat por esto
     }
-    suggestionCache.set(uuid, suggestions);
+    suggestionCache.set(key, suggestions);
   }
   // Puede haber pasado tiempo real esperando a Groq: si te fuiste de la
   // conversación, o ese mensaje ya no es el último (llegó una respuesta
   // nueva, por ejemplo el disparo automático de un mensaje en cola),
   // no pintamos botones desactualizados.
-  if (convId !== currentConv || div !== messagesEl.lastElementChild || !suggestions.length) return;
+  const isCurrent = (paneType === 'gemini' && currentGeminiConv?.id === convId) ||
+                    (paneType === 'codex' && currentCodexConv?.id === convId) ||
+                    (paneType === 'claude' && currentConv === convId);
+  if (!isCurrent || div !== messagesEl.lastElementChild || !suggestions.length) return;
   renderReplySuggestions(div, suggestions);
 }
 
 function renderReplySuggestions(div, suggestions) {
+  const existing = div.querySelector('.reply-suggestions');
+  if (existing) existing.remove();
   const bar = document.createElement('div');
   bar.className = 'reply-suggestions';
   suggestions.forEach(text => {
@@ -4256,14 +4291,27 @@ function renderReplySuggestions(div, suggestions) {
     bar.appendChild(btn);
   });
   div.appendChild(bar);
+  if (stickToBottom) scrollToBottom();
 }
 
-// Un toque = mandado directo (no rellena el composer) — mismo camino que un
-// submit normal, respetando la cola si justo hay otro turno en curso.
+// Un toque = mandado directo (no rellena el composer) — respeta el flujo de
+// cada pestaña (Antigravity, Codex o Claude) y cola si hay turno en curso.
 async function sendSuggestedReply(text, bar) {
+  bar.remove();
+  if (currentGeminiConv) {
+    if (geminiMainBusy) return;
+    $('input').value = text;
+    $('composer').requestSubmit();
+    return;
+  }
+  if (currentCodexConv) {
+    if (codexMainBusy) return;
+    $('input').value = text;
+    $('composer').requestSubmit();
+    return;
+  }
   if (!currentConv) return;
   const convId = currentConv;
-  bar.remove();
   if (busy) {
     queueMessage(convId, text, []);
     renderQueuedBar();
@@ -5092,6 +5140,7 @@ function restoreComposer(text, attachments) {
 // burbuja optimista y postea al server. Lo usan tanto un submit normal como
 // el disparo automático de un mensaje que estaba en cola.
 async function performSend(convId, rawText, attachments) {
+  document.querySelectorAll('.reply-suggestions').forEach(el => el.remove());
   let text = rawText;
   if (attachments.length > 0) {
     const paths = attachments.map(a => `[Archivo adjunto: ${a.path}]`).join('\n');
@@ -5117,6 +5166,7 @@ async function performSend(convId, rawText, attachments) {
 
 $('composer').onsubmit = async e => {
   e.preventDefault();
+  document.querySelectorAll('.reply-suggestions').forEach(el => el.remove());
   const rawText = $('input').value.trim();
   if (currentGeminiConv) {
     const attachments = [...pendingAttachments];

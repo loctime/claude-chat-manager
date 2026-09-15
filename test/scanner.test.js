@@ -496,9 +496,11 @@ test('rewindSessionFile incluye los effects en el resultado', () => {
   assert.equal(result.effects.length, 2);
 });
 
-test('toChatMessages expone uuid en los mensajes user', () => {
+test('toChatMessages expone uuid en los mensajes user y assistant', () => {
   const { file } = tmpFile(rewindFixtureLines());
   const msgs = toChatMessages(parseJsonl(file));
   const users = msgs.filter(m => m.role === 'user');
   assert.deepEqual(users.map(u => u.uuid), ['u1', 'u2']);
+  const assistants = msgs.filter(m => m.role === 'assistant');
+  assert.deepEqual(assistants.map(a => a.uuid), ['a1', 'a2']);
 });

@@ -333,7 +333,7 @@ function toChatMessages(entries) {
       if (text.trim()) items.push({ role: 'user', text, uuid: e.uuid, ts: e.timestamp });
     } else if (e.type === 'assistant' && Array.isArray(e.message.content)) {
       for (const b of e.message.content) {
-        if (b.type === 'text' && b.text.trim()) items.push({ role: 'assistant', text: b.text, ts: e.timestamp });
+        if (b.type === 'text' && b.text.trim()) items.push({ role: 'assistant', text: b.text, uuid: e.uuid, ts: e.timestamp });
         else if (b.type === 'tool_use') items.push({ role: 'tool', name: b.name, input: b.input, output: toolResults[b.id] || '', ts: e.timestamp });
       }
     }
