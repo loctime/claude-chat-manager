@@ -171,7 +171,7 @@ function emptyState() {
 // (checklist/autoPrompt incluidos) a customTasks para que no pierda nada, y
 // marca migratedLegacyCatalog para no repetirlo. Una instancia nueva (sin
 // ese historial) nunca entra acá — queda con la Agenda vacía.
-function migrateLegacySeed(data) {
+function migrateLegacySeed(data, file = AGENDA_FILE) {
   if (data.migratedLegacyCatalog) return data;
   const hadLegacyProgress = LEGACY_SEED_CATALOG.some(t => data.tasks[t.id]);
   if (hadLegacyProgress) {
@@ -181,13 +181,13 @@ function migrateLegacySeed(data) {
     }
   }
   data.migratedLegacyCatalog = true;
-  write(data);
+  write(data, file);
   return data;
 }
 
-function read() {
+function read(file = AGENDA_FILE) {
   let raw;
-  try { raw = fs.readFileSync(AGENDA_FILE, 'utf8'); }
+  try { raw = fs.readFileSync(file, 'utf8'); }
   catch { return emptyState(); }
   let data;
   try { data = JSON.parse(raw); }
@@ -197,7 +197,7 @@ function read() {
   // viejos, y Fernando perdería su catálogo sin haberlo migrado nunca.
   data.tasks = data.tasks || {};
   data.customTasks = data.customTasks || [];
-  data = migrateLegacySeed(data);
+  data = migrateLegacySeed(data, file);
   // Reset automático el día 1: si el período guardado no es el actual,
   // vuelve todo a pendiente pero conserva el estado de Macarena y el catálogo
   // de tareas aprendidas (esas no son del mes, son permanentes hasta que las
@@ -207,7 +207,7 @@ function read() {
     fresh.macarena = data.macarena || fresh.macarena;
     fresh.customTasks = data.customTasks || fresh.customTasks;
     fresh.migratedLegacyCatalog = data.migratedLegacyCatalog;
-    write(fresh);
+    write(fresh, file);
     return fresh;
   }
   data.tasks = data.tasks || {};
@@ -216,9 +216,9 @@ function read() {
   return data;
 }
 
-function write(data) {
-  fs.mkdirSync(NOTES_DIR, { recursive: true });
-  fs.writeFileSync(AGENDA_FILE, JSON.stringify(data, null, 2));
+function write(data, file = AGENDA_FILE) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
 // Catálogo fijo + lo que Fernando fue enseñando desde el botón "Aprender
@@ -232,8 +232,8 @@ function allTasks(data) {
 // tarea recurrente nueva — ver charla 07/09/2026, botón "🎓 Aprender rutina
 // nueva". Solo para recurrentes (con o sin día fijo); puntuales quedan fuera
 // de este catálogo, como se acordó.
-function addCustomTask({ title, group, day, kind, insumoNota }) {
-  const data = read();
+function addCustomTask({ title, group, day, kind, insumoNota, autoPrompt, execution, scriptModule }, file = AGENDA_FILE) {
+  const data = read(file);
   const id = 'custom_' + (title || 'tarea').toLowerCase()
     .normalize('NFD').replace(/[̀-ͯ]/g, '') // saca tildes
     .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
@@ -246,9 +246,15 @@ function addCustomTask({ title, group, day, kind, insumoNota }) {
     kind: kind || 'auto',
     insumoNota: insumoNota || '',
     learned: true, // distingue las aprendidas de las del catálogo semilla, por si hace falta filtrar
+    execution: execution === 'script' ? 'script' : 'chat',
   };
+  if (task.execution === 'script') {
+    task.scriptModule = scriptModule || null;
+    task.verified = false;
+  }
+  if (autoPrompt) task.autoPrompt = autoPrompt;
   data.customTasks.push(task);
-  write(data);
+  write(data, file);
   return task;
 }
 
@@ -279,8 +285,8 @@ function colorFor(task, taskState, today = new Date()) {
   return 'amarillo';
 }
 
-function list() {
-  const data = read();
+function list(file = AGENDA_FILE) {
+  const data = read(file);
   return allTasks(data).map(task => {
     const ts = data.tasks[task.id] || { state: 'pendiente', doneAt: null };
     const items = ts.items || {};
@@ -296,12 +302,21 @@ function list() {
           doneAt: items[i] ? items[i].doneAt : null,
         }))
       : null;
-    return { ...task, ...ts, checklistState, color: colorFor(task, ts) };
+    const run = ts.run || null;
+    return {
+      ...task, ...ts, checklistState, color: colorFor(task, ts),
+      execution: task.execution || 'chat',
+      scriptModule: task.scriptModule || null,
+      verified: !!task.verified,
+      runStatus: run ? run.status : 'idle',
+      runUi: run ? run.ui : null,
+      runError: run ? run.error : null,
+    };
   });
 }
 
-function markDone(id, done = true) {
-  const data = read();
+function markDone(id, done = true, file = AGENDA_FILE) {
+  const data = read(file);
   const task = allTasks(data).find(t => t.id === id);
   if (!task) return null;
   const doneAt = done ? Date.now() : null;
@@ -315,7 +330,7 @@ function markDone(id, done = true) {
     out.items = items;
   }
   data.tasks[id] = out;
-  write(data);
+  write(data, file);
   return data.tasks[id];
 }
 
@@ -339,6 +354,64 @@ function markItem(id, itemIndex, done = true) {
   return data.tasks[id];
 }
 
+// La corrida queda dentro del estado mensual para sobrevivir reinicios y
+// pausas sin mantener un proceso vivo esperando input.
+function getRunState(id, file = AGENDA_FILE) {
+  const data = read(file);
+  const taskState = data.tasks[id];
+  return (taskState && taskState.run && taskState.run.state) || {};
+}
+
+function saveRunResult(id, { state, ui }, file = AGENDA_FILE) {
+  const data = read(file);
+  if (!allTasks(data).find(task => task.id === id)) return null;
+  const status = ui && ui.type === 'listo' ? 'done' : 'waiting';
+  // markDone reemplaza el estado completo; guardar run después evita perderlo.
+  if (status === 'done') markDone(id, true, file);
+  const fresh = read(file);
+  const previous = fresh.tasks[id] || { state: 'pendiente', doneAt: null };
+  fresh.tasks[id] = {
+    ...previous,
+    run: { state: state || {}, status, ui: ui || null, error: null },
+  };
+  write(fresh, file);
+  return fresh.tasks[id];
+}
+
+function saveRunError(id, message, file = AGENDA_FILE) {
+  const data = read(file);
+  if (!allTasks(data).find(task => task.id === id)) return null;
+  const previous = data.tasks[id] || { state: 'pendiente', doneAt: null };
+  const previousRun = previous.run || { state: {}, ui: null };
+  data.tasks[id] = {
+    ...previous,
+    run: { state: previousRun.state, status: 'error', ui: previousRun.ui, error: message },
+  };
+  write(data, file);
+  return data.tasks[id];
+}
+
+function resetRun(id, file = AGENDA_FILE) {
+  const data = read(file);
+  if (!allTasks(data).find(task => task.id === id)) return null;
+  const previous = data.tasks[id] || { state: 'pendiente', doneAt: null };
+  data.tasks[id] = {
+    ...previous,
+    run: { state: {}, status: 'idle', ui: null, error: null },
+  };
+  write(data, file);
+  return data.tasks[id];
+}
+
+function setTaskVerified(id, verified = true, file = AGENDA_FILE) {
+  const data = read(file);
+  const task = data.customTasks.find(candidate => candidate.id === id);
+  if (!task || task.execution !== 'script') return null;
+  task.verified = !!verified;
+  write(data, file);
+  return task;
+}
+
 function setWaiting(id) {
   const data = read();
   if (!allTasks(data).find(t => t.id === id)) return null;
@@ -358,4 +431,8 @@ function updateMacarena(patch) {
   return data.macarena;
 }
 
-module.exports = { CATALOG, list, markDone, markItem, setWaiting, getMacarena, updateMacarena, addCustomTask, removeCustomTask, currentPeriod, AGENDA_FILE };
+module.exports = {
+  CATALOG, list, markDone, markItem, setWaiting, getMacarena, updateMacarena,
+  addCustomTask, removeCustomTask, currentPeriod, AGENDA_FILE,
+  setTaskVerified, saveRunResult, saveRunError, resetRun, getRunState,
+};
