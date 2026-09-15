@@ -8,9 +8,10 @@ const MEMORY_PROTOCOL = 'CONTEXTO JARVIS COMPARTIDO: sos un asistente que trabaj
 
 class GeminiRunner extends EventEmitter {
   constructor({ spawnFn = spawn, command = GEMINI_CMD, selfHost, selfPort } = {}) {
-    super(); this.spawnFn = spawnFn; this.command = command; this.selfHost = selfHost; this.selfPort = selfPort; this.running = new Map();
+    super(); this.spawnFn = spawnFn; this.command = command; this.selfHost = selfHost; this.selfPort = selfPort; this.running = new Map(); this.activeSessions = new Map();
   }
   isBusy(id) { return this.running.has(id); }
+  getActiveSessionIds() { return new Set([...this.activeSessions.values()].filter(Boolean)); }
   cancel(id) {
     const child = this.running.get(id); if (!child) return false;
     child._cancelled = true;
@@ -33,7 +34,9 @@ class GeminiRunner extends EventEmitter {
     let child;
     try { child = this.spawnFn(this.command, args, { cwd: job.cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }); }
     catch (err) { this.emit('status', { convId: job.convId, status: 'idle', code: -1, stderr: err.message, incomplete: true }); return; }
-    this.running.set(job.convId, child); this.emit('status', { convId: job.convId, status: 'running' });
+    this.running.set(job.convId, child);
+    this.activeSessions.set(job.convId, job.sessionId || null);
+    this.emit('status', { convId: job.convId, status: 'running' });
     let buf = '', stderr = '', response = '', conversationId = null, gotResult = false, resultFailed = false, resultError = null, done = false;
     // El id puede aparecer antes del evento final. Guardarlo permite continuar
     // una conversación que Antigravity corte por límite de herramientas.
@@ -50,6 +53,7 @@ class GeminiRunner extends EventEmitter {
       if (done) return;
       done = true;
       this.running.delete(job.convId);
+      this.activeSessions.delete(job.convId);
       const wasCancelled = !!child?._cancelled;
       const incomplete = !wasCancelled && (!gotResult || resultFailed);
       const reason = wasCancelled
@@ -63,7 +67,14 @@ class GeminiRunner extends EventEmitter {
     };
     const ingest = line => {
       let event; try { event = JSON.parse(line); } catch { return; }
-      conversationId = findConversationId(event) || conversationId;
+      const foundId = findConversationId(event);
+      if (foundId && !conversationId) {
+        conversationId = foundId;
+        this.activeSessions.set(job.convId, conversationId);
+        this.emit('session', { convId: job.convId, sessionId: conversationId });
+      } else if (foundId) {
+        conversationId = foundId;
+      }
       if (event.event === 'step_update' && typeof event.step_update?.text_delta === 'string') response += event.step_update.text_delta;
       if (event.event === 'result') {
         gotResult = true;

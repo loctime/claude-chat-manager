@@ -721,6 +721,10 @@ const codexRunner = new CodexRunner({ selfHost: HOST, selfPort: PORT });
 const codexSseClients = new Map(); // convId → Set<res>
 const geminiRunner = new GeminiRunner({ selfHost: HOST, selfPort: PORT });
 const geminiSseClients = new Map();
+// convId → Date.now() de cuando se despachó el mensaje. Sirve para distinguir
+// una respuesta real (aunque gemini-runner haya perdido el hilo del stream)
+// de una vieja: ver findFreshGeminiAnswer más abajo.
+const geminiTurnStartedAt = new Map();
 const CODEX_TTS_SCRIPT = path.join(os.homedir(), '.claude', 'scripts', 'speak-response.py');
 const CODEX_TTS_VOICE = 'es-AR-TomasNeural';
 const GEMINI_TTS_VOICE = 'es-UY-ValentinaNeural';
@@ -2916,8 +2920,55 @@ app.get('/api/codex/conversations/:id/stream', (req, res) => {
 // ── Gemini CLI ──
 function geminiBroadcast(convId, payload) { for (const res of geminiSseClients.get(convId) || []) res.write(`data: ${JSON.stringify(payload)}\n\n`); }
 function geminiConvStatus(convId) { return geminiRunner.isBusy(convId) ? 'running' : 'idle'; }
+function resolveGeminiConv(data, id) {
+  if (data.conversations[id]) return { convId: id, conv: data.conversations[id] };
+  if (data.merged && data.merged[id] && data.conversations[data.merged[id]]) {
+    return { convId: data.merged[id], conv: data.conversations[data.merged[id]] };
+  }
+  return { convId: id, conv: null };
+}
+geminiRunner.on('session', ({ convId, sessionId }) => {
+  const data = meta.load(GEMINI_META_FILE), conv = data.conversations[convId];
+  if (conv && !conv.currentSessionId) {
+    conv.currentSessionId = sessionId;
+    meta.save(data, GEMINI_META_FILE);
+  }
+});
+// Bug real 2026-09-15: Diego reportó que la voz de AgY a veces avisa "se
+// detuvo antes de entregar la respuesta final" pero el mensaje SÍ le llega
+// bien en el chat. Causa: dos fuentes de verdad desincronizadas. Lo que ve
+// Diego en /messages sale de geminiScanner (el transcript real de
+// Antigravity en disco) — pero "incomplete" lo decide gemini-runner.js
+// mirando solo el stdout de ESTE proceso, y Antigravity puede reportar un
+// error de stream ("the stream was interrupted", ver 2026-09-14 más arriba)
+// y aun así terminar escribiendo la respuesta completa en su propio
+// transcript un instante después. Antes de tratar un turno como fallido,
+// esta función chequea si el transcript real ya tiene una respuesta nueva
+// (más nueva que cuando se mandó el mensaje) — si la tiene, es un éxito real
+// aunque gemini-runner se haya confundido.
+function findFreshGeminiAnswer(conv, turnStartedAt) {
+  if (!conv || !conv.currentSessionId || !turnStartedAt) return null;
+  let messages;
+  try { messages = geminiScanner.getMessages(conv.currentSessionId); } catch { return null; }
+  if (!messages || !messages.length) return null;
+  const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && m.text && m.text.trim());
+  if (!lastAssistant || !lastAssistant.ts) return null;
+  const ts = new Date(lastAssistant.ts).getTime();
+  // -2000ms de margen: Antigravity puede escribir la entrada del transcript
+  // un toque antes de que nuestro `send()` termine de registrar el arranque.
+  if (!Number.isFinite(ts) || ts < turnStartedAt - 2000) return null;
+  return lastAssistant.text;
+}
 geminiRunner.on('event', ({ convId, event }) => geminiBroadcast(convId, { kind: 'gemini', event }));
-geminiRunner.on('status', status => {
+geminiRunner.on('status', rawStatus => {
+  const turnStartedAt = geminiTurnStartedAt.get(rawStatus.convId);
+  if (rawStatus.status === 'idle') geminiTurnStartedAt.delete(rawStatus.convId);
+  let status = rawStatus;
+  if (status.status === 'idle' && status.incomplete && !status.cancelled) {
+    const conv = meta.load(GEMINI_META_FILE).conversations[status.convId];
+    const freshAnswer = findFreshGeminiAnswer(conv, turnStartedAt);
+    if (freshAnswer) status = { ...status, incomplete: false, response: freshAnswer };
+  }
   // Antes exigía code===0 — con el fix del 2026-09-14 (gemini-runner.js) el
   // código de salida del proceso ya no es la señal confiable de éxito (ver
   // comentario ahí); lo que importa es que gemini-runner NO lo haya marcado
@@ -2997,27 +3048,86 @@ app.get('/api/gemini/tree', async (req, res) => {
   const data = meta.load(GEMINI_META_FILE);
   let metadataChanged = false;
 
-  // Auto-descubrir sesiones creadas en Antigravity CLI que no estén registradas en gemini-meta.json
-  const knownSessions = new Set(Object.values(data.conversations).map(c => c.currentSessionId).filter(Boolean));
-  for (const session of geminiScanner.listSessions()) {
-    if (!knownSessions.has(session.sessionId)) {
-      const convId = crypto.randomUUID();
-      data.conversations[convId] = {
-        currentSessionId: session.sessionId,
-        projectDir: session.workspace || process.env.CCM_DEFAULT_PROJECT_DIR || os.homedir(),
-        name: session.snippet || '(conversación externa)',
-        messages: [],
-        lastActivity: session.lastActivity,
-        model: 'gemini-3.8-flash-high',
-      };
-      knownSessions.add(session.sessionId);
+  // 1. Limpiar borradores vacíos abandonados y deduplicar conversaciones por currentSessionId
+  const bySession = new Map(); // sessionId -> [convId]
+  for (const [convId, c] of Object.entries(data.conversations)) {
+    // Si es un borrador vacío abandonado (sin sesión, sin mensajes y no está corriendo ahora mismo)
+    if (!c.currentSessionId && (!c.messages || c.messages.length === 0) && !geminiRunner.isBusy(convId)) {
+      delete data.conversations[convId];
+      metadataChanged = true;
+      continue;
+    }
+    if (c.currentSessionId) {
+      if (!bySession.has(c.currentSessionId)) bySession.set(c.currentSessionId, []);
+      bySession.get(c.currentSessionId).push(convId);
+    }
+  }
+
+  for (const [sessionId, convIds] of bySession) {
+    if (convIds.length > 1) {
+      // Elegir la entrada canónica: más mensajes primero, luego actividad más reciente
+      convIds.sort((a, b) => {
+        const ca = data.conversations[a], cb = data.conversations[b];
+        const msgsA = ca.messages?.length || 0, msgsB = cb.messages?.length || 0;
+        if (msgsB !== msgsA) return msgsB - msgsA;
+        return String(cb.lastActivity || '').localeCompare(String(ca.lastActivity || ''));
+      });
+      const canonicalId = convIds[0];
+      const canonical = data.conversations[canonicalId];
+      data.merged = data.merged || {};
+      for (let i = 1; i < convIds.length; i++) {
+        const dupId = convIds[i];
+        const dup = data.conversations[dupId];
+        if (!canonical.name && dup.name) canonical.name = dup.name;
+        if (!canonical.gitRepo && dup.gitRepo) canonical.gitRepo = dup.gitRepo;
+        if (dup.pinned) canonical.pinned = true;
+        if (dup.unread) canonical.unread = true;
+        data.merged[dupId] = canonicalId;
+        delete data.conversations[dupId];
+      }
       metadataChanged = true;
     }
   }
 
+  // 2. Auto-descubrir sesiones creadas en Antigravity CLI que no estén registradas en gemini-meta.json
+  const knownSessions = new Set(Object.values(data.conversations).map(c => c.currentSessionId).filter(Boolean));
+  for (const sId of geminiRunner.getActiveSessionIds()) knownSessions.add(sId);
+
+  // Si hay una conversación en vuelo que arrancó sin sessionId, cualquier sesión nueva en disco le pertenece
+  const pendingConvId = Object.keys(data.conversations).find(id => geminiRunner.isBusy(id) && !data.conversations[id].currentSessionId);
+
+  for (const session of geminiScanner.listSessions()) {
+    if (knownSessions.has(session.sessionId)) continue;
+
+    if (pendingConvId) {
+      const pendingConv = data.conversations[pendingConvId];
+      pendingConv.currentSessionId = session.sessionId;
+      knownSessions.add(session.sessionId);
+      metadataChanged = true;
+      continue;
+    }
+
+    const convId = crypto.randomUUID();
+    data.conversations[convId] = {
+      currentSessionId: session.sessionId,
+      projectDir: session.workspace || process.env.CCM_DEFAULT_PROJECT_DIR || os.homedir(),
+      name: session.snippet || '(conversación externa)',
+      messages: [],
+      lastActivity: session.lastActivity,
+      model: 'gemini-3.8-flash-high',
+    };
+    knownSessions.add(session.sessionId);
+    metadataChanged = true;
+  }
+
   const conversations = [];
+  const seenSessions = new Set();
   for (const [convId, c] of Object.entries(data.conversations)) {
     if (c.hidden) continue;
+    if (c.currentSessionId) {
+      if (seenSessions.has(c.currentSessionId)) continue;
+      seenSessions.add(c.currentSessionId);
+    }
     const s = (c.currentSessionId && geminiScanner.sessionInfo(c.currentSessionId)) || {};
     if (!c.gitRepo && (c.projectDir || s.workspace)) {
       const candidateDir = c.projectDir || s.workspace;
@@ -3051,7 +3161,8 @@ app.get('/api/gemini/tree', async (req, res) => {
 });
 
 app.patch('/api/gemini/conversations/:id', (req, res) => {
-  const data = meta.load(GEMINI_META_FILE), c = data.conversations[req.params.id];
+  const data = meta.load(GEMINI_META_FILE);
+  const { conv: c } = resolveGeminiConv(data, req.params.id);
   if (!c) return res.status(404).json({ error: 'conversación no encontrada' });
   for (const key of ['pinned', 'unread', 'hidden']) {
     if (key in req.body) c[key] = !!req.body[key];
@@ -3068,7 +3179,7 @@ app.patch('/api/gemini/conversations/:id', (req, res) => {
 
 app.get('/api/gemini/conversations/:id/messages', (req, res) => {
   const data = meta.load(GEMINI_META_FILE);
-  const c = data.conversations[req.params.id];
+  const { conv: c } = resolveGeminiConv(data, req.params.id);
   if (!c) return res.status(404).json({ error: 'conversación no encontrada' });
   if (c.currentSessionId) {
     const realMessages = geminiScanner.getMessages(c.currentSessionId);
@@ -3081,7 +3192,7 @@ app.get('/api/gemini/conversations/:id/messages', (req, res) => {
 
 app.get('/api/gemini/conversations/:id/repo', async (req, res) => {
   const data = meta.load(GEMINI_META_FILE);
-  const conv = data.conversations[req.params.id];
+  const { conv } = resolveGeminiConv(data, req.params.id);
   if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
   let repo = conv.gitRepo || null;
   if (!repo && conv.projectDir) {
@@ -3105,9 +3216,10 @@ app.get('/api/gemini/conversations/:id/repo', async (req, res) => {
 app.post('/api/gemini/conversations/:id/message', async (req, res) => {
   const text = String(req.body.text || '').trim();
   if (!text) return res.status(400).json({ error: 'mensaje vacío' });
-  if (geminiRunner.isBusy(req.params.id)) return res.status(409).json({ error: 'esa conversación ya está procesando un mensaje' });
-  const data = meta.load(GEMINI_META_FILE), c = data.conversations[req.params.id];
+  const data = meta.load(GEMINI_META_FILE);
+  const { convId, conv: c } = resolveGeminiConv(data, req.params.id);
   if (!c) return res.status(404).json({ error: 'conversación no encontrada' });
+  if (geminiRunner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación ya está procesando un mensaje' });
   if (!c.gitRepo) {
     const inferredRepo = await inferRepoFromMessage(text);
     if (inferredRepo) {
@@ -3119,8 +3231,9 @@ app.post('/api/gemini/conversations/:id/message', async (req, res) => {
   c.lastActivity = new Date().toISOString();
   meta.save(data, GEMINI_META_FILE);
   const cwd = c.projectDir || os.homedir();
+  geminiTurnStartedAt.set(convId, Date.now());
   geminiRunner.send({
-    convId: req.params.id,
+    convId,
     sessionId: c.currentSessionId,
     cwd,
     text,
@@ -3129,8 +3242,28 @@ app.post('/api/gemini/conversations/:id/message', async (req, res) => {
   res.status(202).json({ queued: true });
 });
 
-app.delete('/api/gemini/conversations/:id/message', (req, res) => res.json({ cancelled: geminiRunner.cancel(req.params.id) }));
-app.get('/api/gemini/conversations/:id/stream', (req, res) => { const id = req.params.id; res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' }); if (!geminiSseClients.has(id)) geminiSseClients.set(id, new Set()); geminiSseClients.get(id).add(res); res.write(`data: ${JSON.stringify({ kind: 'status', status: geminiConvStatus(id) })}\n\n`); const heartbeat = setInterval(() => res.write(':heartbeat\n\n'), 20000); req.on('close', () => { clearInterval(heartbeat); const set = geminiSseClients.get(id); if (set) { set.delete(res); if (!set.size) geminiSseClients.delete(id); } }); });
+app.delete('/api/gemini/conversations/:id/message', (req, res) => {
+  const data = meta.load(GEMINI_META_FILE);
+  const { convId } = resolveGeminiConv(data, req.params.id);
+  res.json({ cancelled: geminiRunner.cancel(convId) });
+});
+app.get('/api/gemini/conversations/:id/stream', (req, res) => {
+  const data = meta.load(GEMINI_META_FILE);
+  const { convId: id } = resolveGeminiConv(data, req.params.id);
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  if (!geminiSseClients.has(id)) geminiSseClients.set(id, new Set());
+  geminiSseClients.get(id).add(res);
+  res.write(`data: ${JSON.stringify({ kind: 'status', status: geminiConvStatus(id) })}\n\n`);
+  const heartbeat = setInterval(() => res.write(':heartbeat\n\n'), 20000);
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    const set = geminiSseClients.get(id);
+    if (set) {
+      set.delete(res);
+      if (!set.size) geminiSseClients.delete(id);
+    }
+  });
+});
 
 // ── Sala compartida (Jarvis ↔ FerStark) ──
 // Cada "sala" es una conversación de Claude local normal (mismo runner,

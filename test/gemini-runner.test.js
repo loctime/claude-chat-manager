@@ -138,3 +138,22 @@ test('cancelar turno en curso: emite idle con cancelled true y incomplete false'
   assert.equal(final.stderr, 'Cancelado por el usuario.');
 });
 
+test('emite evento session apenas aparece conversation_id en stdout', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  const sessions = [];
+  r.on('session', s => sessions.push(s));
+  r.send({ convId: 'c1', sessionId: null, cwd: 'C:\\p', text: 'arrancando' });
+  const { child } = spawned[0];
+  assert.equal(r.getActiveSessionIds().size, 0);
+  emitLines(child, [
+    { event: 'init', conversation_id: 'session-early-123', init: {} },
+  ]);
+  assert.equal(sessions.length, 1);
+  assert.deepEqual(sessions[0], { convId: 'c1', sessionId: 'session-early-123' });
+  assert.ok(r.getActiveSessionIds().has('session-early-123'));
+  child.emit('close', 0);
+  assert.equal(r.getActiveSessionIds().size, 0);
+});
+
+
