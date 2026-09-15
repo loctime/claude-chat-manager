@@ -2781,11 +2781,19 @@ async function createProject(name, hideFromAll) {
 // que usa exactamente esto) — mismos dos prompts nativos que ya usaba el
 // flujo viejo (esta app no tiene modales custom para inputs cortos), solo se
 // agregó el segundo. Devuelve null si se canceló el nombre.
-function promptNewProjectName() {
-  const name = (prompt('Nombre del proyecto (ej: FERZEP, Maximia, ControlApps):') || '').trim();
+function promptNewProjectName(suggestedName) {
+  const name = (prompt('Nombre del proyecto (ej: FERZEP, Maximia, ControlApps):', suggestedName || '') || '').trim();
   if (!name) return null;
   const hideFromAll = confirm(`¿Ocultar "${name}" de "Todos los proyectos"? (vas a poder verlo igual filtrando por él)`);
   return { name, hideFromAll };
+}
+
+// Nombre de la última carpeta de un path absoluto (Windows o POSIX) — usado
+// para sugerir el nombre de proyecto a partir de la carpeta ya resuelta de
+// una conversación (conv.gitRepo/conv.projectDir).
+function folderBaseName(p) {
+  if (!p) return '';
+  return p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '';
 }
 
 function setActiveProject(name) {
@@ -2839,8 +2847,7 @@ function showProjectBarMenu() {
     if (!btn) return;
     menu.remove();
     if (btn.dataset.action === 'new-project') {
-      const p = promptNewProjectName();
-      if (p) createProject(p.name, p.hideFromAll).then(() => setActiveProject(p.name));
+      showNewProjectFolderMenu();
       return;
     }
     if ('project' in btn.dataset) setActiveProject(btn.dataset.project);
@@ -2862,6 +2869,65 @@ $('project-bar-btn').onclick = async () => {
   await loadProjects().catch(err => toast('No se pudo cargar proyectos: ' + err.message));
   showProjectBarMenu();
 };
+
+// "+ Nuevo proyecto…" desde la barra global (sin conversación de referencia):
+// en vez de texto libre, ofrece elegir una carpeta real de Desktop\Proyectos
+// (mismas raíces que ya escanea inferRepoFromMessage en el server) — así el
+// nombre queda garantizado igual al de la carpeta. "Otro (nombre libre)…"
+// preserva el flujo viejo para tags que no son una carpeta (ej. "Salas").
+async function showNewProjectFolderMenu() {
+  document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
+  let folders = [];
+  try {
+    const resp = await api('/project-folders');
+    folders = resp.folders || [];
+  } catch (err) { toast('No se pudo listar carpetas: ' + err.message); }
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  for (const name of folders) {
+    const btn = document.createElement('button');
+    btn.textContent = name;
+    btn.dataset.folder = name;
+    menu.appendChild(btn);
+  }
+  if (folders.length) menu.appendChild(document.createElement('hr'));
+  const otherBtn = document.createElement('button');
+  otherBtn.textContent = 'Otro (nombre libre)…';
+  otherBtn.dataset.action = 'other';
+  menu.appendChild(otherBtn);
+  document.body.appendChild(menu);
+  const rect = $('project-bar-btn').getBoundingClientRect();
+  const maxX = window.innerWidth - menu.offsetWidth - 8;
+  menu.style.left = Math.max(8, Math.min(rect.left, maxX)) + 'px';
+  menu.style.top = (rect.bottom + 4) + 'px';
+
+  menu.addEventListener('click', e => {
+    e.stopPropagation();
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    menu.remove();
+    if (btn.dataset.action === 'other') {
+      const p = promptNewProjectName();
+      if (p) createProject(p.name, p.hideFromAll).then(() => setActiveProject(p.name));
+      return;
+    }
+    if ('folder' in btn.dataset) {
+      const name = btn.dataset.folder;
+      const hideFromAll = confirm(`¿Ocultar "${name}" de "Todos los proyectos"? (vas a poder verlo igual filtrando por él)`);
+      createProject(name, hideFromAll).then(() => setActiveProject(name));
+    }
+  });
+  function dismiss(e) {
+    if (menu.contains(e.target)) return;
+    menu.remove();
+    document.removeEventListener('click', dismiss, true);
+    document.removeEventListener('touchstart', dismiss, true);
+  }
+  setTimeout(() => {
+    document.addEventListener('click', dismiss, true);
+    document.addEventListener('touchstart', dismiss, true);
+  }, 350);
+}
 
 // Asignar/cambiar el proyecto de UNA conversación puntual, desde su menú
 // contextual (📌📁🏷️…). Reusa la lista de proyectos conocidos + opción de
@@ -2915,7 +2981,8 @@ function showAssignProjectMenu(x, y, conv) {
     if (!btn) return;
     menu.remove();
     if (btn.dataset.action === 'new-project') {
-      const p = promptNewProjectName();
+      const suggested = folderBaseName(conv.gitRepo || conv.projectDir);
+      const p = promptNewProjectName(suggested);
       if (p) createProject(p.name, p.hideFromAll).then(() => assign(p.name));
       return;
     }

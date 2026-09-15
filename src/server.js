@@ -1468,6 +1468,22 @@ async function inferRepoFromMessage(text) {
   return gitSync.resolveRepo(candidates.map(c => c.path));
 }
 
+// Nombres reales de carpeta bajo PROJECT_SEARCH_ROOTS, para el picker de
+// "+ Nuevo proyecto…" — así el tag que se registra coincide de una con lo
+// que inferRepoFromMessage() ya sabe resolver, sin depender de que alguien
+// tipee el nombre exacto a mano.
+function listProjectFolderNames() {
+  const names = new Set();
+  for (const root of PROJECT_SEARCH_ROOTS) {
+    let entries = [];
+    try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (entry.isDirectory()) names.add(entry.name);
+    }
+  }
+  return [...names].sort((a, b) => a.localeCompare(b, 'es'));
+}
+
 async function inferRepoFromMessages(messages) {
   // La asociación queda pendiente: si el primer mensaje fue genérico, el
   // siguiente "trabajemos en X" la completa. Priorizamos el más reciente
@@ -2186,6 +2202,11 @@ app.get('/api/projects', (req, res) => {
   res.json({ projects: projectsWithCounts(data) });
 });
 
+// Carpetas reales para el picker de "+ Nuevo proyecto…" (ver listProjectFolderNames).
+app.get('/api/project-folders', (req, res) => {
+  res.json({ folders: listProjectFolderNames() });
+});
+
 // Crea (o reactiva) una etiqueta de proyecto en el registro persistido, sin
 // necesidad de que ya exista una conversación con ese nombre — así "+ Nuevo
 // proyecto…" no desaparece la próxima vez que se abre el selector si todavía
@@ -2501,6 +2522,18 @@ app.post('/api/conversations/:id/message', async (req, res) => {
     outgoing = `[Resumen del contexto previo — la conversación fue compactada]\n${conv.compactedSummary}\n\n[Mensaje actual del usuario]\n${outgoing}`;
     delete conv.compactedSummary;
     delete conv.compactedAt;
+  }
+  // Charla nueva creada con un proyecto etiquetado (#project-bar): avisamos
+  // una sola vez, antes del primer mensaje real, en qué proyecto estamos
+  // trabajando — así Claude no depende de que el usuario lo escriba a mano
+  // ("trabajemos en X") y el chip de carpeta queda resuelto de entrada si el
+  // tag matchea una carpeta real bajo PROJECT_SEARCH_ROOTS.
+  if (conv.project && !conv.currentSessionId && !conv.projectAnnounced) {
+    const resolvedRepo = await inferRepoFromMessage(conv.project);
+    if (resolvedRepo) conv.gitRepo = resolvedRepo;
+    const folderNote = resolvedRepo ? `, carpeta: ${resolvedRepo}` : '';
+    outgoing = `[Estamos trabajando en el proyecto "${conv.project}"${folderNote}]\n\n${outgoing}`;
+    conv.projectAnnounced = true;
   }
   // La asociación puede llegar en cualquier mensaje (no necesariamente el
   // primero): queda pendiente hasta que el texto nombra un proyecto válido.
