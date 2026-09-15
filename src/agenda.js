@@ -9,10 +9,6 @@ const HOME_DIR = process.env.HOME || process.env.USERPROFILE || os.homedir();
 const NOTES_DIR = path.join(HOME_DIR, '.ccm-notes');
 const AGENDA_FILE = path.join(NOTES_DIR, 'agenda.json');
 
-// Catálogo fijo de tareas — se edita acá a mano cuando aparece una tarea
-// recurrente nueva (ver charla 07/09/2026 con Fernando, botón "+ Tarea
-// nueva" queda para más adelante, esto es el catálogo semilla).
-//
 // kind:
 //  - 'auto'            → en teoría no necesita nada de vos, se puede tildar
 //                         solo cuando el flujo real esté conectado (hoy: tilde manual)
@@ -28,7 +24,17 @@ const AGENDA_FILE = path.join(NOTES_DIR, 'agenda.json');
 const MARK_DONE_CMD = id =>
   `cd /mnt/c/Users/Fernando/Desktop/claude/claude-chat-manager && node -e "require('./src/agenda').markDone('${id}', true)"`;
 
-const CATALOG = [
+// Catálogo semilla de Fernando (facturación, Maximia, FERZEP...) — NO es
+// catálogo genérico de la app, es dato de negocio de UNA persona. Vive acá
+// solo como fuente de migración de una sola vez (ver migrateLegacySeed más
+// abajo): cualquier instancia que YA tenía progreso guardado contra estos
+// ids (o sea, la máquina real de Fernando) lo copia a su agenda.json local
+// la primera vez que carga este archivo, y de ahí en más vive ahí, no acá.
+// Una instancia nueva (Diego, o quien sea) nunca toca esto — arranca con
+// CATALOG vacío. Sacar este array del código entero (commit aparte) recién
+// cuando Fernando confirme que migró bien en su máquina — ver charla
+// 15/09/2026 ("no apto para multi-usuario").
+const LEGACY_SEED_CATALOG = [
   {
     id: 'fact_tgd_brucellaria', title: 'Facturar TGD + Brucellaria', group: 'Facturación', day: 5, kind: 'auto',
     checklist: ['Factura A TGD S.A. — $72.600', 'Factura A Brucellaria y Strappa SA — $108.900'],
@@ -86,6 +92,11 @@ const CATALOG = [
   { id: 'estadistico_contratista', title: 'Estadístico Contratista CPF-RDA (YPF)', group: 'Maximia', day: null, kind: 'insumo-terceros', insumoNota: 'Necesita la nómina de Macarena Schwindt — botón "Pedir nómina" abajo.' },
 ];
 
+// Catálogo semilla real de esta instancia — vacío por default (cualquier
+// instancia nueva arranca con la Agenda vacía, lista para "Aprender rutina
+// nueva"). Ver migrateLegacySeed().
+const CATALOG = [];
+
 function currentPeriod(d = new Date()) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
@@ -99,6 +110,26 @@ function emptyState() {
   };
 }
 
+// Migración de una sola vez: si esta instancia ya tenía progreso guardado
+// contra algún id del catálogo semilla de Fernando (prueba de que es su
+// máquina real, no una instancia nueva), copia esas tareas completas
+// (checklist/autoPrompt incluidos) a customTasks para que no pierda nada, y
+// marca migratedLegacyCatalog para no repetirlo. Una instancia nueva (sin
+// ese historial) nunca entra acá — queda con la Agenda vacía.
+function migrateLegacySeed(data) {
+  if (data.migratedLegacyCatalog) return data;
+  const hadLegacyProgress = LEGACY_SEED_CATALOG.some(t => data.tasks[t.id]);
+  if (hadLegacyProgress) {
+    const existingIds = new Set((data.customTasks || []).map(t => t.id));
+    for (const task of LEGACY_SEED_CATALOG) {
+      if (!existingIds.has(task.id)) data.customTasks.push({ ...task, learned: true });
+    }
+  }
+  data.migratedLegacyCatalog = true;
+  write(data);
+  return data;
+}
+
 function read() {
   let raw;
   try { raw = fs.readFileSync(AGENDA_FILE, 'utf8'); }
@@ -106,6 +137,12 @@ function read() {
   let data;
   try { data = JSON.parse(raw); }
   catch { return emptyState(); }
+  // Migra ANTES del reset de período de abajo — si no, un mes nuevo podría
+  // vaciar data.tasks antes de que la migración llegue a mirar los ids
+  // viejos, y Fernando perdería su catálogo sin haberlo migrado nunca.
+  data.tasks = data.tasks || {};
+  data.customTasks = data.customTasks || [];
+  data = migrateLegacySeed(data);
   // Reset automático el día 1: si el período guardado no es el actual,
   // vuelve todo a pendiente pero conserva el estado de Macarena y el catálogo
   // de tareas aprendidas (esas no son del mes, son permanentes hasta que las
@@ -114,6 +151,7 @@ function read() {
     const fresh = emptyState();
     fresh.macarena = data.macarena || fresh.macarena;
     fresh.customTasks = data.customTasks || fresh.customTasks;
+    fresh.migratedLegacyCatalog = data.migratedLegacyCatalog;
     write(fresh);
     return fresh;
   }
