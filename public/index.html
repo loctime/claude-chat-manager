@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=85">
+  <link rel="stylesheet" href="style.css?v=86">
   <!-- Color de identidad server-side (Configuración → Color de identidad). Va
        después de style.css para pisar el --accent default de ahí; el ajuste
        personal por-dispositivo ("Acento" en Colores, más abajo) sigue
@@ -67,10 +67,10 @@
         <button type="button" class="pane-tab" data-pane="4">🚦 Task<span id="agenda-badge" class="tab-badge" hidden></span></button>
         <button type="button" class="pane-tab" data-pane="5">💬 Sala</button>
       </nav>
-      <!-- Selector de proyecto: en qué tema/carpeta está parado Fernando ahora
-           mismo cuando tiene 2-3 charlas abiertas a la vez. Filtra Chats y
-           Archivado; "Nueva conversación" hereda el proyecto activo. Solo
-           metadata (etiqueta de texto), no toca carpeta/cwd real. -->
+      <!-- Selector de proyecto: en qué tema/carpeta estamos parados ahora
+           mismo cuando tenemos varias charlas abiertas a la vez. Filtra Chats,
+           Archivado, Codex y AgY; "Nueva conversación" hereda el proyecto activo.
+           Solo metadata (etiqueta de texto), no toca carpeta/cwd real. -->
       <div id="project-bar">
         <button type="button" id="project-bar-btn" aria-haspopup="true" aria-label="Elegir proyecto">
           <span id="project-bar-label">📁 Todos los proyectos</span>
@@ -536,7 +536,7 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=106"></script>
+  <script src="app.js?v=107"></script>
   <!-- Split de app.js por dominio (sesión 2026-08-20) — scripts clásicos, no
        ES modules: siguen compartiendo el mismo scope global que app.js, por
        eso cargan DESPUÉS (usan $()/settings/selectConv/etc. definidos ahí).

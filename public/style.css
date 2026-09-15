@@ -8,7 +8,8 @@
   --header:    #202c33;
   --bubble-me: #005c4b;
   --bubble-ai: #2f3f4a;
-  --accent:    #25d366;
+  --claude-accent: #25d366;
+  --accent:    var(--claude-accent);
   --codex-accent: #10a37f;
   --antigravity-accent: #7c5cff;
   /* Brillo de "no leído" en las pestañas (#pane-tabs) — variable propia, NO
@@ -314,10 +315,14 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
   text-transform: uppercase;
   letter-spacing: .3px;
   color: var(--accent);
-  background: rgba(37, 211, 102, .12);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
   border-radius: 4px;
   padding: 1px 5px;
   margin-right: 6px;
+  cursor: pointer;
+}
+.conv-project-tag:hover {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
 }
 
 #tree-viewport { flex: 1; overflow: hidden; position: relative; }
@@ -580,7 +585,26 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
   list-style: none;
   user-select: none;
 }
-.project > summary::-webkit-details-marker { display: none; }
+.project.project-engine-claude,
+.conv.conv-engine-claude {
+  --accent: var(--claude-accent, #25d366);
+  --accent-contrast: var(--claude-accent-contrast, #fff);
+}
+.project.project-engine-claude > summary { color: var(--claude-accent, #25d366); }
+
+.project.project-engine-codex,
+.conv.conv-engine-codex {
+  --accent: var(--codex-accent, #10a37f);
+  --accent-contrast: var(--codex-accent-contrast, #fff);
+}
+.project.project-engine-codex > summary { color: var(--codex-accent, #10a37f); }
+
+.project.project-engine-gemini,
+.conv.conv-engine-gemini {
+  --accent: var(--antigravity-accent, #7c5cff);
+  --accent-contrast: var(--antigravity-accent-contrast, #fff);
+}
+.project.project-engine-gemini > summary { color: var(--antigravity-accent, #7c5cff); }
 
 .conv {
   display: flex;
@@ -621,7 +645,7 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
   width: 42px; height: 42px; border-radius: 50%;
   background: var(--accent);
   display: flex; align-items: center; justify-content: center;
-  font-weight: 700; font-size: 17px; color: #fff;
+  font-weight: 700; font-size: 17px; color: var(--accent-contrast, #fff);
   flex-shrink: 0;
 }
 .conv-body { flex: 1; min-width: 0; }
@@ -1838,12 +1862,70 @@ body.hide-tools details.tool { display: none !important; }
 .ctx-menu .ctx-danger { color: #ff8a80; }
 .ctx-menu .ctx-danger:hover { background: rgba(255,138,128,.12); }
 .ctx-menu hr { border: none; border-top: 1px solid var(--border); margin: 4px 2px; }
+.ctx-menu-header {
+  padding: 6px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+.project-actions-menu {
+  z-index: 10050;
+  min-width: 160px;
+}
+.ctx-menu-item-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  border-radius: 4px;
+}
+.ctx-menu-item-row:hover {
+  background: var(--input-bg);
+}
+.ctx-menu-item-row .ctx-menu-item-main {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  padding: 8px 12px;
+  background: transparent;
+  color: var(--text);
+  border: none;
+  border-radius: 4px 0 0 4px;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ctx-menu-item-row .ctx-menu-item-more {
+  flex: none;
+  width: 28px;
+  padding: 8px 4px;
+  text-align: center;
+  background: transparent;
+  color: var(--text-dim);
+  border: none;
+  border-radius: 0 4px 4px 0;
+  cursor: pointer;
+  font-size: 14px;
+  opacity: .5;
+}
+.ctx-menu-item-row .ctx-menu-item-more:hover {
+  opacity: 1;
+  color: var(--text);
+  background: rgba(255,255,255,.08);
+}
 
 /* Picker de "+ Nuevo proyecto…" (showNewProjectFolderMenu): input de filtro
    fijo arriba + lista scrolleable — sin esto, con ~90 carpetas reales el
    .ctx-menu base (sin max-height) se desborda de la pantalla sin forma de
    llegar a los últimos items. */
-.ctx-menu.folder-menu { min-width: 240px; }
+.ctx-menu.folder-menu { min-width: 250px; max-width: 320px; }
 .ctx-menu-filter {
   display: block;
   width: 100%;
@@ -1857,6 +1939,64 @@ body.hide-tools details.tool { display: none !important; }
   border-radius: 4px;
 }
 .ctx-menu-list { max-height: 45vh; overflow-y: auto; }
+.ctx-menu-folder-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  color: var(--text);
+  transition: background .12s;
+}
+.ctx-menu-folder-item:hover {
+  background: var(--input-bg);
+}
+.ctx-menu-folder-item input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  flex: none;
+}
+.ctx-menu-folder-item span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folder-menu-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+.folder-menu-create-btn {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--accent) !important;
+  color: var(--accent-contrast, #fff) !important;
+  font-weight: 600;
+  border: none;
+  border-radius: 4px;
+  text-align: center;
+  cursor: pointer;
+  transition: opacity .15s;
+  font-size: 13px;
+}
+.folder-menu-create-btn:hover:not(:disabled) {
+  opacity: .9;
+}
+.folder-menu-create-btn:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+  filter: grayscale(.6);
+}
 
 /* Autocompletar @menciones en el composer de Sala — mismo lenguaje visual
    que .ctx-menu, pero posicionado relativo al form (arriba del textarea),

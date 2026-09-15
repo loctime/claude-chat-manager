@@ -553,7 +553,7 @@ function convElement(c) {
     ? `<span class="conv-ctx" data-tone="${ctxTone(pct)}" title="Contexto usado: ${(pct * 100).toFixed(1)}%">${pctLabel}</span>`
     : '';
   const div = document.createElement('div');
-  div.className = 'conv' + (c.convId === currentConv || c.convId === lastClaudeConvId ? ' active' : '') + (c.archived ? ' archived' : '');
+  div.className = 'conv conv-engine-claude' + (c.convId === currentConv || c.convId === lastClaudeConvId ? ' active' : '') + (c.archived ? ' archived' : '');
   div.innerHTML = `
     <div class="conv-avatar">${avatarChar(c.name)}</div>
     <div class="conv-body">
@@ -570,6 +570,11 @@ function convElement(c) {
   if (c.project && c.project !== activeProjectFilter) {
     tagEl.textContent = c.project;
     tagEl.hidden = false;
+    tagEl.onclick = (e) => {
+      e.stopPropagation();
+      setActiveProject(c.project);
+    };
+    if (typeof attachProjectItemGestures === 'function') attachProjectItemGestures(tagEl, c.project);
   } else {
     tagEl.hidden = true;
   }
@@ -580,8 +585,198 @@ function convElement(c) {
   return div;
 }
 
+let unifiedTreeInFlight = null;
+let unifiedTreeCache = { filter: null, data: null, ts: 0 };
+
+function invalidateUnifiedTreeCache() {
+  unifiedTreeCache = { filter: null, data: null, ts: 0 };
+  unifiedTreeInFlight = null;
+}
+
+async function fetchUnifiedProjectTreeData(projectName, force = false) {
+  if (!projectName || projectName === '__none__') return null;
+  const now = Date.now();
+  if (!force && unifiedTreeCache.filter === projectName && unifiedTreeCache.data && (now - unifiedTreeCache.ts < 5000)) {
+    return unifiedTreeCache.data;
+  }
+  if (!force && unifiedTreeInFlight && unifiedTreeInFlight.filter === projectName) {
+    return unifiedTreeInFlight.promise;
+  }
+  const promise = (async () => {
+    try {
+      const [claudeRes, codexRes, geminiRes] = await Promise.all([
+        api(`/tree?project=${encodeURIComponent(projectName)}`).catch(() => null),
+        typeof codexApi === 'function' ? codexApi(`/tree?project=${encodeURIComponent(projectName)}`).catch(() => null) : null,
+        typeof geminiApi === 'function' ? geminiApi(`/tree?project=${encodeURIComponent(projectName)}`).catch(() => null) : null,
+      ]);
+      const data = {
+        claudeTree: (claudeRes && claudeRes.tree) || [],
+        claudeUnread: (claudeRes && claudeRes.unreadTotal) || 0,
+        claudeTotal: (claudeRes && claudeRes.total) || 0,
+        claudeHasMore: !!(claudeRes && claudeRes.hasMore),
+        archivedTotal: (claudeRes && claudeRes.archivedTotal) || 0,
+        codexConvs: (codexRes && codexRes.conversations) || [],
+        codexUnread: (codexRes && codexRes.unreadTotal) || 0,
+        geminiConvs: (geminiRes && geminiRes.conversations) || [],
+        geminiUnread: (geminiRes && geminiRes.unreadTotal) || 0,
+      };
+      unifiedTreeCache = { filter: projectName, data, ts: Date.now() };
+      return data;
+    } finally {
+      if (unifiedTreeInFlight && unifiedTreeInFlight.promise === promise) {
+        unifiedTreeInFlight = null;
+      }
+    }
+  })();
+  unifiedTreeInFlight = { filter: projectName, promise };
+  return promise;
+}
+
+function renderUnifiedProjectTree(containerEl, data, primaryEngine = 'claude') {
+  containerEl.innerHTML = '';
+  const claudeTree = (data && data.claudeTree) || [];
+  const codexConvs = ((data && data.codexConvs) || []).filter(c => !c.hidden);
+  const geminiConvs = ((data && data.geminiConvs) || []).filter(c => !c.hidden);
+
+  const totalClaude = claudeTree.reduce((acc, p) => acc + (p.conversations ? p.conversations.length : 0), 0);
+  const totalCodex = codexConvs.length;
+  const totalGemini = geminiConvs.length;
+  const grandTotal = totalClaude + totalCodex + totalGemini;
+
+  if (grandTotal === 0) {
+    const empty = document.createElement('div');
+    empty.id = 'empty-state';
+    empty.innerHTML = '<p>Sin conversaciones para este proyecto</p>';
+    containerEl.appendChild(empty);
+    return;
+  }
+
+  function renderClaudeSection() {
+    if (totalClaude === 0) {
+      if (primaryEngine === 'claude') {
+        const emptyMsg = document.createElement('div');
+        emptyMsg.className = 'conv-empty-subtext';
+        emptyMsg.style.cssText = 'padding: 10px 14px; font-size: 12px; color: var(--text-dim);';
+        emptyMsg.textContent = 'Sin conversaciones de Chats en este proyecto';
+        containerEl.appendChild(emptyMsg);
+      }
+      return;
+    }
+    for (const proj of claudeTree) {
+      const det = document.createElement('details');
+      det.className = 'project project-engine-group project-engine-claude';
+      det.open = true;
+      const sum = document.createElement('summary');
+      const folderName = proj.projectDir.split('/').pop() || proj.projectDir;
+      sum.textContent = primaryEngine === 'claude'
+        ? (grandTotal > totalClaude ? `🟣 Chats • ${folderName}` : folderName)
+        : `🟣 Chats • ${folderName} (${proj.conversations.length})`;
+      sum.title = proj.projectDir;
+      det.appendChild(sum);
+      for (const c of proj.conversations) {
+        const row = convElement(c);
+        if (primaryEngine !== 'claude') {
+          const origClick = row.onclick;
+          row.onclick = async (e) => {
+            await goToPane(0);
+            if (typeof origClick === 'function') origClick(e);
+          };
+        }
+        det.appendChild(row);
+      }
+      containerEl.appendChild(det);
+    }
+  }
+
+  function renderCodexSection() {
+    if (totalCodex === 0) {
+      if (primaryEngine === 'codex') {
+        const emptyMsg = document.createElement('div');
+        emptyMsg.className = 'conv-empty-subtext';
+        emptyMsg.style.cssText = 'padding: 10px 14px; font-size: 12px; color: var(--text-dim);';
+        emptyMsg.textContent = 'Sin conversaciones de Codex en este proyecto';
+        containerEl.appendChild(emptyMsg);
+      }
+      return;
+    }
+    if (typeof codexSharedRow !== 'function') return;
+    const det = document.createElement('details');
+    det.className = 'project project-engine-group project-engine-codex';
+    det.open = true;
+    const sum = document.createElement('summary');
+    sum.textContent = `🟢 Codex (${totalCodex})`;
+    det.appendChild(sum);
+    for (const c of codexConvs) {
+      const row = codexSharedRow(c);
+      if (primaryEngine !== 'codex') {
+        const origClick = row.onclick;
+        row.onclick = async (e) => {
+          await goToPane(2);
+          if (typeof origClick === 'function') origClick(e);
+        };
+      }
+      det.appendChild(row);
+    }
+    containerEl.appendChild(det);
+  }
+
+  function renderGeminiSection() {
+    if (totalGemini === 0) {
+      if (primaryEngine === 'gemini') {
+        const emptyMsg = document.createElement('div');
+        emptyMsg.className = 'conv-empty-subtext';
+        emptyMsg.style.cssText = 'padding: 10px 14px; font-size: 12px; color: var(--text-dim);';
+        emptyMsg.textContent = 'Sin conversaciones de Antigravity en este proyecto';
+        containerEl.appendChild(emptyMsg);
+      }
+      return;
+    }
+    if (typeof geminiRow !== 'function') return;
+    const det = document.createElement('details');
+    det.className = 'project project-engine-group project-engine-gemini';
+    det.open = true;
+    const sum = document.createElement('summary');
+    sum.textContent = `🔵 Antigravity (${totalGemini})`;
+    det.appendChild(sum);
+    for (const c of geminiConvs) {
+      const row = geminiRow(c);
+      if (primaryEngine !== 'gemini') {
+        const origClick = row.onclick;
+        row.onclick = async (e) => {
+          await goToPane(6);
+          if (typeof origClick === 'function') origClick(e);
+        };
+      }
+      det.appendChild(row);
+    }
+    containerEl.appendChild(det);
+  }
+
+  if (primaryEngine === 'gemini') {
+    renderGeminiSection();
+    renderClaudeSection();
+    renderCodexSection();
+  } else if (primaryEngine === 'codex') {
+    renderCodexSection();
+    renderClaudeSection();
+    renderGeminiSection();
+  } else {
+    renderClaudeSection();
+    renderCodexSection();
+    renderGeminiSection();
+  }
+}
+
 function buildTreePane(navEl, treeData) {
   navEl.innerHTML = '';
+  if (!treeData || !treeData.tree || !treeData.tree.length) {
+    const empty = document.createElement('div');
+    empty.id = 'empty-state';
+    empty.innerHTML = `<p>${activeProjectFilter ? 'Sin conversaciones para este proyecto' : 'Sin conversaciones todavía'}</p>`;
+    navEl.appendChild(empty);
+    return;
+  }
+
   for (const proj of treeData.tree) {
     const det = document.createElement('details');
     det.className = 'project';
@@ -596,6 +791,23 @@ function buildTreePane(navEl, treeData) {
 }
 
 async function loadTree() {
+  if (activeProjectFilter && activeProjectFilter !== '__none__') {
+    const data = await fetchUnifiedProjectTreeData(activeProjectFilter);
+    if (data) {
+      treeHasMore = data.claudeHasMore;
+      treeTotal = data.claudeTotal;
+      archivedTotal = data.archivedTotal;
+      setPaneUnread('0', data.claudeUnread > 0);
+      setPaneProcessing('0', data.claudeTree.some(p => p.conversations.some(c => c.status && c.status !== 'idle')));
+      const nav = $('tree');
+      renderUnifiedProjectTree(nav, data, 'claude');
+      const archTab = document.querySelector('.pane-tab[data-pane="1"]');
+      if (archTab) archTab.textContent = archivedTotal > 0 ? `Archivado (${archivedTotal})` : 'Archivado';
+      updateGlobalBusyIndicator();
+      return;
+    }
+  }
+
   const params = new URLSearchParams({ limit: String(treeLimit) });
   if (activeAccount) params.set('account', activeAccount);
   if (activeProjectFilter) params.set('project', activeProjectFilter);
@@ -770,9 +982,9 @@ async function goToPane(index) {
   // abierto en el panel principal.
   document.body.classList.toggle('codex-list-theme', index === 2);
   document.body.classList.toggle('antigravity-list-theme', index === 6);
-  // El selector de proyecto solo aplica a conversaciones (Chats/Archivado) —
-  // Notas, Codex, Agenda y Sala son modelos de datos distintos, sin esta etiqueta.
-  $('project-bar').hidden = index !== 0 && index !== 1;
+  // El selector de proyecto aplica a conversaciones (Chats/Archivado/Codex/Antigravity) —
+  // Notas, Agenda y Sala son modelos de datos distintos, sin esta etiqueta.
+  $('project-bar').hidden = ![0, 1, 2, 6].includes(index);
   $('tree-viewport-inner').dataset.pane = String(index);
   document.querySelectorAll('.pane-tab').forEach(t => {
     t.classList.toggle('active', t.dataset.pane === String(index));
@@ -814,9 +1026,12 @@ function updateGlobalBusyIndicator() {
   else navigator.clearAppBadge().catch(() => {});
 }
 
-function refreshVisibleTrees() {
+function refreshVisibleTrees(force = true) {
+  if (force) invalidateUnifiedTreeCache();
   safeLoadTree();
   if (archivedPaneLoaded) safeLoadArchivedTree();
+  if (typeof loadCodexSharedTree === 'function') loadCodexSharedTree().catch(() => {});
+  if (typeof loadGeminiTree === 'function') loadGeminiTree().catch(() => {});
 }
 
 async function commitArchiveToggle(el, conv) {
@@ -1088,11 +1303,21 @@ function showConvMenu(x, y, conv) {
 // se pierde entre charlas — esto no agrupa por carpeta real (eso ya existe,
 // ver buildTreePane/projectDir), es una etiqueta de texto libre que él asigna
 // a mano para saber "en qué estoy parado" y filtrar la lista por eso.
-async function loadProjects() {
+let loadProjectsPromise = null;
+async function loadProjects(force = false) {
+  if (!force && knownProjects.length > 0) return knownProjects;
+  if (loadProjectsPromise) return loadProjectsPromise;
   const params = new URLSearchParams();
   if (activeAccount) params.set('account', activeAccount);
-  const resp = await api('/projects?' + params);
-  knownProjects = resp.projects || [];
+  loadProjectsPromise = api('/projects?' + params).then(resp => {
+    knownProjects = resp.projects || [];
+    return knownProjects;
+  }).catch(err => {
+    return knownProjects;
+  }).finally(() => {
+    loadProjectsPromise = null;
+  });
+  return loadProjectsPromise;
 }
 
 function projectBarLabel(name) {
@@ -1111,28 +1336,28 @@ function updateProjectBar() {
 // el filtro activo, no etiqueta ninguna charla) desaparecía apenas se
 // navegaba a otro lado: no había ninguna conversación con esa etiqueta que
 // lo mantuviera vivo en /api/projects.
-async function createProject(name, hideFromAll) {
+async function createProject(name, hideFromAll, folders) {
   try {
+    const payload = { name, hideFromAll: !!hideFromAll };
+    if (Array.isArray(folders) && folders.length) payload.folders = folders;
     const resp = await api('/projects', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(withAccountBody({ name, hideFromAll: !!hideFromAll })),
+      body: JSON.stringify(withAccountBody(payload)),
     });
     knownProjects = resp.projects || knownProjects;
+    invalidateUnifiedTreeCache();
   } catch (err) {
     toast('No se pudo crear el proyecto: ' + err.message);
   }
 }
 
-// Pide nombre + si hay que ocultarlo de "Todos los proyectos" (ej. "Salas",
-// que usa exactamente esto) — mismos dos prompts nativos que ya usaba el
-// flujo viejo (esta app no tiene modales custom para inputs cortos), solo se
-// agregó el segundo. Devuelve null si se canceló el nombre.
+// Pide nombre de proyecto nuevo. Los proyectos se crean siempre visibles
+// (hideFromAll: false) sin preguntar confirmación extra.
 function promptNewProjectName(suggestedName) {
   const name = (prompt('Nombre del proyecto (ej: FERZEP, Maximia, ControlApps):', suggestedName || '') || '').trim();
   if (!name) return null;
-  const hideFromAll = confirm(`¿Ocultar "${name}" de "Todos los proyectos"? (vas a poder verlo igual filtrando por él)`);
-  return { name, hideFromAll };
+  return { name, hideFromAll: false };
 }
 
 // Nombre de la última carpeta de un path absoluto (Windows o POSIX) — usado
@@ -1145,6 +1370,7 @@ function folderBaseName(p) {
 
 function setActiveProject(name) {
   activeProjectFilter = name || '';
+  invalidateUnifiedTreeCache();
   localStorage.setItem('ccm-active-project', activeProjectFilter);
   updateProjectBar();
   // El filtro cambió: recargar la pestaña visible. Archivado se recarga solo
@@ -1153,6 +1379,186 @@ function setActiveProject(name) {
   archivedPaneLoaded = false;
   safeLoadTree();
   if (activePane === 1) safeLoadArchivedTree().then(() => { archivedPaneLoaded = true; });
+  if (typeof loadCodexSharedTree === 'function') loadCodexSharedTree().catch(() => {});
+  if (typeof loadGeminiTree === 'function') loadGeminiTree().catch(() => {});
+}
+
+let activeProjectActionMenu = null;
+
+function showProjectItemMenu(x, y, projectName, onDone = null) {
+  if (!projectName || projectName === '__none__') return null;
+  // Solo eliminamos menús de acción previos, NO el menú de la lista de proyectos
+  document.querySelectorAll('.project-actions-menu').forEach(m => m.remove());
+
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu project-actions-menu';
+  menu.style.zIndex = '10050';
+  activeProjectActionMenu = menu;
+
+  const title = document.createElement('div');
+  title.className = 'ctx-menu-header';
+  title.textContent = '📁 ' + projectName;
+  menu.appendChild(title);
+
+  const proj = (knownProjects || []).find(p => p.name.toLowerCase() === projectName.toLowerCase());
+  const isHidden = proj ? !!proj.hideFromAll : false;
+
+  const renameBtn = document.createElement('button');
+  renameBtn.textContent = '✏️ Renombrar proyecto…';
+  renameBtn.dataset.action = 'rename';
+  menu.appendChild(renameBtn);
+
+  const hideBtn = document.createElement('button');
+  hideBtn.textContent = isHidden ? '👁️ Mostrar en "Todos los proyectos"' : '🙈 Ocultar de "Todos los proyectos"';
+  hideBtn.dataset.action = 'toggle-hide';
+  menu.appendChild(hideBtn);
+
+  const delBtn = document.createElement('button');
+  delBtn.textContent = '🗑️ Eliminar proyecto';
+  delBtn.className = 'ctx-danger';
+  delBtn.dataset.action = 'delete';
+  menu.appendChild(delBtn);
+
+  document.body.appendChild(menu);
+  const maxX = window.innerWidth - menu.offsetWidth - 8;
+  const maxY = window.innerHeight - menu.offsetHeight - 8;
+  menu.style.left = Math.max(8, Math.min(x, maxX)) + 'px';
+  menu.style.top = Math.max(8, Math.min(y, maxY)) + 'px';
+
+  function dismissAction(e) {
+    if (menu.contains(e.target)) return;
+    menu.remove();
+    if (activeProjectActionMenu === menu) activeProjectActionMenu = null;
+    document.removeEventListener('click', dismissAction, true);
+    document.removeEventListener('touchstart', dismissAction, true);
+  }
+  setTimeout(() => {
+    document.addEventListener('click', dismissAction, true);
+    document.addEventListener('touchstart', dismissAction, true);
+  }, 300);
+
+  menu.addEventListener('click', async e => {
+    e.stopPropagation();
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    menu.remove();
+    if (activeProjectActionMenu === menu) activeProjectActionMenu = null;
+    const action = btn.dataset.action;
+    if (action === 'rename') {
+      const newName = (prompt('Nuevo nombre para el proyecto:', projectName) || '').trim();
+      if (!newName || newName === projectName) return;
+      try {
+        const resp = await api('/projects/' + encodeURIComponent(projectName), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(withAccountBody({ name: newName })),
+        });
+        knownProjects = resp.projects || knownProjects;
+        if (activeProjectFilter.toLowerCase() === projectName.toLowerCase()) {
+          setActiveProject(newName);
+        } else {
+          refreshVisibleTrees();
+        }
+        if (typeof onDone === 'function') onDone();
+        toast(`Proyecto renombrado a "${newName}"`, 'info', 2500);
+      } catch (err) {
+        toast('No se pudo renombrar el proyecto: ' + err.message);
+      }
+    } else if (action === 'toggle-hide') {
+      try {
+        const resp = await api('/projects/' + encodeURIComponent(projectName), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(withAccountBody({ hideFromAll: !isHidden })),
+        });
+        knownProjects = resp.projects || knownProjects;
+        refreshVisibleTrees();
+        if (typeof onDone === 'function') onDone();
+        toast(`"${projectName}" ${!isHidden ? 'ocultado de "Todos los proyectos"' : 'visible en "Todos los proyectos"'}`, 'info', 2500);
+      } catch (err) {
+        toast('No se pudo actualizar visibilidad: ' + err.message);
+      }
+    } else if (action === 'delete') {
+      if (!confirm(`Eliminar el proyecto "${projectName}"?\n\nLas conversaciones no se borran, sólo quedan sin proyecto asignado.`)) return;
+      try {
+        const resp = await api('/projects/' + encodeURIComponent(projectName), {
+          method: 'DELETE',
+        });
+        knownProjects = resp.projects || knownProjects;
+        if (activeProjectFilter.toLowerCase() === projectName.toLowerCase()) {
+          setActiveProject('');
+        } else {
+          refreshVisibleTrees();
+        }
+        if (typeof onDone === 'function') onDone();
+        toast(`Proyecto "${projectName}" eliminado`, 'info', 2500);
+      } catch (err) {
+        toast('No se pudo eliminar el proyecto: ' + err.message);
+      }
+    }
+  });
+
+  return menu;
+}
+
+function attachProjectItemGestures(el, getProjectName) {
+  if (!el) return;
+  const resolveName = () => typeof getProjectName === 'function' ? getProjectName() : getProjectName;
+
+  el.addEventListener('contextmenu', e => {
+    const name = resolveName();
+    if (!name || name === '__none__') return;
+    e.preventDefault();
+    e.stopPropagation();
+    showProjectItemMenu(e.clientX, e.clientY, name);
+  });
+
+  let touchTimer = null;
+  let startX = 0, startY = 0;
+  let longPressed = false;
+
+  el.addEventListener('touchstart', e => {
+    const name = resolveName();
+    if (!name || name === '__none__') return;
+    longPressed = false;
+    const t = e.touches[0];
+    startX = t.clientX;
+    startY = t.clientY;
+    touchTimer = setTimeout(() => {
+      longPressed = true;
+      touchTimer = null;
+      if (navigator.vibrate) { try { navigator.vibrate(30); } catch {} }
+      showProjectItemMenu(startX, startY, name);
+    }, 500);
+  }, { passive: true });
+
+  el.addEventListener('touchmove', e => {
+    if (!touchTimer) return;
+    const t = e.touches[0];
+    if (Math.abs(t.clientX - startX) > 8 || Math.abs(t.clientY - startY) > 8) {
+      clearTimeout(touchTimer);
+      touchTimer = null;
+    }
+  }, { passive: true });
+
+  el.addEventListener('touchend', e => {
+    if (touchTimer) {
+      clearTimeout(touchTimer);
+      touchTimer = null;
+    }
+    if (longPressed) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  });
+
+  el.addEventListener('click', e => {
+    if (longPressed) {
+      longPressed = false;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  }, true);
 }
 
 function projectMenuItem(label, value, extra) {
@@ -1166,23 +1572,70 @@ function projectMenuItem(label, value, extra) {
 function showProjectBarMenu() {
   document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
   const menu = document.createElement('div');
-  menu.className = 'ctx-menu';
-  menu.appendChild(projectMenuItem('Todos los proyectos', ''));
-  menu.appendChild(projectMenuItem('Sin proyecto', '__none__'));
-  if (knownProjects.length) {
-    const hr = document.createElement('hr');
-    menu.appendChild(hr);
-    for (const p of knownProjects) {
-      menu.appendChild(projectMenuItem(`${p.name} (${p.count})${p.hideFromAll ? ' 🙈' : ''}`, p.name));
+  menu.className = 'ctx-menu project-bar-dropdown';
+
+  function renderList() {
+    menu.innerHTML = '';
+    menu.appendChild(projectMenuItem('Todos los proyectos', ''));
+    menu.appendChild(projectMenuItem('Sin proyecto', '__none__'));
+
+    if (knownProjects.length) {
+      const hr = document.createElement('hr');
+      menu.appendChild(hr);
+      for (const p of knownProjects) {
+        const row = document.createElement('div');
+        row.className = 'ctx-menu-item-row';
+
+        const mainBtn = document.createElement('button');
+        mainBtn.className = 'ctx-menu-item-main';
+        mainBtn.textContent = (p.name === activeProjectFilter ? '✓ ' : '') + `${p.name} (${p.count})${p.hideFromAll ? ' 🙈' : ''}`;
+        mainBtn.dataset.project = p.name;
+        mainBtn.onclick = (e) => {
+          e.stopPropagation();
+          menu.remove();
+          if (activeProjectActionMenu) { activeProjectActionMenu.remove(); activeProjectActionMenu = null; }
+          setActiveProject(p.name);
+        };
+        row.appendChild(mainBtn);
+
+        const moreBtn = document.createElement('button');
+        moreBtn.className = 'ctx-menu-item-more';
+        moreBtn.title = 'Opciones del proyecto';
+        moreBtn.textContent = '⋮';
+        moreBtn.onclick = (e) => {
+          e.stopPropagation();
+          const rect = moreBtn.getBoundingClientRect();
+          showProjectItemMenu(rect.right + 4, rect.top, p.name, renderList);
+        };
+        row.appendChild(moreBtn);
+
+        row.addEventListener('contextmenu', e => {
+          e.preventDefault();
+          e.stopPropagation();
+          showProjectItemMenu(e.clientX, e.clientY, p.name, renderList);
+        });
+
+        menu.appendChild(row);
+      }
     }
+
+    const hr2 = document.createElement('hr');
+    menu.appendChild(hr2);
+    const newBtn = document.createElement('button');
+    newBtn.textContent = '+ Nuevo proyecto…';
+    newBtn.dataset.action = 'new-project';
+    newBtn.onclick = (e) => {
+      e.stopPropagation();
+      menu.remove();
+      if (activeProjectActionMenu) { activeProjectActionMenu.remove(); activeProjectActionMenu = null; }
+      showNewProjectFolderMenu();
+    };
+    menu.appendChild(newBtn);
   }
-  const hr2 = document.createElement('hr');
-  menu.appendChild(hr2);
-  const newBtn = document.createElement('button');
-  newBtn.textContent = '+ Nuevo proyecto…';
-  newBtn.dataset.action = 'new-project';
-  menu.appendChild(newBtn);
+
+  renderList();
   document.body.appendChild(menu);
+  menu._renderList = renderList;
   const rect = $('project-bar-btn').getBoundingClientRect();
   const maxX = window.innerWidth - menu.offsetWidth - 8;
   menu.style.left = Math.max(8, Math.min(rect.left, maxX)) + 'px';
@@ -1190,31 +1643,35 @@ function showProjectBarMenu() {
 
   menu.addEventListener('click', e => {
     e.stopPropagation();
-    const btn = e.target.closest('button');
-    if (!btn) return;
-    menu.remove();
-    if (btn.dataset.action === 'new-project') {
-      showNewProjectFolderMenu();
-      return;
+    const btn = e.target.closest('button[data-project]');
+    if (btn) {
+      menu.remove();
+      if (activeProjectActionMenu) { activeProjectActionMenu.remove(); activeProjectActionMenu = null; }
+      setActiveProject(btn.dataset.project);
     }
-    if ('project' in btn.dataset) setActiveProject(btn.dataset.project);
   });
+
   function dismiss(e) {
-    if (menu.contains(e.target)) return;
+    if (menu.contains(e.target) || (activeProjectActionMenu && activeProjectActionMenu.contains(e.target))) return;
     menu.remove();
+    if (activeProjectActionMenu) { activeProjectActionMenu.remove(); activeProjectActionMenu = null; }
     document.removeEventListener('click', dismiss, true);
     document.removeEventListener('touchstart', dismiss, true);
+    document.removeEventListener('contextmenu', dismiss, true);
   }
-  // Delay para saltear el click sintético del touchend que abrió el menú.
   setTimeout(() => {
     document.addEventListener('click', dismiss, true);
     document.addEventListener('touchstart', dismiss, true);
+    document.addEventListener('contextmenu', dismiss, true);
   }, 350);
 }
 
-$('project-bar-btn').onclick = async () => {
-  await loadProjects().catch(err => toast('No se pudo cargar proyectos: ' + err.message));
+$('project-bar-btn').onclick = () => {
   showProjectBarMenu();
+  loadProjects(true).then(() => {
+    const m = document.querySelector('.project-bar-dropdown');
+    if (m && typeof m._renderList === 'function') m._renderList();
+  }).catch(() => {});
 };
 
 // "+ Nuevo proyecto…" desde la barra global (sin conversación de referencia):
@@ -1241,21 +1698,61 @@ async function showNewProjectFolderMenu() {
   filterInput.className = 'ctx-menu-filter';
   filterInput.placeholder = 'Buscar carpeta…';
   menu.appendChild(filterInput);
+
   const list = document.createElement('div');
   list.className = 'ctx-menu-list';
-  const folderBtns = folders.map(name => {
-    const btn = document.createElement('button');
-    btn.textContent = name;
-    btn.dataset.folder = name;
-    list.appendChild(btn);
-    return btn;
+
+  function closeMenu() {
+    menu.remove();
+    document.removeEventListener('click', dismiss, true);
+    document.removeEventListener('touchstart', dismiss, true);
+  }
+
+  const folderItems = folders.map(name => {
+    const label = document.createElement('label');
+    label.className = 'ctx-menu-folder-item';
+    label.dataset.folder = name;
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.dataset.folder = name;
+
+    const span = document.createElement('span');
+    span.textContent = name;
+
+    label.appendChild(cb);
+    label.appendChild(span);
+    list.appendChild(label);
+
+    label.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      closeMenu();
+      createProject(name, false, [name]).then(() => setActiveProject(name));
+    });
+
+    return label;
   });
   menu.appendChild(list);
-  if (folders.length) menu.appendChild(document.createElement('hr'));
+
+  const actions = document.createElement('div');
+  actions.className = 'folder-menu-actions';
+
+  const createBtn = document.createElement('button');
+  createBtn.className = 'folder-menu-create-btn';
+  createBtn.textContent = 'Crear proyecto';
+  createBtn.disabled = true;
+  actions.appendChild(createBtn);
+
+  if (folders.length) actions.appendChild(document.createElement('hr'));
+
   const otherBtn = document.createElement('button');
   otherBtn.textContent = 'Otro (nombre libre)…';
   otherBtn.dataset.action = 'other';
-  menu.appendChild(otherBtn);
+  actions.appendChild(otherBtn);
+
+  menu.appendChild(actions);
+
   document.body.appendChild(menu);
   const rect = $('project-bar-btn').getBoundingClientRect();
   const maxX = window.innerWidth - menu.offsetWidth - 8;
@@ -1263,32 +1760,78 @@ async function showNewProjectFolderMenu() {
   menu.style.top = (rect.bottom + 4) + 'px';
   filterInput.focus();
 
-  filterInput.addEventListener('input', () => {
-    const q = filterInput.value.trim().toLowerCase();
-    for (const btn of folderBtns) btn.hidden = q && !btn.textContent.toLowerCase().includes(q);
+  function getSelectedFolders() {
+    return Array.from(list.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.dataset.folder);
+  }
+
+  function updateCreateBtn() {
+    const selected = getSelectedFolders();
+    if (selected.length === 0) {
+      createBtn.disabled = true;
+      createBtn.textContent = 'Crear proyecto';
+    } else if (selected.length === 1) {
+      createBtn.disabled = false;
+      createBtn.textContent = 'Crear proyecto (1)';
+    } else {
+      createBtn.disabled = false;
+      createBtn.textContent = `Crear proyecto (${selected.length})`;
+    }
+  }
+
+  list.addEventListener('change', () => {
+    updateCreateBtn();
   });
 
-  menu.addEventListener('click', e => {
-    e.stopPropagation();
-    const btn = e.target.closest('button');
-    if (!btn) return;
-    menu.remove();
-    if (btn.dataset.action === 'other') {
-      const p = promptNewProjectName(filterInput.value.trim());
-      if (p) createProject(p.name, p.hideFromAll).then(() => setActiveProject(p.name));
-      return;
-    }
-    if ('folder' in btn.dataset) {
-      const name = btn.dataset.folder;
-      const hideFromAll = confirm(`¿Ocultar "${name}" de "Todos los proyectos"? (vas a poder verlo igual filtrando por él)`);
-      createProject(name, hideFromAll).then(() => setActiveProject(name));
+  filterInput.addEventListener('input', () => {
+    const q = filterInput.value.trim().toLowerCase();
+    for (const item of folderItems) {
+      item.hidden = q && !item.dataset.folder.toLowerCase().includes(q);
     }
   });
+
+  filterInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const selected = getSelectedFolders();
+      if (selected.length > 0) {
+        createBtn.click();
+      } else {
+        const visible = folderItems.filter(item => !item.hidden);
+        if (visible.length === 1) {
+          const cb = visible[0].querySelector('input[type="checkbox"]');
+          if (cb) {
+            cb.checked = !cb.checked;
+            updateCreateBtn();
+          }
+        }
+      }
+    }
+  });
+
+  createBtn.onclick = (e) => {
+    e.stopPropagation();
+    const selected = getSelectedFolders();
+    if (!selected.length) return;
+    closeMenu();
+    let projName = selected[0];
+    if (selected.length > 1) {
+      const custom = prompt('Nombre del proyecto:', selected[0]);
+      if (!custom || !custom.trim()) return;
+      projName = custom.trim();
+    }
+    createProject(projName, false, selected).then(() => setActiveProject(projName));
+  };
+
+  otherBtn.onclick = (e) => {
+    e.stopPropagation();
+    closeMenu();
+    const p = promptNewProjectName(filterInput.value.trim());
+    if (p) createProject(p.name, p.hideFromAll).then(() => setActiveProject(p.name));
+  };
+
   function dismiss(e) {
     if (menu.contains(e.target)) return;
-    menu.remove();
-    document.removeEventListener('click', dismiss, true);
-    document.removeEventListener('touchstart', dismiss, true);
+    closeMenu();
   }
   setTimeout(() => {
     document.addEventListener('click', dismiss, true);
@@ -1299,75 +1842,131 @@ async function showNewProjectFolderMenu() {
 // Asignar/cambiar el proyecto de UNA conversación puntual, desde su menú
 // contextual (📌📁🏷️…). Reusa la lista de proyectos conocidos + opción de
 // escribir uno nuevo, igual que la barra de filtro.
-function showAssignProjectMenu(x, y, conv) {
+function showAssignProjectMenu(x, y, conv, engine = 'claude') {
   document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
   const menu = document.createElement('div');
   menu.className = 'ctx-menu';
-  const noneBtn = document.createElement('button');
-  noneBtn.textContent = (!conv.project ? '✓ ' : '') + 'Sin proyecto';
-  noneBtn.dataset.project = '';
-  menu.appendChild(noneBtn);
-  if (knownProjects.length) {
-    const hr = document.createElement('hr');
-    menu.appendChild(hr);
-    for (const p of knownProjects) {
-      const btn = document.createElement('button');
-      btn.textContent = (conv.project === p.name ? '✓ ' : '') + p.name;
-      btn.dataset.project = p.name;
-      menu.appendChild(btn);
-    }
-  }
-  const hr2 = document.createElement('hr');
-  menu.appendChild(hr2);
-  const newBtn = document.createElement('button');
-  newBtn.textContent = '+ Nuevo proyecto…';
-  newBtn.dataset.action = 'new-project';
-  menu.appendChild(newBtn);
-  document.body.appendChild(menu);
-  const maxX = window.innerWidth - menu.offsetWidth - 8;
-  const maxY = window.innerHeight - menu.offsetHeight - 8;
-  menu.style.left = Math.min(x, maxX) + 'px';
-  menu.style.top = Math.min(y, maxY) + 'px';
 
   async function assign(project) {
     try {
-      await api(`/conversations/${conv.convId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withAccountBody({ project })),
-      });
+      if (engine === 'codex') {
+        await codexApi(`/conversations/${conv.convId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ project }),
+        });
+      } else if (engine === 'gemini') {
+        await geminiApi(`/conversations/${conv.convId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ project }),
+        });
+      } else {
+        await api(`/conversations/${conv.convId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(withAccountBody({ project })),
+        });
+      }
       conv.project = project || undefined;
       refreshVisibleTrees();
       toast(project ? `Proyecto: ${project}` : 'Sin proyecto', 'info', 2000);
     } catch (err) { toast('No se pudo asignar el proyecto: ' + err.message); }
   }
 
-  menu.addEventListener('click', e => {
-    e.stopPropagation();
-    const btn = e.target.closest('button');
-    if (!btn) return;
-    menu.remove();
-    if (btn.dataset.action === 'new-project') {
+  function renderContent() {
+    menu.innerHTML = '';
+    const noneBtn = document.createElement('button');
+    noneBtn.textContent = (!conv.project ? '✓ ' : '') + 'Sin proyecto';
+    noneBtn.dataset.project = '';
+    noneBtn.onclick = (e) => {
+      e.stopPropagation();
+      menu.remove();
+      if (activeProjectActionMenu) { activeProjectActionMenu.remove(); activeProjectActionMenu = null; }
+      assign('');
+    };
+    menu.appendChild(noneBtn);
+
+    if (knownProjects.length) {
+      const hr = document.createElement('hr');
+      menu.appendChild(hr);
+      for (const p of knownProjects) {
+        const row = document.createElement('div');
+        row.className = 'ctx-menu-item-row';
+
+        const mainBtn = document.createElement('button');
+        mainBtn.className = 'ctx-menu-item-main';
+        mainBtn.textContent = (conv.project === p.name ? '✓ ' : '') + p.name;
+        mainBtn.dataset.project = p.name;
+        mainBtn.onclick = (e) => {
+          e.stopPropagation();
+          menu.remove();
+          if (activeProjectActionMenu) { activeProjectActionMenu.remove(); activeProjectActionMenu = null; }
+          assign(p.name);
+        };
+        row.appendChild(mainBtn);
+
+        const moreBtn = document.createElement('button');
+        moreBtn.className = 'ctx-menu-item-more';
+        moreBtn.title = 'Opciones del proyecto';
+        moreBtn.textContent = '⋮';
+        moreBtn.onclick = (e) => {
+          e.stopPropagation();
+          const rect = moreBtn.getBoundingClientRect();
+          showProjectItemMenu(rect.right + 4, rect.top, p.name, renderContent);
+        };
+        row.appendChild(moreBtn);
+
+        row.addEventListener('contextmenu', e => {
+          e.preventDefault();
+          e.stopPropagation();
+          showProjectItemMenu(e.clientX, e.clientY, p.name, renderContent);
+        });
+
+        menu.appendChild(row);
+      }
+    }
+
+    const hr2 = document.createElement('hr');
+    menu.appendChild(hr2);
+    const newBtn = document.createElement('button');
+    newBtn.textContent = '+ Nuevo proyecto…';
+    newBtn.dataset.action = 'new-project';
+    newBtn.onclick = (e) => {
+      e.stopPropagation();
+      menu.remove();
+      if (activeProjectActionMenu) { activeProjectActionMenu.remove(); activeProjectActionMenu = null; }
       const suggested = folderBaseName(conv.gitRepo || conv.projectDir);
       const p = promptNewProjectName(suggested);
-      if (p) createProject(p.name, p.hideFromAll).then(() => assign(p.name));
-      return;
-    }
-    if ('project' in btn.dataset) assign(btn.dataset.project);
-  });
+      if (p) createProject(p.name, p.hideFromAll, suggested ? [suggested] : []).then(() => assign(p.name));
+    };
+    menu.appendChild(newBtn);
+  }
+
+  renderContent();
+  document.body.appendChild(menu);
+  const maxX = window.innerWidth - menu.offsetWidth - 8;
+  const maxY = window.innerHeight - menu.offsetHeight - 8;
+  menu.style.left = Math.min(x, maxX) + 'px';
+  menu.style.top = Math.min(y, maxY) + 'px';
+
   function dismiss(e) {
-    if (menu.contains(e.target)) return;
+    if (menu.contains(e.target) || (activeProjectActionMenu && activeProjectActionMenu.contains(e.target))) return;
     menu.remove();
+    if (activeProjectActionMenu) { activeProjectActionMenu.remove(); activeProjectActionMenu = null; }
     document.removeEventListener('click', dismiss, true);
     document.removeEventListener('touchstart', dismiss, true);
+    document.removeEventListener('contextmenu', dismiss, true);
   }
   setTimeout(() => {
     document.addEventListener('click', dismiss, true);
     document.addEventListener('touchstart', dismiss, true);
+    document.addEventListener('contextmenu', dismiss, true);
   }, 350);
 }
 
 updateProjectBar();
+attachProjectItemGestures($('project-bar-btn'), () => activeProjectFilter);
 
 // Copia un historial legible, pero deja afuera las tools y los marcadores del
 // sistema: son parte de la ejecución, no de la conversación entre vos y el
@@ -3743,8 +4342,12 @@ function pollTrees() {
   // Sala no se enteraba NUNCA de que llegó una respuesta mientras no la
   // mirabas — era la otra mitad real del bug que reportó Diego.
   api('/sala/rooms').then(({ rooms: list }) => setPaneUnread('5', list.some(r => r.unread))).catch(() => {});
+  loadProjects(true).catch(() => {});
 }
-loadAccounts().then(() => safeLoadTree());
+loadAccounts().then(() => {
+  safeLoadTree();
+  loadProjects().catch(() => {});
+});
 let treePollTimer = setInterval(pollTrees, 15000);
 // En segundo plano (celu minimizado, pantalla bloqueada) no tiene sentido
 // seguir pinchando el server cada 15s — cada poll despierta la antena y el
@@ -3870,11 +4473,25 @@ function applyPaneVisibility() {
 function applySettings() {
   document.body.classList.toggle('hide-tools', !settings.showTools);
   const root = document.documentElement;
-  const vars = { '--accent': settings.colorAccent, '--tab-alert': settings.colorAccent, '--codex-accent': settings.colorCodex, '--antigravity-accent': settings.colorAntigravity, '--bubble-me': settings.colorMe, '--bubble-ai': settings.colorAi };
+  const vars = {
+    '--accent': settings.colorAccent,
+    '--claude-accent': settings.colorAccent,
+    '--tab-alert': settings.colorAccent,
+    '--codex-accent': settings.colorCodex,
+    '--antigravity-accent': settings.colorAntigravity,
+    '--bubble-me': settings.colorMe,
+    '--bubble-ai': settings.colorAi
+  };
   for (const [k, v] of Object.entries(vars)) {
     if (v) root.style.setProperty(k, v);
     else root.style.removeProperty(k);
   }
+  if (settings.colorAccent) root.style.setProperty('--claude-accent-contrast', contrastTextColor(settings.colorAccent) || '#fff');
+  else root.style.removeProperty('--claude-accent-contrast');
+  if (settings.colorCodex) root.style.setProperty('--codex-accent-contrast', contrastTextColor(settings.colorCodex) || '#fff');
+  else root.style.removeProperty('--codex-accent-contrast');
+  if (settings.colorAntigravity) root.style.setProperty('--antigravity-accent-contrast', contrastTextColor(settings.colorAntigravity) || '#fff');
+  else root.style.removeProperty('--antigravity-accent-contrast');
   const textVars = { '--bubble-me-text': settings.colorMe, '--bubble-ai-text': settings.colorAi };
   for (const [k, v] of Object.entries(textVars)) {
     const textColor = contrastTextColor(v);

@@ -13,6 +13,8 @@ function createCodexRouter({
   codexMetaFile,
   resolveConversationGitRepo,
   inferRepoFromMessage,
+  registerProject,
+  getHiddenProjectNames,
 }) {
   const router = express.Router();
   const codexAvailability = new CodexAvailability();
@@ -40,17 +42,21 @@ function createCodexRouter({
     const projectDir = process.env.CCM_DEFAULT_PROJECT_DIR || os.homedir();
     const convId = crypto.randomUUID();
     const data = meta.load(codexMetaFile);
-    data.conversations[convId] = { currentSessionId: null, projectDir };
+    const project = (req.body.project || '').trim() || undefined;
+    data.conversations[convId] = { currentSessionId: null, projectDir, project };
+    if (project && typeof registerProject === 'function') registerProject(project);
     meta.save(data, codexMetaFile);
-    res.status(201).json({ convId, projectDir });
+    res.status(201).json({ convId, projectDir, project });
   });
 
   router.get('/tree', async (req, res) => {
     const data = meta.load(codexMetaFile);
     const convs = [];
     let metadataChanged = false;
+    const projectFilter = req.query.project;
     for (const [convId, c] of Object.entries(data.conversations)) {
       if (c.hidden) continue;
+      if (projectFilter && (projectFilter === '__none__' ? !!c.project : c.project !== projectFilter)) continue;
       // Evitar listSessions(): escanea y parsea CADA rollout bajo ~/.codex/sessions/
       // (todo el uso histórico de Codex CLI en la máquina, no solo lo de Jarvis) para
       // descartar casi todo — acá solo hace falta la sesión de esta conv puntual.
@@ -71,6 +77,7 @@ function createCodexRouter({
         convId,
         projectDir: c.projectDir || null,
         gitRepo: c.gitRepo || null,
+        project: c.project || null,
         name: c.name || s.snippet || '(nueva conversación)',
         snippet: s.snippet || '',
         lastActivity: s.lastActivity || null,
@@ -90,7 +97,16 @@ function createCodexRouter({
     }
     if (metadataChanged) meta.save(data, codexMetaFile);
     const showArchived = req.query.archived === '1';
-    const filtered = showArchived ? convs.filter(c => c.archived) : convs.filter(c => !c.archived);
+    let filtered = showArchived ? convs.filter(c => c.archived) : convs.filter(c => !c.archived);
+    const projectFilter = req.query.project;
+    if (projectFilter) {
+      filtered = projectFilter === '__none__'
+        ? filtered.filter(c => !c.project)
+        : filtered.filter(c => c.project === projectFilter);
+    } else {
+      const hidden = typeof getHiddenProjectNames === 'function' ? getHiddenProjectNames() : new Set();
+      if (hidden && hidden.size > 0) filtered = filtered.filter(c => !c.project || !hidden.has(c.project));
+    }
     filtered.sort((a, b) => {
       if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
       return (b.lastActivity || '').localeCompare(a.lastActivity || '');
@@ -115,6 +131,10 @@ function createCodexRouter({
     if ('pinned' in req.body) conv.pinned = !!req.body.pinned;
     if ('archived' in req.body) conv.archived = !!req.body.archived;
     if ('unread' in req.body) conv.unread = !!req.body.unread;
+    if ('project' in req.body) {
+      conv.project = (req.body.project || '').trim() || undefined;
+      if (conv.project && typeof registerProject === 'function') registerProject(conv.project);
+    }
     // hidden: saca la conversación de las dos listas (activas y archivadas) sin
     // tocar el .jsonl real — a diferencia de un borrado, es reversible a mano
     // editando meta.json si hiciera falta.
@@ -147,8 +167,19 @@ function createCodexRouter({
         meta.save(data, codexMetaFile);
       }
     }
+    let outgoing = text;
+    if (conv.project && !conv.currentSessionId && !conv.projectAnnounced) {
+      if (!conv.gitRepo && typeof inferRepoFromMessage === 'function') {
+        const inferredRepo = await inferRepoFromMessage(conv.project);
+        if (inferredRepo) conv.gitRepo = inferredRepo;
+      }
+      const folderNote = conv.gitRepo ? `, carpeta: ${conv.gitRepo}` : '';
+      outgoing = `[Estamos trabajando en el proyecto "${conv.project}"${folderNote}]\n\n${outgoing}`;
+      conv.projectAnnounced = true;
+      meta.save(data, codexMetaFile);
+    }
     const cwd = conv.projectDir || os.homedir();
-    codexRunner.send({ convId, sessionId: conv.currentSessionId, cwd, text, imagePath: req.body.imagePath || undefined });
+    codexRunner.send({ convId, sessionId: conv.currentSessionId, cwd, text: outgoing, imagePath: req.body.imagePath || undefined });
     res.status(202).json({ queued: true });
   });
 

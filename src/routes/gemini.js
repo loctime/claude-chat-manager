@@ -38,6 +38,8 @@ function createGeminiRouter({
   geminiTurnStartedAt,
   inferRepoFromMessage,
   inferRepoFromMessages,
+  registerProject,
+  getHiddenProjectNames,
 }) {
   const router = express.Router();
 
@@ -57,15 +59,18 @@ function createGeminiRouter({
     const convId = crypto.randomUUID(), data = meta.load(geminiMetaFile);
     const projectDir = req.body.projectDir || process.env.CCM_DEFAULT_PROJECT_DIR || os.homedir();
     const model = req.body.model || 'gemini-3.8-flash-high';
+    const project = (req.body.project || '').trim() || undefined;
     data.conversations[convId] = {
       currentSessionId: null,
       projectDir,
       model,
       messages: [],
       lastActivity: null,
+      project,
     };
+    if (project && typeof registerProject === 'function') registerProject(project);
     meta.save(data, geminiMetaFile);
-    res.status(201).json({ convId, projectDir, model });
+    res.status(201).json({ convId, projectDir, model, project });
   });
 
   router.get('/tree', async (req, res) => {
@@ -104,6 +109,7 @@ function createGeminiRouter({
           const dup = data.conversations[dupId];
           if (!canonical.name && dup.name) canonical.name = dup.name;
           if (!canonical.gitRepo && dup.gitRepo) canonical.gitRepo = dup.gitRepo;
+          if (!canonical.project && dup.project) canonical.project = dup.project;
           if (dup.pinned) canonical.pinned = true;
           if (dup.unread) canonical.unread = true;
           data.merged[dupId] = canonicalId;
@@ -118,36 +124,40 @@ function createGeminiRouter({
     for (const sId of geminiRunner.getActiveSessionIds()) knownSessions.add(sId);
 
     // Si hay una conversación en vuelo que arrancó sin sessionId, cualquier sesión nueva en disco le pertenece
-    const pendingConvId = Object.keys(data.conversations).find(id => geminiRunner.isBusy(id) && !data.conversations[id].currentSessionId);
+    const projectFilter = req.query.project;
+    const shouldDiscover = (!projectFilter || projectFilter === '__none__' || pendingConvId);
 
-    for (const session of geminiScanner.listSessions()) {
-      if (knownSessions.has(session.sessionId)) continue;
+    if (shouldDiscover) {
+      for (const session of geminiScanner.listSessions()) {
+        if (knownSessions.has(session.sessionId)) continue;
 
-      if (pendingConvId) {
-        const pendingConv = data.conversations[pendingConvId];
-        pendingConv.currentSessionId = session.sessionId;
+        if (pendingConvId) {
+          const pendingConv = data.conversations[pendingConvId];
+          pendingConv.currentSessionId = session.sessionId;
+          knownSessions.add(session.sessionId);
+          metadataChanged = true;
+          continue;
+        }
+
+        const convId = crypto.randomUUID();
+        data.conversations[convId] = {
+          currentSessionId: session.sessionId,
+          projectDir: session.workspace || process.env.CCM_DEFAULT_PROJECT_DIR || os.homedir(),
+          name: session.snippet || '(conversación externa)',
+          messages: [],
+          lastActivity: session.lastActivity,
+          model: 'gemini-3.8-flash-high',
+        };
         knownSessions.add(session.sessionId);
         metadataChanged = true;
-        continue;
       }
-
-      const convId = crypto.randomUUID();
-      data.conversations[convId] = {
-        currentSessionId: session.sessionId,
-        projectDir: session.workspace || process.env.CCM_DEFAULT_PROJECT_DIR || os.homedir(),
-        name: session.snippet || '(conversación externa)',
-        messages: [],
-        lastActivity: session.lastActivity,
-        model: 'gemini-3.8-flash-high',
-      };
-      knownSessions.add(session.sessionId);
-      metadataChanged = true;
     }
 
     const conversations = [];
     const seenSessions = new Set();
     for (const [convId, c] of Object.entries(data.conversations)) {
       if (c.hidden) continue;
+      if (projectFilter && (projectFilter === '__none__' ? !!c.project : c.project !== projectFilter)) continue;
       if (c.currentSessionId) {
         if (seenSessions.has(c.currentSessionId)) continue;
         seenSessions.add(c.currentSessionId);
@@ -174,6 +184,7 @@ function createGeminiRouter({
         status: geminiConvStatus(convId),
         projectDir: c.projectDir || s.workspace || null,
         gitRepo: c.gitRepo || null,
+        project: c.project || null,
         model: c.model || 'gemini-3.8-flash-high',
       });
     }
@@ -181,7 +192,18 @@ function createGeminiRouter({
     if (metadataChanged) meta.save(data, geminiMetaFile);
 
     conversations.sort((a, b) => Number(b.pinned) - Number(a.pinned) || String(b.lastActivity || '').localeCompare(String(a.lastActivity || '')));
-    res.json({ conversations, unreadTotal: conversations.filter(c => c.unread).length });
+    const unreadTotal = conversations.filter(c => c.unread).length;
+    const projectFilter = req.query.project;
+    let filtered = conversations;
+    if (projectFilter) {
+      filtered = projectFilter === '__none__'
+        ? filtered.filter(c => !c.project)
+        : filtered.filter(c => c.project === projectFilter);
+    } else {
+      const hidden = typeof getHiddenProjectNames === 'function' ? getHiddenProjectNames() : new Set();
+      if (hidden && hidden.size > 0) filtered = filtered.filter(c => !c.project || !hidden.has(c.project));
+    }
+    res.json({ conversations: filtered, unreadTotal });
   });
 
   router.patch('/conversations/:id', (req, res) => {
@@ -191,10 +213,11 @@ function createGeminiRouter({
     for (const key of ['pinned', 'unread', 'hidden']) {
       if (key in req.body) c[key] = !!req.body[key];
     }
-    for (const key of ['model', 'projectDir', 'gitRepo', 'name']) {
-      if (key in req.body && typeof req.body[key] === 'string') {
-        c[key] = req.body[key];
+    for (const key of ['model', 'projectDir', 'gitRepo', 'name', 'project']) {
+      if (key in req.body) {
+        c[key] = (typeof req.body[key] === 'string' ? req.body[key].trim() : '') || undefined;
         if (key === 'name') c.aiTitle = false;
+        if (key === 'project' && c.project && typeof registerProject === 'function') registerProject(c.project);
       }
     }
     meta.save(data, geminiMetaFile);
@@ -251,6 +274,16 @@ function createGeminiRouter({
         meta.save(data, geminiMetaFile);
       }
     }
+    let outgoing = text;
+    if (c.project && !c.currentSessionId && !c.projectAnnounced) {
+      if (!c.gitRepo && typeof inferRepoFromMessage === 'function') {
+        const inferredRepo = await inferRepoFromMessage(c.project);
+        if (inferredRepo) c.gitRepo = inferredRepo;
+      }
+      const folderNote = c.gitRepo ? `, carpeta: ${c.gitRepo}` : '';
+      outgoing = `[Estamos trabajando en el proyecto "${c.project}"${folderNote}]\n\n${outgoing}`;
+      c.projectAnnounced = true;
+    }
     c.messages.push({ role: 'user', text, ts: new Date().toISOString() });
     c.lastActivity = new Date().toISOString();
     meta.save(data, geminiMetaFile);
@@ -260,7 +293,7 @@ function createGeminiRouter({
       convId,
       sessionId: c.currentSessionId,
       cwd,
-      text,
+      text: outgoing,
       model: c.model || 'gemini-3.8-flash-high',
     });
     res.status(202).json({ queued: true });

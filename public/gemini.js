@@ -112,28 +112,56 @@ function openGeminiStream(id) {
 
 function geminiRow(c) {
   const div = document.createElement('div');
-  div.className = 'conv' + (currentGeminiConv?.id === c.convId ? ' active' : '');
+  div.className = 'conv conv-engine-gemini' + (currentGeminiConv?.id === c.convId ? ' active' : '');
   const label = c.name || c.snippet || '(nueva conversación)';
   const pin = c.pinned ? '<span class="conv-pin" title="Fijada">📌</span>' : '';
   const ai = c.aiTitle ? '<span class="conv-ai" title="Título generado por IA">✨</span>' : '';
-  div.innerHTML = `<div class="conv-avatar">A</div><div class="conv-body"><div class="name">${pin}${ai}<span class="conv-name-text"></span></div><div class="sub"></div></div>${badge(c.status) || (c.unread ? '<span class="unread-dot"></span>' : '')}`;
+  div.innerHTML = `<div class="conv-avatar">A</div><div class="conv-body"><div class="name">${pin}${ai}<span class="conv-name-text"></span></div><div class="sub"><span class="conv-project-tag"></span><span class="conv-date"></span></div></div>${badge(c.status) || (c.unread ? '<span class="unread-dot"></span>' : '')}`;
   div.querySelector('.conv-name-text').textContent = label;
-  div.querySelector('.sub').textContent = c.snippet;
+  const tagEl = div.querySelector('.conv-project-tag');
+  if (c.project && c.project !== activeProjectFilter) {
+    tagEl.textContent = c.project;
+    tagEl.hidden = false;
+    tagEl.onclick = (e) => {
+      e.stopPropagation();
+      setActiveProject(c.project);
+    };
+    if (typeof attachProjectItemGestures === 'function') attachProjectItemGestures(tagEl, c.project);
+  } else {
+    tagEl.hidden = true;
+  }
+  div.querySelector('.conv-date').textContent = c.snippet || '';
   div.onclick = () => {
-    currentGeminiConv = { id: c.convId, name: label, model: c.model || 'gemini-3.8-flash-high' };
-    selectGemini(c.convId, label, c.gitRepo || c.projectDir);
+    currentGeminiConv = { id: c.convId, name: label, model: c.model || 'gemini-3.8-flash-high', project: c.project };
+    selectGemini(c.convId, label, c.gitRepo || c.projectDir, c.project);
   };
   attachGeminiRowGestures(div, c);
   return div;
 }
 
 async function loadGeminiTree() {
-  const { conversations, unreadTotal } = await geminiApi('/tree');
+  if (activeProjectFilter && activeProjectFilter !== '__none__') {
+    const data = typeof fetchUnifiedProjectTreeData === 'function' ? await fetchUnifiedProjectTreeData(activeProjectFilter) : null;
+    if (data) {
+      setPaneUnread('6', data.geminiUnread > 0);
+      setPaneProcessing('6', data.geminiConvs.some(c => c.status && c.status !== 'idle'));
+      const pane = $('gemini-pane');
+      if (typeof renderUnifiedProjectTree === 'function') {
+        renderUnifiedProjectTree(pane, data, 'gemini');
+      }
+      geminiTreeLoaded = true;
+      return;
+    }
+  }
+  const params = new URLSearchParams();
+  if (activeProjectFilter) params.set('project', activeProjectFilter);
+  const qs = params.toString() ? '?' + params.toString() : '';
+  const { conversations, unreadTotal } = await geminiApi('/tree' + qs);
   setPaneUnread('6', unreadTotal > 0);
   setPaneProcessing('6', conversations.some(conversation => conversation.status && conversation.status !== 'idle'));
   const pane = $('gemini-pane');
   if (!conversations.length) {
-    pane.innerHTML = '<div id="empty-state"><p>Sin conversaciones de Antigravity todavía</p></div>';
+    pane.innerHTML = `<div id="empty-state"><p>${activeProjectFilter ? 'Sin conversaciones para este proyecto' : 'Sin conversaciones de Antigravity todavía'}</p></div>`;
   } else {
     pane.replaceChildren(...conversations.map(geminiRow));
   }
@@ -176,7 +204,7 @@ function showGeminiConvMenu(x, y, conv) {
   document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
   const menu = document.createElement('div');
   menu.className = 'ctx-menu';
-  menu.innerHTML = `<button data-action="copy">📋 Copiar conversación</button><button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button><button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`;
+  menu.innerHTML = `<button data-action="copy">📋 Copiar conversación</button><button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button><button data-action="project">🏷️ ${conv.project ? 'Cambiar proyecto…' : 'Asignar proyecto…'}</button><button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`;
   document.body.appendChild(menu);
   const rect = menu.getBoundingClientRect();
   menu.style.left = Math.min(x, window.innerWidth - rect.width - 8) + 'px';
@@ -190,6 +218,11 @@ function showGeminiConvMenu(x, y, conv) {
     const action = e.target.dataset.action;
     if (!action) return;
     dismiss();
+    if (action === 'project') {
+      await loadProjects().catch(() => {});
+      showAssignProjectMenu(x, y, conv, 'gemini');
+      return;
+    }
     try {
       if (action === 'copy') {
         await copyConversationMessages(() => geminiApi(`/conversations/${conv.convId}/messages`));
@@ -212,7 +245,7 @@ function showGeminiConvMenu(x, y, conv) {
   }, 250);
 }
 
-async function selectGemini(id, name, projectDir = '') {
+async function selectGemini(id, name, projectDir = '', project = undefined) {
   saveCurrentDraft();
   if (eventSource) { eventSource.close(); eventSource = null; }
   if (codexStream) codexStream.close();
@@ -220,7 +253,7 @@ async function selectGemini(id, name, projectDir = '') {
   currentConv = null;
   currentCodexConv = null;
   const currentModel = (id ? currentGeminiConv?.model : 'gemini-3.8-flash-high') || 'gemini-3.8-flash-high';
-  currentGeminiConv = { id, name, model: currentModel };
+  currentGeminiConv = { id, name, model: currentModel, project: project ?? currentGeminiConv?.project };
   $('panel-chat').classList.remove('codex-chat-theme');
   $('panel-chat').classList.add('antigravity-chat-theme');
   $('conv-title').textContent = name;
@@ -253,5 +286,6 @@ async function selectGemini(id, name, projectDir = '') {
 
 async function createGeminiConversation() {
   saveCurrentDraft();
-  await selectGemini(null, 'Nueva conversación');
+  const p = activeProjectFilter && activeProjectFilter !== '__none__' ? activeProjectFilter : undefined;
+  await selectGemini(null, 'Nueva conversación', '', p);
 }

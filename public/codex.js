@@ -100,7 +100,10 @@ function codexToggleArchivedView() {
 
 async function codexNewConversation() {
   try {
-    const { convId } = await codexApi('/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const body = {};
+    const p = activeProjectFilter && activeProjectFilter !== '__none__' ? activeProjectFilter : undefined;
+    if (p) body.project = p;
+    const { convId } = await codexApi('/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     codexSelectConv(convId, 'Nueva conversación');
   } catch (err) {
     toast('No se pudo crear la conversación de Codex: ' + err.message);
@@ -252,15 +255,27 @@ function codexConversationLabel(conv) {
 function codexSharedRow(c) {
   const label = codexConversationLabel(c);
   const div = document.createElement('div');
-  div.className = 'conv' + (currentCodexConv && c.convId === currentCodexConv.id ? ' active' : '');
+  div.className = 'conv conv-engine-codex' + (currentCodexConv && c.convId === currentCodexConv.id ? ' active' : '');
   const pin = c.pinned ? '<span class="conv-pin" title="Fijada">📌</span>' : '';
   const ai = c.aiTitle ? '<span class="conv-ai" title="Título generado por IA">✨</span>' : '';
-  div.innerHTML = `<div class="conv-avatar"></div><div class="conv-body"><div class="name">${pin}${ai}<span class="conv-name-text"></span></div><div class="sub"><span class="conv-date"></span></div></div>${badge(c.status) || (c.unread ? '<span class="unread-dot" title="Sin leer"></span>' : '')}`;
+  div.innerHTML = `<div class="conv-avatar"></div><div class="conv-body"><div class="name">${pin}${ai}<span class="conv-name-text"></span></div><div class="sub"><span class="conv-project-tag"></span><span class="conv-date"></span></div></div>${badge(c.status) || (c.unread ? '<span class="unread-dot" title="Sin leer"></span>' : '')}`;
   div.querySelector('.conv-avatar').textContent = avatarChar(label);
   div.querySelector('.conv-name-text').textContent = label;
+  const tagEl = div.querySelector('.conv-project-tag');
+  if (c.project && c.project !== activeProjectFilter) {
+    tagEl.textContent = c.project;
+    tagEl.hidden = false;
+    tagEl.onclick = (e) => {
+      e.stopPropagation();
+      setActiveProject(c.project);
+    };
+    if (typeof attachProjectItemGestures === 'function') attachProjectItemGestures(tagEl, c.project);
+  } else {
+    tagEl.hidden = true;
+  }
   div.querySelector('.conv-date').textContent = c.snippet || (c.lastActivity || '').slice(0, 16).replace('T', ' ');
   div._codexConv = c;
-  div.onclick = () => selectCodexShared(c.convId, label, c.gitRepo || c.projectDir);
+  div.onclick = () => selectCodexShared(c.convId, label, c.gitRepo || c.projectDir, c.project);
   attachCodexRowGestures(div, c);
   return div;
 }
@@ -272,14 +287,28 @@ async function loadCodexSharedTree({ skipAvailability = false } = {}) {
     nav.innerHTML = '<div id="empty-state"><p>Codex no está configurado en esta instalación.</p><p>En la PC que ejecuta J.A.R.V.I.S, iniciá sesión con <code>codex login</code> y actualizá esta página.</p></div>';
     return false;
   }
-  const { conversations, unreadTotal } = await codexApi('/tree');
+  if (activeProjectFilter && activeProjectFilter !== '__none__') {
+    const data = typeof fetchUnifiedProjectTreeData === 'function' ? await fetchUnifiedProjectTreeData(activeProjectFilter) : null;
+    if (data) {
+      setPaneUnread('2', data.codexUnread > 0);
+      setPaneProcessing('2', data.codexConvs.some(c => c.status && c.status !== 'idle'));
+      if (typeof renderUnifiedProjectTree === 'function') {
+        renderUnifiedProjectTree(nav, data, 'codex');
+      }
+      return true;
+    }
+  }
+  const params = new URLSearchParams();
+  if (activeProjectFilter) params.set('project', activeProjectFilter);
+  const qs = params.toString() ? '?' + params.toString() : '';
+  const { conversations, unreadTotal } = await codexApi('/tree' + qs);
   setPaneUnread('2', unreadTotal > 0);
   setPaneProcessing('2', conversations.some(conversation => conversation.status && conversation.status !== 'idle'));
   const next = document.createDocumentFragment();
   if (!conversations.length) {
     const empty = document.createElement('div');
     empty.id = 'empty-state';
-    empty.innerHTML = '<p>Sin conversaciones de Codex todavía</p>';
+    empty.innerHTML = `<p>${activeProjectFilter ? 'Sin conversaciones para este proyecto' : 'Sin conversaciones de Codex todavía'}</p>`;
     next.appendChild(empty);
   } else {
     conversations.forEach(c => next.appendChild(codexSharedRow(c)));
@@ -308,22 +337,28 @@ function attachCodexRowGestures(el, conv) {
   el.addEventListener('touchmove', e => {
     if (longPressed) return;
     const touch = e.touches[0];
-    if (redirectedToPane) { if (paneSwipeMove(touch.clientX, touch.clientY)) e.preventDefault(); return; }
-    const dx = touch.clientX - startX, dy = touch.clientY - startY;
-    if (axisLocked === null) {
-      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+    const dx = touch.clientX - startX;
+    const dy = touch.clientY - startY;
+    if (!axisLocked) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
       axisLocked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
-      if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
-      if (axisLocked === 'x') {
-        redirectedToPane = true;
-        if (paneSwipeStart(startX, startY) && paneSwipeMove(touch.clientX, touch.clientY)) e.preventDefault();
-        return;
-      }
+      if (axisLocked === 'x' && touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
     }
     if (axisLocked !== 'x') return;
-    e.preventDefault(); rowDragging = true; currentDx = Math.max(0, dx);
+    if (e.cancelable) e.preventDefault();
+    if (dx > 0) {
+      if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
+      if (rowDragging) resetRow();
+      rowDragging = false;
+      if (!redirectedToPane) { redirectedToPane = true; paneSwipeStart(startX); }
+      paneSwipeMove(touch.clientX);
+      return;
+    }
+    if (redirectedToPane) return;
+    rowDragging = true;
+    currentDx = Math.min(0, Math.max(-80, dx));
     el.style.transform = `translateX(${currentDx}px)`;
-    el.style.opacity = String(Math.max(0.3, 1 - currentDx / 200));
+    el.style.opacity = `${1 - Math.abs(currentDx) / 160}`;
   }, { passive: false });
   el.addEventListener('touchend', async () => {
     if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
@@ -345,7 +380,7 @@ function showCodexConvMenu(x, y, conv) {
   document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
   const menu = document.createElement('div');
   menu.className = 'ctx-menu';
-  menu.innerHTML = `<button data-action="copy-conversation">📋 Copiar conversación</button><button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button><button data-action="git-sync">⬆️ Git: commit + pull + push</button><button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`;
+  menu.innerHTML = `<button data-action="copy-conversation">📋 Copiar conversación</button><button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button><button data-action="project">🏷️ ${conv.project ? 'Cambiar proyecto…' : 'Asignar proyecto…'}</button><button data-action="git-sync">⬆️ Git: commit + pull + push</button><button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`;
   document.body.appendChild(menu);
   const rect = menu.getBoundingClientRect();
   menu.style.left = Math.min(x, window.innerWidth - rect.width - 8) + 'px';
@@ -367,6 +402,11 @@ function showCodexConvMenu(x, y, conv) {
       }
       return;
     }
+    if (action === 'project') {
+      await loadProjects().catch(() => {});
+      showAssignProjectMenu(x, y, conv, 'codex');
+      return;
+    }
     if (action === 'git-sync') {
       if (!confirm('Sincronizar Git en el repo de esta conversación?\n\nEjecuta directo: commit de cambios pendientes, pull con rebase y push. No hace force push ni descarta cambios.')) return;
       try {
@@ -386,7 +426,10 @@ function showCodexConvMenu(x, y, conv) {
     } catch (err) { toast('No se pudo actualizar: ' + err.message); }
   });
   menu.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
-  setTimeout(() => { document.addEventListener('click', dismiss, true); document.addEventListener('touchstart', dismiss, true); }, 350);
+  setTimeout(() => {
+    document.addEventListener('click', dismiss, true);
+    document.addEventListener('touchstart', dismiss, true);
+  }, 350);
 }
 
 function setCodexMainBusy(value) {
@@ -400,31 +443,31 @@ function setCodexMainBusy(value) {
 
 async function loadCodexSharedMessages(convId) {
   messagesEl.innerHTML = '';
-  const msgs = await codexApi(`/conversations/${convId}/messages`);
-  if (!msgs.length) {
+  const messages = await codexApi(`/conversations/${convId}/messages`);
+  if (!messages.length) {
     messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Codex</p></div>';
-    return;
-  }
-  let lastAssistantDiv = null;
-  let lastAssistantMsg = null;
-  for (const m of msgs) {
-    if (m.role === 'tool') {
-      addTool(m.name, m.input, m.output);
-      lastAssistantDiv = null;
-    } else {
-      const div = addMsg(m.role, m.text, { ts: m.ts });
-      if (m.role === 'assistant') {
-        lastAssistantDiv = div;
-        lastAssistantMsg = m;
-      } else {
+  } else {
+    let lastAssistantDiv = null;
+    let lastAssistantMsg = null;
+    for (const m of messages) {
+      if (m.role === 'tool') {
+        addTool(m.name, m.input, m.output);
         lastAssistantDiv = null;
+      } else {
+        const div = addMsg(m.role, m.text, { ts: m.ts });
+        if (m.role === 'assistant') {
+          lastAssistantDiv = div;
+          lastAssistantMsg = m;
+        } else {
+          lastAssistantDiv = null;
+        }
       }
+    }
+    if (lastAssistantDiv && !codexMainBusy) {
+      maybeShowReplySuggestions(convId, lastAssistantDiv, lastAssistantMsg.text, lastAssistantMsg.uuid || lastAssistantMsg.id, 'codex');
     }
   }
   scrollToBottom();
-  if (lastAssistantDiv && !codexMainBusy) {
-    maybeShowReplySuggestions(convId, lastAssistantDiv, lastAssistantMsg.text, lastAssistantMsg.uuid || lastAssistantMsg.id, 'codex');
-  }
 }
 
 function openCodexSharedStream(convId) {
@@ -433,13 +476,9 @@ function openCodexSharedStream(convId) {
     if (!currentCodexConv || currentCodexConv.id !== convId) return;
     const payload = JSON.parse(e.data);
     if (payload.kind === 'status') {
-      if (payload.status === 'idle') {
-        setCodexMainBusy(false);
-        loadCodexSharedMessages(convId).then(() => loadCodexSharedTree());
-      } else {
-        setCodexMainBusy(true);
-        loadCodexSharedTree();
-      }
+      setCodexMainBusy(payload.status !== 'idle');
+      if (payload.status === 'idle') loadCodexSharedMessages(convId);
+      loadCodexSharedTree();
       return;
     }
     if (payload.kind === 'meta') {
@@ -464,7 +503,7 @@ function openCodexSharedStream(convId) {
   return stream;
 }
 
-async function selectCodexShared(convId, name, projectDir = '') {
+async function selectCodexShared(convId, name, projectDir = '', project = undefined) {
   saveCurrentDraft();
   $('panel-chat').classList.add('codex-chat-theme');
   $('panel-chat').classList.remove('antigravity-chat-theme');
@@ -473,7 +512,7 @@ async function selectCodexShared(convId, name, projectDir = '') {
   if (geminiStream) { geminiStream.close(); geminiStream = null; }
   currentGeminiConv = null;
   currentConv = null;
-  currentCodexConv = { id: convId, name };
+  currentCodexConv = { id: convId, name, project };
   $('conv-title').textContent = name;
   $('input').placeholder = 'Escribile a Codex…';
   restoreDraft(codexDrafts.get(convId));
@@ -509,11 +548,13 @@ async function createCodexSharedConversation() {
   saveCurrentDraft();
   if (eventSource) { eventSource.close(); eventSource = null; }
   if (codexStream) { codexStream.close(); codexStream = null; }
-  const { convId } = await codexApi('/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  const p = activeProjectFilter && activeProjectFilter !== '__none__' ? activeProjectFilter : undefined;
+  const body = p ? { project: p } : {};
+  const { convId } = await codexApi('/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   currentConv = null;
   currentGeminiConv = null;
   $('panel-chat').classList.add('codex-chat-theme');
-  currentCodexConv = { id: convId, name: 'Nueva conversación' };
+  currentCodexConv = { id: convId, name: 'Nueva conversación', project: p };
   $('conv-title').textContent = currentCodexConv.name;
   $('input').placeholder = 'Escribile a Codex…';
   restoreDraft(null);

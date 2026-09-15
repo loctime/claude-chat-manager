@@ -1311,28 +1311,44 @@ app.use('/api', createProjectsRouter({
   getActiveAccount: () => activeAccount,
   accountMetaFile,
   listProjectFolderNames,
+  getExtraMetaFiles: () => [CODEX_META_FILE, GEMINI_META_FILE],
 }));
 
 app.get('/api/tree', (req, res) => {
   const acc = req.query.account || activeAccount;
   const data = meta.load(accountMetaFile(acc));
-  const sessions = scanner.listSessions(accountProjectsDir(acc));
-  // Sesiones de Sala (viven en SALA_META_FILE, no en accountMetaFile — ver
-  // resolveOrCreateSalaConv) — sin esto, caían en el segundo loop de abajo
-  // como "huérfanas" sin proyecto. Ahora se agrupan bajo el proyecto "Salas",
-  // registrado (una sola vez) con hideFromAll:true — así no ensucian "Todos
-  // los proyectos" pero siguen disponibles filtrando por ese proyecto
-  // puntual, para cuando haga falta ver cómo se arma la conversación.
-  const salaSessionIds = new Set(
-    Object.values(meta.load(SALA_META_FILE).conversations).map(c => c.currentSessionId).filter(Boolean)
-  );
-  if (salaSessionIds.size > 0 && !(data.projects || []).some(p => projectEntry(p).name === 'Salas')) {
-    registerProject(data, 'Salas', true);
-    meta.save(data, accountMetaFile(acc));
+  const projectFilter = req.query.project;
+  const projDir = accountProjectsDir(acc);
+  let sessions = [];
+  let byId = new Map();
+  let salaSessionIds = new Set();
+  let referenced = new Set();
+  if (projectFilter && projectFilter !== '__none__' && projectFilter !== 'Salas') {
+    for (const c of Object.values(data.conversations)) {
+      if (c.hidden || c.project !== projectFilter || !c.currentSessionId) continue;
+      const file = scanner.findSessionFile(c.currentSessionId, projDir);
+      const s = file ? scanner.sessionInfo(file) : null;
+      if (s) byId.set(c.currentSessionId, s);
+    }
+  } else {
+    sessions = scanner.listSessions(projDir);
+    // Sesiones de Sala (viven en SALA_META_FILE, no en accountMetaFile — ver
+    // resolveOrCreateSalaConv) — sin esto, caían en el segundo loop de abajo
+    // como "huérfanas" sin proyecto. Ahora se agrupan bajo el proyecto "Salas",
+    // registrado (una sola vez) con hideFromAll:true — así no ensucian "Todos
+    // los proyectos" pero siguen disponibles filtrando por ese proyecto
+    // puntual, para cuando haga falta ver cómo se arma la conversación.
+    salaSessionIds = new Set(
+      Object.values(meta.load(SALA_META_FILE).conversations).map(c => c.currentSessionId).filter(Boolean)
+    );
+    if (salaSessionIds.size > 0 && !(data.projects || []).some(p => projectEntry(p).name === 'Salas')) {
+      registerProject(data, 'Salas', true);
+      meta.save(data, accountMetaFile(acc));
+    }
+    referenced = new Set(data.superseded);
+    for (const c of Object.values(data.conversations)) referenced.add(c.currentSessionId);
+    byId = new Map(sessions.map(s => [s.sessionId, s]));
   }
-  const referenced = new Set(data.superseded);
-  for (const c of Object.values(data.conversations)) referenced.add(c.currentSessionId);
-  const byId = new Map(sessions.map(s => [s.sessionId, s]));
   const convs = [];
   function contextPctFor(s) {
     const tokens = s.contextTokens || 0;
@@ -1563,6 +1579,17 @@ app.use('/api/codex', createCodexRouter({
   codexMetaFile: CODEX_META_FILE,
   resolveConversationGitRepo: (conv, file) => resolveConversationGitRepo(conv, file, { inferRepoFromMessages }),
   inferRepoFromMessage,
+  registerProject: (name) => {
+    if (!name) return;
+    const metaFile = accountMetaFile(activeAccount);
+    const data = meta.load(metaFile);
+    registerProject(data, name);
+    meta.save(data, metaFile);
+  },
+  getHiddenProjectNames: () => {
+    const data = meta.load(accountMetaFile(activeAccount));
+    return hiddenProjectNames(data);
+  },
 }));
 
 // ── Gemini CLI ──
@@ -1667,6 +1694,17 @@ app.use('/api/gemini', createGeminiRouter({
   geminiTurnStartedAt,
   inferRepoFromMessage,
   inferRepoFromMessages,
+  registerProject: (name) => {
+    if (!name) return;
+    const metaFile = accountMetaFile(activeAccount);
+    const data = meta.load(metaFile);
+    registerProject(data, name);
+    meta.save(data, metaFile);
+  },
+  getHiddenProjectNames: () => {
+    const data = meta.load(accountMetaFile(activeAccount));
+    return hiddenProjectNames(data);
+  },
 }));
 
 app.use('/api/sala', createSalaRouter({
