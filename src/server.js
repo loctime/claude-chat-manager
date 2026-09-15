@@ -5,8 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { execFile, execFileSync, exec, spawn } = require('child_process');
-const multer = require('multer');
-const archiver = require('archiver');
+const { createFilesRouter } = require('./routes/files');
 const { createScansRouter } = require('./routes/scans');
 const scanner = require('./scanner');
 const notes = require('./notes');
@@ -22,6 +21,7 @@ const { createCodexRouter } = require('./routes/codex');
 const { GeminiRunner } = require('./gemini-runner');
 const { createGeminiRouter, createAntigravityRouter } = require('./routes/gemini');
 const { createSalaRouter } = require('./routes/sala');
+const { createConversationsRouter, resolveConversationGitRepo } = require('./routes/conversations');
 const {
   projectEntry,
   registerProject,
@@ -263,7 +263,6 @@ const SEARCH_SYNC_MS = 60_000;
 // sentirse como "el otro te contestó al toque", no como background sync.
 const SALA_MENTION_POLL_MS = 20_000;
 
-const upload = multer({ dest: UPLOAD_DIR, limits: { fileSize: 50 * 1024 * 1024 } });
 
 const app = express();
 // Comprimido global, EXCEPTO las rutas SSE (/stream): compression bufferea en
@@ -1123,52 +1122,6 @@ function _groqTitle(excerpt) {
 }
 
 // Compact nativo: en vez de armar un excerpt y pedirle a un claude aparte que lo
-// resuma en prosa (perdía tool calls, se truncaba a 120k caracteres y ese mismo
-// excerpt pasado como argumento de spawn reventaba ENAMETOOLONG en Windows con
-// conversaciones largas), le mandamos "/compact" al propio `claude --resume
-// <sessionId>` — es el mismo mecanismo que corre solo en la consola interactiva,
-// pero invocado a mano. Ve la sesión completa (no un recorte de texto), y el
-// resultado queda en la MISMA sesión (mismo session_id, con un entry
-// type:"system", subtype:"compact_boundary" en su jsonl) en vez de generar un
-// resumen aparte que había que reinyectar a mano en el próximo mensaje.
-function _claudeCompact(sessionId, cwd) {
-  return new Promise((resolve, reject) => {
-    const args = ['--resume', sessionId, '-p', '/compact', '--dangerously-skip-permissions', '--output-format', 'json'];
-    const child = spawn(CLAUDE_CMD, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-    let stdout = '';
-    let stderr = '';
-    const timer = setTimeout(() => {
-      child.kill('SIGTERM');
-      reject(new Error('timeout (5min) compactando con claude'));
-    }, 300_000);
-    child.stdout.on('data', d => { stdout += d.toString(); });
-    child.stderr.on('data', d => { stderr += d.toString(); });
-    child.on('error', err => {
-      clearTimeout(timer);
-      console.error('[compact] spawn claude error:', err.message);
-      reject(new Error('no se pudo lanzar claude: ' + err.message));
-    });
-    child.on('close', code => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        console.error('[compact] claude exit', code, 'stderr:', stderr.slice(0, 500));
-        return reject(new Error(`claude salió con código ${code}: ${(stderr || '').slice(0, 200)}`));
-      }
-      resolve();
-    });
-  });
-}
-
-// Lee el jsonl recién compactado y devuelve la metadata del último boundary —
-// para mostrarle al usuario "de Xk a Yk tokens" en vez de un simple "listo".
-function _lastCompactMetadata(file) {
-  const entries = scanner.parseJsonl(file);
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const e = entries[i];
-    if (e.type === 'system' && e.subtype === 'compact_boundary') return e.compactMetadata || null;
-  }
-  return null;
-}
 
 // convId → true mientras un /compact está en curso. Necesario para: (1) no
 // pisarlo con un /message que le mande --resume al mismo tiempo (dos procesos
@@ -1255,32 +1208,7 @@ async function maybeGenerateGeminiTitle(convId) {
   geminiBroadcast(convId, { kind: 'meta', name: title, aiTitle: true });
 }
 
-function resolveConv(convId, acc = activeAccount) {
-  const metaFile = accountMetaFile(acc);
-  const projDir = accountProjectsDir(acc);
-  const data = meta.load(metaFile);
-  if (data.conversations[convId]) return { data, conv: data.conversations[convId], metaFile };
-  const file = scanner.findSessionFile(convId, projDir);
-  if (!file) return { data, conv: null, metaFile };
-  const info = scanner.sessionInfo(file);
-  data.conversations[convId] = { currentSessionId: convId, projectDir: (info && info.cwd) || HOME_DIR };
-  return { data, conv: data.conversations[convId], metaFile };
-}
 
-// Busca los cwd más recientes que la sesión registró. El cwd inicial suele ser
-// HOME, pero cada tool call conserva el subproyecto donde realmente se trabajó;
-// así el botón Git apunta al repo de la charla sin pedirle nada al agente.
-function gitCwdsForSession(file, fallback, parse = scanner.parseJsonl) {
-  const cwds = [];
-  if (file) {
-    for (const entry of parse(file).reverse()) {
-      if (typeof entry.cwd === 'string' && entry.cwd) cwds.push(entry.cwd);
-      if (entry.payload && typeof entry.payload.cwd === 'string' && entry.payload.cwd) cwds.push(entry.payload.cwd);
-    }
-  }
-  if (fallback) cwds.push(fallback);
-  return cwds;
-}
 
 const PROJECT_SEARCH_ROOTS = [
   path.join(HOME_DIR, 'Desktop', 'Proyectos'),
@@ -1352,261 +1280,16 @@ async function inferRepoFromMessages(messages) {
   return null;
 }
 
-async function resolveConversationGitRepo(conv, file, parse = scanner.parseJsonl, messages = scanner.toChatMessages) {
-  let repo = await gitSync.resolveRepo([conv.gitRepo, ...gitCwdsForSession(file, conv.projectDir, parse)]);
-  if (!repo && file) {
-    repo = await inferRepoFromMessages(messages(parse(file)));
-  }
-  return repo;
-}
 
-// ── Upload de archivo adjunto (con compresión automática de imágenes) ──
-const IMAGE_COMPRESS_EXTS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif']);
-const MAX_IMAGE_BYTES = 1.5 * 1024 * 1024; // 1.5MB → comprimir
 
-app.post('/api/upload', upload.single('file'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'no se recibió archivo' });
-  const ext = (path.extname(req.file.originalname) || '').slice(1).toLowerCase();
-  const finalPath = req.file.path + '.' + (ext || 'bin');
-
-  const finish = (compressedPath) => {
-    res.json({ path: compressedPath, name: req.file.originalname, size: fs.statSync(compressedPath).size });
-  };
-
-  if (IMAGE_COMPRESS_EXTS.has(ext) && req.file.size > MAX_IMAGE_BYTES) {
-    // Comprimir: max 2048px ancho, calidad 82
-    const outPath = req.file.path + '_c.jpg';
-    execFile(MAGICK_CMD, magickArgs([
-      req.file.path,
-      '-resize', '2048x2048>',
-      '-quality', '82',
-      '-strip',
-      outPath,
-    ]), { windowsHide: true }, (err) => {
-      if (err) {
-        // Fallback: usar original renombrado (ej. ImageMagick no instalado)
-        fs.renameSync(req.file.path, finalPath);
-        return finish(finalPath);
-      }
-      fs.unlink(req.file.path, () => {});
-      finish(outPath);
-    });
-  } else {
-    fs.renameSync(req.file.path, finalPath);
-    finish(finalPath);
-  }
-});
-
-// ── Transcripción de audio vía Groq Whisper ──
-app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'no se recibió audio' });
-  if (!GROQ_API_KEY) {
-    fs.unlinkSync(req.file.path);
-    return res.status(503).json({ error: 'GROQ_API_KEY no configurada' });
-  }
-  const audioPath = req.file.path;
-  const originalName = req.file.originalname || 'audio.webm';
-  execFile('curl', [
-    '-s', '-X', 'POST',
-    'https://api.groq.com/openai/v1/audio/transcriptions',
-    '-H', `Authorization: Bearer ${GROQ_API_KEY}`,
-    '-F', 'model=whisper-large-v3',
-    '-F', 'language=es',
-    '-F', `file=@${audioPath};filename=${originalName}`,
-  ], { maxBuffer: 2 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
-    fs.unlink(audioPath, () => {});
-    if (err) return res.status(500).json({ error: 'error de transcripción: ' + (stderr || err.message) });
-    let parsed;
-    try { parsed = JSON.parse(stdout); } catch { return res.status(500).json({ error: 'respuesta inválida de Groq' }); }
-    if (parsed.error) return res.status(500).json({ error: parsed.error.message || 'error Groq' });
-    res.json({ text: parsed.text || '' });
-  });
-});
-
-// ── Thumbnail de archivos (imágenes y PDFs) ──
-const GS_AVAILABLE = (() => {
-  try {
-    // 'where' en Windows, 'which' en Unix; gs en Linux, gswin64c en Windows
-    const cmd = IS_WIN ? 'where' : 'which';
-    const gsName = IS_WIN ? 'gswin64c' : 'gs';
-    execFileSync(cmd, [gsName], { windowsHide: true });
-    return true;
-  } catch { return false; }
-})();
-
-app.get('/api/thumbnail', (req, res) => {
-  const filePath = (req.query.path || '').trim();
-  if (!filePath || !path.isAbsolute(filePath)) return res.status(400).end();
-  if (!fs.existsSync(filePath)) return res.status(404).end();
-
-  const ext = path.extname(filePath).slice(1).toLowerCase();
-  const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'];
-  const isPdf = ext === 'pdf';
-  const isImage = IMAGE_EXTS.includes(ext);
-
-  if (!isImage && !isPdf) return res.status(404).end();
-  if (isPdf && !GS_AVAILABLE) return res.status(404).end();
-
-  res.setHeader('Content-Type', 'image/jpeg');
-  res.setHeader('Cache-Control', 'public, max-age=3600');
-
-  let args;
-  if (isPdf) {
-    args = ['-density', '72', `${filePath}[0]`, '-resize', '200x200>', '-background', 'white', '-flatten', 'jpeg:-'];
-  } else {
-    args = [filePath, '-resize', '200x200>', '-background', '#111b21', '-flatten', 'jpeg:-'];
-  }
-
-  execFile(MAGICK_CMD, magickArgs(args), { encoding: 'buffer', maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
-    if (err || !stdout || stdout.length === 0) return res.status(404).end();
-    res.end(stdout);
-  });
-});
-
-// ── Descarga de archivos del filesystem ──
-app.get('/api/files', (req, res) => {
-  const filePath = (req.query.path || '').trim();
-  if (!filePath || !path.isAbsolute(filePath)) return res.status(400).json({ error: 'path inválido' });
-  let stat;
-  try {
-    stat = fs.statSync(filePath);
-  } catch {
-    return res.status(404).json({ error: 'archivo no encontrado' });
-  }
-  if (!stat.isFile()) return res.status(400).json({ error: 'no es un archivo (¿es una carpeta?)' });
-  const filename = path.basename(filePath);
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  const stream = fs.createReadStream(filePath);
-  // Sin este listener, cualquier error de lectura (path resultó ser una
-  // carpeta, permisos, disco) tira una excepción no capturada y crashea
-  // todo el proceso de Jarvis — .pipe() no reenvía errores del source.
-  stream.on('error', err => {
-    console.error('[api/files] error leyendo', filePath, err.message);
-    if (!res.headersSent) res.status(500).json({ error: 'error leyendo el archivo' });
-    else res.end();
-  });
-  stream.pipe(res);
-});
-
-// ── "Mostrar en carpeta" — abre el Explorador en la PC donde corre Jarvis ──
-// Windows nativo o WSL (con interop, que llama a explorer.exe igual). El
-// botón que lo dispara se oculta en el cliente salvo que se esté navegando
-// desde 127.0.0.1/localhost, pero eso es un gate de UI, no de seguridad —
-// cualquiera con la cookie ACCESS_PIN puede pegarle a este endpoint igual
-// (mismo modelo de confianza que el resto de la app, que ya puede correr
-// comandos arbitrarios vía Claude).
-app.get('/api/reveal', (req, res) => {
-  if (!IS_WIN && !IS_WSL) return res.status(400).json({ error: 'solo disponible en Windows/WSL' });
-  const filePath = (req.query.path || '').trim();
-  if (!filePath || !path.isAbsolute(filePath)) return res.status(400).json({ error: 'path inválido' });
-  let stat;
-  try {
-    stat = fs.statSync(filePath);
-  } catch {
-    return res.status(404).json({ error: 'no encontrado' });
-  }
-  // Bajo WSL, filePath viene en formato POSIX (/mnt/c/...) — explorer.exe
-  // no lo entiende, hay que convertirlo a Windows (C:\...) con wslpath.
-  let explorerPath = filePath;
-  if (IS_WSL) {
-    try {
-      explorerPath = execFileSync('wslpath', ['-w', filePath], { encoding: 'utf8' }).trim();
-    } catch {
-      return res.status(500).json({ error: 'no se pudo convertir el path (wslpath)' });
-    }
-  }
-  // 'explorer.exe' a secas depende de que el PATH del proceso incluya el
-  // Windows PATH via interop de WSL — verificado en vivo que NO es
-  // confiable (a veces no está, según cómo se haya lanzado el proceso). En
-  // WSL usamos la ruta absoluta directo; en Windows nativo 'explorer.exe'
-  // ya se resuelve solo desde System32.
-  const explorerBin = IS_WSL ? '/mnt/c/Windows/explorer.exe' : 'explorer.exe';
-  // Si es carpeta la abrimos directo; si es archivo, abrimos su carpeta
-  // contenedora con el archivo ya seleccionado.
-  const args = stat.isDirectory() ? [explorerPath] : ['/select,' + explorerPath];
-  execFile(explorerBin, args, (err) => {
-    // explorer.exe devuelve exit code 1 aunque abra bien (gotcha conocido
-    // de Windows) — err.code es un número en ese caso, no lo tratamos como
-    // error real. Un fallo real de lanzamiento (binario no encontrado,
-    // permisos) trae err.code como string ('ENOENT', 'EACCES', etc.).
-    if (err && typeof err.code !== 'number') {
-      console.error('[api/reveal] no se pudo lanzar', explorerBin, ':', err.message);
-      return res.status(500).json({ error: 'no se pudo abrir el explorador: ' + err.message });
-    }
-    res.json({ ok: true });
-  });
-});
-
-// ── "Descargar carpeta como .zip" ──
-// Complementa a /api/reveal para cuando estás lejos de la PC (celu por el
-// túnel) y "abrir en la PC" no te sirve — permite bajarte la carpeta
-// entera. Arma el zip al vuelo con `archiver` y lo pipea directo a la
-// response, sin escribir nada a disco. A diferencia de /api/reveal, no
-// tiene gate IS_WIN — armar un zip funciona en cualquier plataforma.
-const MAX_ZIP_BYTES = 200 * 1024 * 1024; // 200MB, límite elegido por Diego
-
-// Recorre la carpeta sumando tamaños de archivo y corta apenas se pasa
-// del límite (no sigue bajando en carpetas gigantes) — devuelve true si
-// se pasa. Symlinks se saltean (evita loops); carpetas sin permisos
-// también se saltean en vez de tirar.
-function folderExceedsLimit(dirPath, limitBytes) {
-  let total = 0;
-  const stack = [dirPath];
-  while (stack.length) {
-    const dir = stack.pop();
-    let entries;
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (entry.isSymbolicLink()) continue;
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        stack.push(full);
-      } else if (entry.isFile()) {
-        try {
-          total += fs.statSync(full).size;
-        } catch {
-          continue;
-        }
-        if (total > limitBytes) return true;
-      }
-    }
-  }
-  return false;
-}
-
-app.get('/api/folder-zip', (req, res) => {
-  const folderPath = (req.query.path || '').trim();
-  if (!folderPath || !path.isAbsolute(folderPath)) return res.status(400).json({ error: 'path inválido' });
-  let stat;
-  try {
-    stat = fs.statSync(folderPath);
-  } catch {
-    return res.status(404).json({ error: 'no encontrado' });
-  }
-  if (!stat.isDirectory()) return res.status(400).json({ error: 'no es una carpeta' });
-
-  if (folderExceedsLimit(folderPath, MAX_ZIP_BYTES)) {
-    return res.status(413).json({ error: 'carpeta muy grande (>200MB) para descargar por acá — abrila desde la PC' });
-  }
-
-  const name = path.basename(folderPath) || 'carpeta';
-  res.setHeader('Content-Disposition', `attachment; filename="${name}.zip"`);
-  res.setHeader('Content-Type', 'application/zip');
-
-  const archive = archiver('zip', { zlib: { level: 6 } });
-  archive.on('error', err => {
-    console.error('[api/folder-zip] error armando zip', folderPath, err.message);
-    if (!res.headersSent) res.status(500).json({ error: 'error armando el zip' });
-    else res.end();
-  });
-  archive.pipe(res);
-  archive.directory(folderPath, false);
-  archive.finalize();
-});
+app.use('/api', createFilesRouter({
+  uploadDir: UPLOAD_DIR,
+  magickCmd: MAGICK_CMD,
+  magickArgs,
+  isWin: IS_WIN,
+  isWsl: IS_WSL,
+  getGroqApiKey: () => GROQ_API_KEY,
+}));
 
 app.use('/api/notebooks', createNotesRouter({
   syncSearchIndex,
@@ -1855,339 +1538,30 @@ app.get('/api/search', (req, res) => {
   res.json({ results: enriched, degraded: !index });
 });
 
-app.get('/api/conversations/:id/usage', (req, res) => {
-  const empty = { total: { input: 0, output: 0, cacheCreate: 0, cacheRead: 0 }, byModel: {}, costUSD: 0, contextTokens: 0, contextWindow: 200_000, contextPct: 0 };
-  const acc = req.query.account || activeAccount;
-  const { conv } = resolveConv(req.params.id, acc);
-  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
-  if (!conv.currentSessionId) return res.json(empty);
-  const file = scanner.findSessionFile(conv.currentSessionId, accountProjectsDir(acc));
-  if (!file) return res.json(empty);
-  const info = scanner.sessionInfo(file);
-  if (!info || !info.usage) return res.json(empty);
-  const window = contextWindowFor(info.lastModel);
-  const contextTokens = info.contextTokens || 0;
-  res.json({
-    ...usageCost(info.usage),
-    contextTokens,
-    contextWindow: window,
-    contextPct: window > 0 ? contextTokens / window : 0,
-  });
-});
-
-app.get('/api/conversations/:id/messages', (req, res) => {
-  const acc = req.query.account || activeAccount;
-  const projDir = accountProjectsDir(acc);
-  const { conv } = resolveConv(req.params.id, acc);
-  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
-  const out = [];
-  if (conv.compactedFromSession) {
-    const oldFile = scanner.findSessionFile(conv.compactedFromSession, projDir);
-    if (oldFile) {
-      for (const m of scanner.getMessagesIncremental(oldFile)) out.push({ ...m, compacted: true });
-    }
-  }
-  if (conv.currentSessionId) {
-    const file = scanner.findSessionFile(conv.currentSessionId, projDir);
-    if (file) {
-      for (const m of scanner.getMessagesIncremental(file)) out.push(m);
-    }
-  }
-  res.json(out);
-});
-
-app.post('/api/conversations/:id/message', async (req, res) => {
-  const convId = req.params.id;
-  const text = (req.body.text || '').trim();
-  if (!text) return res.status(400).json({ error: 'mensaje vacío' });
-  if (runner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación ya está procesando un mensaje' });
-  if (compacting.has(convId)) return res.status(409).json({ error: 'esa conversación se está compactando' });
-  const acc = req.body.account || activeAccount;
-  const { data, conv, metaFile } = resolveConv(convId, acc);
-  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
-  let outgoing = text;
-  // Read-once: si el turno anterior rebobinó ignorando acciones con efecto real,
-  // esta nota va antepuesta al primer mensaje que se manda después — así entra
-  // al contexto real de Claude en vez de quedar en una notificación que nadie lee.
-  if (conv.pendingRewindNotice) {
-    outgoing = `${conv.pendingRewindNotice}\n\n[Mensaje actual del usuario]\n${outgoing}`;
-    delete conv.pendingRewindNotice;
-  }
-  if (conv.compactedSummary && !conv.currentSessionId) {
-    outgoing = `[Resumen del contexto previo — la conversación fue compactada]\n${conv.compactedSummary}\n\n[Mensaje actual del usuario]\n${outgoing}`;
-    delete conv.compactedSummary;
-    delete conv.compactedAt;
-  }
-  // Charla nueva creada con un proyecto etiquetado (#project-bar): avisamos
-  // una sola vez, antes del primer mensaje real, en qué proyecto estamos
-  // trabajando — así Claude no depende de que el usuario lo escriba a mano
-  // ("trabajemos en X") y el chip de carpeta queda resuelto de entrada si el
-  // tag matchea una carpeta real bajo PROJECT_SEARCH_ROOTS.
-  if (conv.project && !conv.currentSessionId && !conv.projectAnnounced) {
-    const resolvedRepo = await inferRepoFromMessage(conv.project);
-    if (resolvedRepo) conv.gitRepo = resolvedRepo;
-    const folderNote = resolvedRepo ? `, carpeta: ${resolvedRepo}` : '';
-    outgoing = `[Estamos trabajando en el proyecto "${conv.project}"${folderNote}]\n\n${outgoing}`;
-    conv.projectAnnounced = true;
-  }
-  // La asociación puede llegar en cualquier mensaje (no necesariamente el
-  // primero): queda pendiente hasta que el texto nombra un proyecto válido.
-  if (!conv.gitRepo) {
-    const inferredRepo = await inferRepoFromMessage(text);
-    if (inferredRepo) conv.gitRepo = inferredRepo;
-  }
-  // El primer mensaje de una charla nueva (o cualquiera que quede en cola
-  // detrás de las `maxConcurrent` que ya están corriendo) no tiene todavía
-  // sesión ni archivo .jsonl — s.lastActivity en /tree queda null hasta que
-  // el CLI arranca de verdad. Sin este fallback, /tree ordena por
-  // lastActivity desc y la charla se va al fondo de la lista (después de
-  // TODAS las demás, con actividad real) mientras espera turno: para el
-  // usuario "no aparece" hasta que se libera un slot y el proceso arranca.
-  conv.lastMessageAt = new Date().toISOString();
-  meta.save(data, metaFile);
-  // Las conversaciones "VPS: <proyecto>" no tienen una carpeta local real —
-  // conv.projectDir ahí es solo metadata para agrupar/mostrar, no un cwd válido.
-  // Para el resto, no confiamos ciegamente en conv.projectDir: si Claude entró a un
-  // git worktree a mitad de charla, la sesión quedó reubicada a otra carpeta de
-  // proyecto y projectDir quedó desactualizado — resolveCwd busca dónde vive
-  // realmente la sesión ahora.
-  const cwd = (conv.projectDir || '').startsWith('VPS: ') ? accountHomeDir(acc) : scanner.resolveCwd(conv, accountProjectsDir(acc));
-  runner.send({ convId, sessionId: conv.currentSessionId, cwd, text: outgoing, model: conv.model, account: acc });
-  res.status(202).json({ queued: true });
-});
-
-// Sincronización Git directa desde el menú de una charla. No se interpreta un
-// comando del navegador: el server invoca `git` con argv fijos y el repo se
-// deduce de los cwd ya guardados por la sesión de Claude Code.
-app.post('/api/conversations/:id/git-sync', async (req, res) => {
-  const convId = req.params.id;
-  if (runner.isBusy(convId) || compacting.has(convId)) return res.status(409).json({ error: 'esa conversación está procesando una tarea' });
-  const acc = req.body.account || activeAccount;
-  const projectsDir = accountProjectsDir(acc);
-  const { data, conv, metaFile } = resolveConv(convId, acc);
-  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
-  const file = conv.currentSessionId ? scanner.findSessionFile(conv.currentSessionId, projectsDir) : null;
-  const repo = await resolveConversationGitRepo(conv, file);
-  if (!repo) return res.status(400).json({ error: 'no encontré un repositorio Git asociado a esta conversación' });
-  if (conv.gitRepo !== repo) {
-    conv.gitRepo = repo;
-    meta.save(data, metaFile);
-  }
-  try {
-    res.json(await gitSync.syncRepo(repo));
-  } catch (err) {
-    const detail = (err.stderr || err.stdout || err.message || 'falló Git').trim().slice(0, 1000);
-    res.status(409).json({ error: detail });
-  }
-});
-
-// El chip del header pide el repo al abrir una conversación. También migra en
-// forma perezosa los chats creados antes de guardar gitRepo en la metadata.
-app.get('/api/conversations/:id/repo', async (req, res) => {
-  const acc = req.query.account || activeAccount;
-  const projectsDir = accountProjectsDir(acc);
-  const { data, conv, metaFile } = resolveConv(req.params.id, acc);
-  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
-  const file = conv.currentSessionId ? scanner.findSessionFile(conv.currentSessionId, projectsDir) : null;
-  const repo = await resolveConversationGitRepo(conv, file);
-  if (repo && conv.gitRepo !== repo) {
-    conv.gitRepo = repo;
-    meta.save(data, metaFile);
-  }
-  res.json({ repo: repo || null });
-});
-
-app.post('/api/conversations/:id/compact', (req, res) => {
-  const convId = req.params.id;
-  if (runner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación está procesando un mensaje' });
-  if (compacting.has(convId)) return res.status(409).json({ error: 'ya se está compactando esta conversación' });
-  const acc = req.body.account || activeAccount;
-  const projDir = accountProjectsDir(acc);
-  const { conv } = resolveConv(convId, acc);
-  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
-  if (!conv.currentSessionId) return res.status(400).json({ error: 'la conversación no tiene sesión activa' });
-  const file = scanner.findSessionFile(conv.currentSessionId, projDir);
-  if (!file) return res.status(404).json({ error: 'archivo de sesión no encontrado' });
-  const messages = scanner.getMessagesIncremental(file).filter(m => m.role === 'user' || m.role === 'assistant');
-  if (messages.length < 2) return res.status(400).json({ error: 'nada útil para compactar (menos de 2 mensajes)' });
-
-  // La compactación real puede tardar bastante en sesiones largas — justo el
-  // caso que más lo necesita — y una respuesta HTTP colgada esperando eso corre
-  // el mismo riesgo que ya documentamos para /stream: el túnel Cloudflare corta
-  // conexiones idle. Por eso responde 202 al toque y hace el trabajo en
-  // background, avisando por el mismo canal SSE que ya usan los mensajes
-  // normales (heartbeat cada 20s incluido).
-  const cwd = (conv.projectDir || '').startsWith('VPS: ') ? accountHomeDir(acc) : scanner.resolveCwd(conv, projDir);
-  compacting.add(convId);
-  broadcast(convId, { kind: 'status', status: 'running' });
-  _claudeCompact(conv.currentSessionId, cwd)
-    .then(() => {
-      compacting.delete(convId);
-      const cm = _lastCompactMetadata(file);
-      if (!cm) console.warn('[compact] terminó sin error pero no encontré el compact_boundary en el jsonl:', file);
-      broadcast(convId, { kind: 'compacted', ...cm });
-      broadcast(convId, { kind: 'status', status: 'idle', code: 0 });
-    })
-    .catch(err => {
-      compacting.delete(convId);
-      console.error('[compact] falló:', err.message);
-      broadcast(convId, { kind: 'status', status: 'idle', code: -1, stderr: 'No se pudo compactar: ' + err.message });
-    });
-  res.status(202).json({ queued: true });
-});
-
-// Da el mismo texto que rewindSessionFile dejaría como aviso pendiente — lo usan
-// tanto el preview (antes de confirmar) como el rewind real (para guardarlo).
-function formatRewindNotice(effects) {
-  const lines = effects.map(e => {
-    const tag = e.reversible === true ? ' [reversible]' : e.reversible === false ? ' [IRREVERSIBLE]' : '';
-    return `- ${e.summary}${tag}${e.hint ? ' — ' + e.hint : ''}`;
-  });
-  return `[Aviso: se rebobinó la charla]\nEntre el punto al que se volvió y el estado anterior se habían ejecutado estas acciones fuera de la charla. Rebobinar NO las deshace — si siguen aplicadas en el sistema, tenelo en cuenta antes de asumir el estado actual:\n${lines.join('\n')}`;
-}
-
-// Preview de qué se perdería al rebobinar hasta `uuid`, sin tocar el archivo.
-// Pensado para mostrar la advertencia ANTES de que el usuario confirme.
-app.get('/api/conversations/:id/rewind-preview', (req, res) => {
-  const convId = req.params.id;
-  const uuid = (req.query.uuid || '').trim();
-  if (!uuid) return res.status(400).json({ error: 'falta uuid del mensaje' });
-  const acc = req.query.account || activeAccount;
-  const { conv } = resolveConv(convId, acc);
-  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
-  if (!conv.currentSessionId) return res.status(400).json({ error: 'la conversación no tiene sesión activa' });
-  const file = scanner.findSessionFile(conv.currentSessionId, accountProjectsDir(acc));
-  if (!file) return res.status(404).json({ error: 'archivo de sesión no encontrado' });
-  const preview = scanner.previewRewindEffects(file, uuid);
-  if (!preview) return res.status(400).json({ error: 'no se puede rebobinar ahí (mensaje no encontrado en la sesión actual, o dejaría la conversación vacía)' });
-  res.json(preview);
-});
-
-// Rebobinar: elimina un turno user y todo lo posterior del jsonl de la sesión.
-// Ver scanner.rewindSessionFile para el porqué de que esto es seguro (cadena
-// parentUuid estilo git, cortada en borde de turno). Es rápido (reescritura
-// local del archivo), así que responde sincrónico — no necesita el baile de
-// 202+SSE del compact.
-app.post('/api/conversations/:id/rewind', (req, res) => {
-  const convId = req.params.id;
-  const uuid = (req.body.uuid || '').trim();
-  if (!uuid) return res.status(400).json({ error: 'falta uuid del mensaje' });
-  if (runner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación está procesando un mensaje' });
-  if (compacting.has(convId)) return res.status(409).json({ error: 'esa conversación se está compactando' });
-  const acc = req.body.account || activeAccount;
-  const { data, conv, metaFile } = resolveConv(convId, acc);
-  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
-  if (!conv.currentSessionId) return res.status(400).json({ error: 'la conversación no tiene sesión activa' });
-  const file = scanner.findSessionFile(conv.currentSessionId, accountProjectsDir(acc));
-  if (!file) return res.status(404).json({ error: 'archivo de sesión no encontrado' });
-  let result;
-  try { result = scanner.rewindSessionFile(file, uuid); }
-  catch (err) { return res.status(500).json({ error: 'no se pudo rebobinar: ' + err.message }); }
-  if (!result) return res.status(400).json({ error: 'no se puede rebobinar ahí (mensaje no encontrado en la sesión actual, o dejaría la conversación vacía)' });
-  // Si se perdieron acciones con efecto real, dejamos una nota que se antepone
-  // sola al próximo mensaje que se mande — así Claude la ve en su contexto de
-  // verdad en vez de depender de que alguien la lea a mano en algún lado.
-  if (result.effects && result.effects.length) {
-    conv.pendingRewindNotice = formatRewindNotice(result.effects);
-  } else {
-    delete conv.pendingRewindNotice;
-  }
-  meta.save(data, metaFile);
-  broadcast(convId, { kind: 'status', status: 'idle', code: 0 });
-  res.json({ ok: true, removed: result.removed, effects: result.effects || [] });
-});
-
-app.post('/api/conversations', (req, res) => {
-  const { model } = req.body;
-  // Etiqueta de proyecto (texto libre, ver /api/projects) — NO es una carpeta,
-  // no toca projectDir/cwd. Si el selector de proyecto está activo en el
-  // front, la nueva charla nace ya clasificada ahí.
-  const project = (req.body.project || '').trim() || undefined;
-  const acc = req.body.account || activeAccount;
-  // No se elige carpeta por conversación — siempre arranca en la carpeta
-  // configurada para esta cuenta (CCM_DEFAULT_PROJECT_DIR si está seteado,
-  // si no accountHomeDir), así lee el CLAUDE.md y la memoria de esa carpeta
-  // igual que una sesión interactiva normal. Antes se podía elegir carpeta
-  // local o "proyecto VPS" por conversación (string "VPS: <nombre>", que no
-  // es una ruta real); se sacó esa opción del todo — evita, entre otras
-  // cosas, terminar pasando ese string como cwd real de un spawn.
-  const projectDir = process.env.CCM_DEFAULT_PROJECT_DIR || accountHomeDir(acc);
-  const metaFile = accountMetaFile(acc);
-  const convId = crypto.randomUUID();
-  const data = meta.load(metaFile);
-  data.conversations[convId] = { currentSessionId: null, projectDir, model: model || undefined, project };
-  registerProject(data, project);
-  meta.save(data, metaFile);
-  // Conversación arranca vacía, sin mensaje inicial — el usuario escribe el
-  // primero desde el composer como cualquier otro mensaje.
-  res.status(201).json({ convId, projectDir, project });
-});
-
-app.patch('/api/conversations/:id', (req, res) => {
-  const acc = req.body.account || activeAccount;
-  const { data, conv, metaFile } = resolveConv(req.params.id, acc);
-  if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
-  if ('name' in req.body) {
-    conv.name = (req.body.name || '').trim() || undefined;
-    conv.aiTitle = false;
-  }
-  if ('model' in req.body) conv.model = (req.body.model || '').trim() || undefined;
-  // Etiqueta de proyecto: string vacío/null la borra (vuelve a "Sin proyecto").
-  if ('project' in req.body) {
-    conv.project = (req.body.project || '').trim() || undefined;
-    registerProject(data, conv.project);
-  }
-  if ('pinned' in req.body) conv.pinned = !!req.body.pinned;
-  if ('archived' in req.body) conv.archived = !!req.body.archived;
-  if ('unread' in req.body) conv.unread = !!req.body.unread;
-  // hidden: saca la conversación de las dos listas (activas y archivadas) sin
-  // tocar el .jsonl real — a diferencia de un borrado, es reversible a mano
-  // editando meta.json si hiciera falta.
-  if ('hidden' in req.body) conv.hidden = !!req.body.hidden;
-  meta.save(data, metaFile);
-  res.json({ ok: true });
-});
-
-app.delete('/api/conversations/:id/message', (req, res) => {
-  const cancelled = runner.cancel(req.params.id);
-  res.json({ cancelled });
-});
-
-app.get('/api/conversations/:id/stream', (req, res) => {
-  const convId = req.params.id;
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-  });
-  res.write('\n');
-  if (!sseClients.has(convId)) sseClients.set(convId, new Set());
-  sseClients.get(convId).add(res);
-  // Si la conversación ya está procesando un turno cuando este cliente se
-  // conecta (ej. volviste a abrirla mientras corría, o el broadcast único de
-  // 'running' pasó mientras estabas mirando otra conversación), el cliente
-  // nunca se entera y el botón de cancelar queda oculto hasta el 'idle' final.
-  // Mandamos el estado actual como primer evento para que se sincronice solo.
-  const st = convStatus(convId);
-  if (st !== 'idle') res.write(`data: ${JSON.stringify({ kind: 'status', status: st })}\n\n`);
-  // Cloudflare Tunnel corta conexiones SSE inactivas (~100s de idle).
-  // Sin este ping, un turno largo de Claude sin output deja el stream mudo
-  // y el edge lo mata a mitad de camino, perdiendo el evento 'idle' final.
-  const heartbeat = setInterval(() => res.write(':heartbeat\n\n'), 20000);
-  req.on('close', () => {
-    clearInterval(heartbeat);
-    const set = sseClients.get(convId);
-    if (!set) return;
-    set.delete(res);
-    if (set.size === 0) sseClients.delete(convId);
-  });
-});
+app.use('/api/conversations', createConversationsRouter({
+  getActiveAccount: () => activeAccount,
+  accountMetaFile,
+  accountProjectsDir,
+  accountHomeDir,
+  homeDir: HOME_DIR,
+  runner,
+  compacting,
+  broadcast,
+  convStatus,
+  contextWindowFor,
+  usageCost,
+  inferRepoFromMessage,
+  inferRepoFromMessages,
+  registerProject,
+  sseClients,
+  claudeCmd: CLAUDE_CMD,
+}));
 
 app.use('/api/codex', createCodexRouter({
   codexRunner,
   codexSseClients,
   codexMetaFile: CODEX_META_FILE,
-  resolveConversationGitRepo,
+  resolveConversationGitRepo: (conv, file) => resolveConversationGitRepo(conv, file, { inferRepoFromMessages }),
   inferRepoFromMessage,
 }));
 
