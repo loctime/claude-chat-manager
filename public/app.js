@@ -4987,6 +4987,7 @@ function restoreComposer(text, attachments) {
   if (text) {
     input.value = input.value ? text + '\n' + input.value : text;
     autoResize(input);
+  }
   for (const a of attachments) {
     if (pendingAttachments.some(p => p.path === a.path)) continue;
     pendingAttachments.push(a);
