@@ -1,5 +1,8 @@
 const $ = id => document.getElementById(id);
 let currentConv = null;
+// Conserva el resaltado del último chat Claude aunque se abra luego Codex o
+// AgY. Es solo una pista visual: currentConv sigue indicando el chat activo.
+let lastClaudeConvId = null;
 function gitSyncToast(result) {
   const repo = (result.repo || '').split(/[\\/]/).filter(Boolean).pop() || 'repo';
   return result.committed
@@ -550,7 +553,7 @@ function convElement(c) {
     ? `<span class="conv-ctx" data-tone="${ctxTone(pct)}" title="Contexto usado: ${(pct * 100).toFixed(1)}%">${pctLabel}</span>`
     : '';
   const div = document.createElement('div');
-  div.className = 'conv' + (c.convId === currentConv ? ' active' : '') + (c.archived ? ' archived' : '');
+  div.className = 'conv' + (c.convId === currentConv || c.convId === lastClaudeConvId ? ' active' : '') + (c.archived ? ' archived' : '');
   div.innerHTML = `
     <div class="conv-avatar">${avatarChar(c.name)}</div>
     <div class="conv-body">
@@ -2842,6 +2845,7 @@ async function selectConv(convId, name, model, lastModel, projectDir) {
   $('file-input').accept = 'image/*,text/*,application/*,audio/*,video/*';
   exitMultiSelectMode(); // los elementos marcados quedan del chat anterior, no tiene sentido arrastrarlos
   currentConv = convId;
+  lastClaudeConvId = convId;
   restoreDraft(drafts.get(convId));
   $('conv-title').textContent = name;
   $('model-select').value = model || 'sonnet';
