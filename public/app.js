@@ -1110,6 +1110,7 @@ function openChat() {
   if (isMobile() && !wasOpen) history.pushState({ view: 'chat' }, '');
 }
 function closeChat() {
+  saveCurrentDraft();
   // Si estamos en el estado 'chat' de la history, delegar al popstate handler
   // vía history.back() para no romper la sincronización.
   if (isMobile() && history.state && history.state.view === 'chat') {
@@ -1145,6 +1146,7 @@ const CHAT_SWIPE_THRESHOLD = 80;
 let chatStartX = 0, chatStartY = 0, chatAxisLocked = null, chatDragging = false, chatCurrentTranslate = 0;
 
 function closeChatAfterSwipe() {
+  saveCurrentDraft();
   const panel = $('panel-chat');
   // Se saca la clase y el estilo inline en el mismo tick (no en dos pasos)
   // para que la transición CSS de .25s arranque desde donde el dedo lo soltó
@@ -1259,6 +1261,7 @@ window.addEventListener('popstate', (e) => {
   // lista de Codex (no en Chats) — recién el atrás siguiente, ya en esa
   // lista sin nada abierto, pasa a Chats (rama de abajo).
   if ($('panel-chat').classList.contains('open')) {
+    saveCurrentDraft();
     $('panel-chat').classList.remove('open');
     flashConvRow(currentConv);
     _exitArmed = false; // veníamos de otro lado — no cuenta como el "segundo atrás" de salir
@@ -2025,20 +2028,18 @@ function openCodexSharedStream(convId) {
 }
 
 async function selectCodexShared(convId, name, projectDir = '') {
+  saveCurrentDraft();
   $('panel-chat').classList.add('codex-chat-theme');
   $('panel-chat').classList.remove('antigravity-chat-theme');
   if (eventSource) { eventSource.close(); eventSource = null; }
   if (codexStream) codexStream.close();
   if (geminiStream) { geminiStream.close(); geminiStream = null; }
-  if (currentGeminiConv) antigravityDrafts.set(currentGeminiConv.id || '__new__', $('input').value);
   currentGeminiConv = null;
-  if (currentCodexConv && currentCodexConv.id) codexDrafts.set(currentCodexConv.id, $('input').value);
   currentConv = null;
   currentCodexConv = { id: convId, name };
   $('conv-title').textContent = name;
-  $('input').value = codexDrafts.get(convId) || '';
   $('input').placeholder = 'Escribile a Codex…';
-  autoResize($('input'));
+  restoreDraft(codexDrafts.get(convId));
   $('model-select').hidden = true;
   setConversationRepoChip(projectDir);
   $('cost-badge').hidden = true;
@@ -2053,7 +2054,6 @@ async function selectCodexShared(convId, name, projectDir = '') {
   // aparte). Mismo `accept` repetido en selectConv() y
   // createCodexSharedConversation() — 2026-09-07.
   $('file-input').accept = 'image/*,text/*,application/*,audio/*,video/*';
-  clearAttachments();
   $('queued-bar').hidden = true;
   $('last-user-pin').hidden = true;
   setCodexMainBusy(false);
@@ -2079,24 +2079,23 @@ async function createCodexSharedConversation() {
     await loadCodexSharedTree();
     return;
   }
+  saveCurrentDraft();
   if (eventSource) { eventSource.close(); eventSource = null; }
   if (codexStream) { codexStream.close(); codexStream = null; }
-  if (currentCodexConv && currentCodexConv.id) codexDrafts.set(currentCodexConv.id, $('input').value);
   const { convId } = await codexApi('/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   currentConv = null;
+  currentGeminiConv = null;
   $('panel-chat').classList.add('codex-chat-theme');
   currentCodexConv = { id: convId, name: 'Nueva conversación' };
   $('conv-title').textContent = currentCodexConv.name;
-  $('input').value = '';
   $('input').placeholder = 'Escribile a Codex…';
-  autoResize($('input'));
+  restoreDraft(null);
   $('model-select').hidden = true;
   $('conv-folder').hidden = true;
   $('cost-badge').hidden = true;
   $('mic-btn').hidden = true;
   $('attach-btn').hidden = false;
   $('file-input').accept = 'image/*,text/*,application/*,audio/*,video/*';
-  clearAttachments();
   $('queued-bar').hidden = true;
   $('last-user-pin').hidden = true;
   messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Codex</p></div>';
@@ -2170,6 +2169,7 @@ async function loadGeminiTree() { const { conversations, unreadTotal } = await g
 function attachGeminiRowGestures(el, conv) { let timer = null, longPressed = false; const show = (x, y) => showGeminiConvMenu(x, y, conv); el.addEventListener('contextmenu', e => { e.preventDefault(); show(e.clientX, e.clientY); }); el.addEventListener('touchstart', e => { const t = e.touches[0]; longPressed = false; timer = setTimeout(() => { longPressed = true; show(t.clientX, t.clientY); if (navigator.vibrate) navigator.vibrate(30); }, 500); }, { passive: true }); el.addEventListener('touchmove', () => { if (timer) { clearTimeout(timer); timer = null; } }, { passive: true }); el.addEventListener('touchend', () => { if (timer) clearTimeout(timer); timer = null; }); el.addEventListener('click', e => { if (longPressed) { longPressed = false; e.preventDefault(); e.stopPropagation(); } }, { capture: true }); }
 function showGeminiConvMenu(x, y, conv) { document.querySelectorAll('.ctx-menu').forEach(m => m.remove()); const menu = document.createElement('div'); menu.className = 'ctx-menu'; menu.innerHTML = `<button data-action="copy">📋 Copiar conversación</button><button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button><button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`; document.body.appendChild(menu); const rect = menu.getBoundingClientRect(); menu.style.left = Math.min(x, window.innerWidth - rect.width - 8) + 'px'; menu.style.top = Math.min(y, window.innerHeight - rect.height - 8) + 'px'; const dismiss = () => { menu.remove(); document.removeEventListener('click', dismiss, true); document.removeEventListener('touchstart', dismiss, true); }; menu.addEventListener('click', async e => { const action = e.target.dataset.action; if (!action) return; dismiss(); try { if (action === 'copy') await copyConversationMessages(() => geminiApi(`/conversations/${conv.convId}/messages`)); else { await geminiApi(`/conversations/${conv.convId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(action === 'pin' ? { pinned: !conv.pinned } : { hidden: true }) }); if (action === 'hide' && currentGeminiConv?.id === conv.convId) closeChat(); loadGeminiTree(); } } catch (err) { toast('No se pudo actualizar: ' + err.message); } }); setTimeout(() => { document.addEventListener('click', dismiss, true); document.addEventListener('touchstart', dismiss, true); }, 250); }
 async function selectGemini(id, name, projectDir = '') {
+  saveCurrentDraft();
   if (eventSource) { eventSource.close(); eventSource = null; }
   if (codexStream) codexStream.close();
   if (geminiStream) geminiStream.close();
@@ -2180,7 +2180,6 @@ async function selectGemini(id, name, projectDir = '') {
   $('panel-chat').classList.remove('codex-chat-theme');
   $('panel-chat').classList.add('antigravity-chat-theme');
   $('conv-title').textContent = name;
-  $('input').value = antigravityDrafts.get(id || '__new__') || '';
   $('input').placeholder = 'Escribile a Antigravity…';
   setModelSelectOptions(AGY_MODELS, currentModel);
   $('model-select').hidden = false;
@@ -2189,7 +2188,7 @@ async function selectGemini(id, name, projectDir = '') {
   $('cost-badge').hidden = true;
   $('attach-btn').hidden = false;
   $('file-input').accept = 'image/*,text/*,application/*,audio/*,video/*';
-  clearAttachments();
+  restoreDraft(antigravityDrafts.get(id || '__new__'));
   setGeminiBusy(false);
   showNotebookView(false);
   showSalaView(false);
@@ -2208,6 +2207,7 @@ async function selectGemini(id, name, projectDir = '') {
   if (!isMobile()) $('input').focus();
 }
 async function createGeminiConversation() {
+  saveCurrentDraft();
   await selectGemini(null, 'Nueva conversación');
 }
 
@@ -2216,6 +2216,7 @@ let paneNavTarget = 0; // pane que debe quedar activo una vez termine la navegac
 
 async function goToPane(index) {
   if (index === paneNavTarget) return;
+  saveCurrentDraft();
   // paneNavTarget (no activePane) es lo que compara el guard de arriba: activePane
   // recién se actualiza al final, así que si hay una navegación en vuelo (p.ej.
   // click rápido Archivado→Notas→Chats) activePane todavía dice "0" aunque ya
@@ -2979,7 +2980,7 @@ function quoteIntoComposer(text, role, composerId = 'input') {
   const quoted = label + '\n' + t.split('\n').map(l => '> ' + l).join('\n') + '\n\n';
   input.value = quoted + input.value;
   autoResize(input);
-  if (composerId === 'input' && currentConv) drafts.set(currentConv, input.value);
+  if (composerId === 'input') saveCurrentDraft();
   input.focus();
   input.selectionStart = input.selectionEnd = input.value.length;
 }
@@ -4441,13 +4442,12 @@ function setConversationRepoChip(repoPath) {
 }
 
 async function selectConv(convId, name, model, lastModel, projectDir) {
+  saveCurrentDraft();
   $('panel-chat').classList.remove('codex-chat-theme');
   $('panel-chat').classList.remove('antigravity-chat-theme');
   if (codexStream) { codexStream.close(); codexStream = null; }
   if (geminiStream) { geminiStream.close(); geminiStream = null; }
-  if (currentGeminiConv) antigravityDrafts.set(currentGeminiConv.id || '__new__', $('input').value);
   currentGeminiConv = null;
-  if (currentCodexConv && currentCodexConv.id) codexDrafts.set(currentCodexConv.id, $('input').value);
   currentCodexConv = null;
   $('input').placeholder = 'Mensaje…';
   setModelSelectOptions(CLAUDE_MODELS, model || 'sonnet');
@@ -4456,15 +4456,12 @@ async function selectConv(convId, name, model, lastModel, projectDir) {
   $('attach-btn').hidden = false;
   $('file-input').accept = 'image/*,text/*,application/*,audio/*,video/*';
   exitMultiSelectMode(); // los elementos marcados quedan del chat anterior, no tiene sentido arrastrarlos
-  if (currentConv) drafts.set(currentConv, $('input').value);
   currentConv = convId;
-  $('input').value = drafts.get(convId) || '';
-  autoResize($('input'));
+  restoreDraft(drafts.get(convId));
   $('conv-title').textContent = name;
   $('model-select').value = model || 'sonnet';
   setConversationRepoChip(projectDir);
   setBusy(false);
-  clearAttachments();
   renderQueuedBar();
   // Si esta conversación tenía un mensaje en cola y el turno terminó mientras
   // no la mirabas, el reconnect de abajo (dentro de openChat→openStream) solo
@@ -4529,8 +4526,7 @@ function autoResize(el) {
 $('input').addEventListener('input', () => {
   const input = $('input');
   autoResize(input);
-  if (currentGeminiConv) antigravityDrafts.set(currentGeminiConv.id || '__new__', input.value);
-  if (currentCodexConv && currentCodexConv.id) codexDrafts.set(currentCodexConv.id, input.value);
+  saveCurrentDraft();
 });
 
 // ── Keyboard ──
@@ -4564,9 +4560,12 @@ $('cancel-btn').onclick = async () => {
 };
 
 // ── Attachments ──
-const pendingAttachments = []; // [{ path, name }]
+const pendingAttachments = []; // [{ path, name, file }]
 
 function clearAttachments() {
+  for (const chip of $('composer-attachments').querySelectorAll('.attach-chip')) {
+    if (chip._objUrl) URL.revokeObjectURL(chip._objUrl);
+  }
   pendingAttachments.length = 0;
   $('composer-attachments').innerHTML = '';
 }
@@ -4587,6 +4586,12 @@ function addAttachmentChip(name, filePath, localFile) {
     img.onload = () => {}; // keep object URL alive until chip removed
     chip._objUrl = objUrl;
     chip.appendChild(img);
+  } else if (isImg && filePath) {
+    const img = document.createElement('img');
+    img.className = 'attach-preview-img';
+    img.alt = name;
+    img.src = '/api/thumbnail?path=' + encodeURIComponent(filePath);
+    chip.appendChild(img);
   } else {
     chip.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5a2.5 2.5 0 0 1 5 0v10.5c0 .83-.67 1.5-1.5 1.5s-1.5-.67-1.5-1.5V6H9v9.5a2.5 2.5 0 0 0 5 0V5c0-2.21-1.79-4-4-4S6 2.79 6 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>`;
   }
@@ -4606,11 +4611,55 @@ function addAttachmentChip(name, filePath, localFile) {
     const idx = pendingAttachments.findIndex(a => a.path === filePath);
     if (idx >= 0) pendingAttachments.splice(idx, 1);
     chip.remove();
+    saveCurrentDraft();
   };
 
   chip.appendChild(nameSpan);
   chip.appendChild(removeBtn);
   $('composer-attachments').appendChild(chip);
+}
+
+function saveCurrentDraft() {
+  const input = $('input');
+  if (!input) return;
+  const text = input.value;
+  const attachments = [...pendingAttachments];
+  const hasContent = text.length > 0 || attachments.length > 0;
+  if (currentGeminiConv) {
+    const key = currentGeminiConv.id || '__new__';
+    if (hasContent) antigravityDrafts.set(key, { text, attachments });
+    else antigravityDrafts.delete(key);
+  } else if (currentCodexConv && currentCodexConv.id) {
+    if (hasContent) codexDrafts.set(currentCodexConv.id, { text, attachments });
+    else codexDrafts.delete(currentCodexConv.id);
+  } else if (currentConv) {
+    if (hasContent) drafts.set(currentConv, { text, attachments });
+    else drafts.delete(currentConv);
+  }
+}
+
+function restoreDraft(draftData) {
+  clearAttachments();
+  const input = $('input');
+  if (!input) return;
+  if (!draftData) {
+    input.value = '';
+    autoResize(input);
+    return;
+  }
+  if (typeof draftData === 'string') {
+    input.value = draftData;
+    autoResize(input);
+    return;
+  }
+  input.value = draftData.text || '';
+  autoResize(input);
+  if (Array.isArray(draftData.attachments)) {
+    for (const a of draftData.attachments) {
+      pendingAttachments.push(a);
+      addAttachmentChip(a.name, a.path, a.file);
+    }
+  }
 }
 
 // Un File que sale del selector de fotos del celu no es un archivo en memoria:
@@ -4702,6 +4751,7 @@ async function uploadAttachment(file) {
     loadingChip.remove();
     pendingAttachments.push({ path: filePath, name, file });
     addAttachmentChip(name, filePath, file);
+    saveCurrentDraft();
   } catch (err) {
     loadingChip.remove();
     // Dejamos rastro de tamaño y duración: si falla al instante es el archivo o
@@ -4937,13 +4987,12 @@ function restoreComposer(text, attachments) {
   if (text) {
     input.value = input.value ? text + '\n' + input.value : text;
     autoResize(input);
-    if (currentConv) drafts.set(currentConv, input.value);
-  }
   for (const a of attachments) {
     if (pendingAttachments.some(p => p.path === a.path)) continue;
     pendingAttachments.push(a);
     addAttachmentChip(a.name, a.path, a.file);
   }
+  saveCurrentDraft();
 }
 
 // Arma el texto final (con los prefijos [Archivo adjunto: ...]), muestra la
