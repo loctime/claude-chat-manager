@@ -787,6 +787,16 @@ document.querySelectorAll('.pane-tab').forEach(btn => {
   btn.onclick = () => goToPane(Number(btn.dataset.pane));
 });
 
+// Atajos de proveedor: funcionan aunque el foco esté en el composer, pero no
+// combinados con Ctrl/Alt/Meta para no pisar atajos del navegador o del SO.
+const PANE_FUNCTION_KEYS = { F1: 0, F2: 6, F3: 2 };
+document.addEventListener('keydown', e => {
+  const pane = PANE_FUNCTION_KEYS[e.key];
+  if (pane === undefined || e.ctrlKey || e.altKey || e.metaKey) return;
+  e.preventDefault();
+  goToPane(pane);
+});
+
 // ── Indicador global de "procesando" (icono ping + título + badge de la app instalada) ──
 let globalBusy = false;
 function updateGlobalBusyIndicator() {
