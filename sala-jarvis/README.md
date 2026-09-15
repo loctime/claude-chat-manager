@@ -17,9 +17,11 @@ diseño completo en `../docs/superpowers/specs/2026-09-07-sala-compartida-design
    cd /opt/sala-jarvis-repo/sala-jarvis && npm install --omit=dev
    ```
 
-3. Generar dos tokens random (uno por instancia) y arrancar con PM2:
+3. Generar dos tokens random (uno por instancia), declarar el humano de cada
+   una (para el autocompletar de @menciones — ver más abajo) y arrancar con PM2:
    ```
    export SALA_TOKENS="Jarvis:$(openssl rand -hex 24),FerStark:$(openssl rand -hex 24)"
+   export SALA_HUMANS="Jarvis:Diego,FerStark:Fernando"
    echo "$SALA_TOKENS"   # copiar cada token para pegarlo en la Configuración de cada Jarvis
    pm2 start ecosystem.config.js --env production
    pm2 save
@@ -27,6 +29,12 @@ diseño completo en `../docs/superpowers/specs/2026-09-07-sala-compartida-design
    Los tokens quedan solo en el env de PM2 (`pm2 env <id>` los muestra —
    mismo gotcha de seguridad ya documentado para el resto del VPS, no correr
    `pm2 env`/`pm2 jlist` con salida cruda a la vista de terceros).
+
+   `SALA_HUMANS` no es auth (no lleva tokens) — solo le dice a `/identities`
+   el nombre de la persona detrás de cada instancia, para que `@fernando` (no
+   solo `@FerStark`) aparezca en el autocompletar del otro lado. El cliente ya
+   filtra su propio nombre, así que cada instancia ve exactamente a los otros
+   dos (agente + humano del otro lado).
 
 4. Bloque Caddy (`/etc/caddy/Caddyfile`), mismo patrón que el resto del VPS:
    ```

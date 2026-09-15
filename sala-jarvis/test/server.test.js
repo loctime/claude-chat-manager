@@ -6,7 +6,8 @@ const os = require('os');
 
 process.env.SALA_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'sala-server-test-'));
 process.env.SALA_TOKENS = 'Jarvis:tok-diego,FerStark:tok-fernando';
-const { app, parseTokens } = require('../src/server');
+process.env.SALA_HUMANS = 'Jarvis:Diego,FerStark:Fernando';
+const { app, parseTokens, parseHumans } = require('../src/server');
 
 function listen(appInstance) {
   return new Promise(resolve => {
@@ -24,6 +25,14 @@ test('parseTokens arma un mapa token→nombre desde "Nombre:token,Nombre:token"'
 test('parseTokens ignora entradas vacías o mal formadas', () => {
   const map = parseTokens('Jarvis:abc,, :  ,FerStark:def');
   assert.equal(map.size, 2);
+});
+
+test('parseHumans arma la lista de nombres humanos desde "Agente:Humano,Agente:Humano"', () => {
+  assert.deepEqual(parseHumans('Jarvis:Diego,FerStark:Fernando'), ['Diego', 'Fernando']);
+});
+
+test('parseHumans ignora entradas vacías o mal formadas', () => {
+  assert.deepEqual(parseHumans('Jarvis:Diego,, :  ,FerStark:Fernando'), ['Diego', 'Fernando']);
 });
 
 test('sin token válido, cualquier endpoint devuelve 401', async () => {
@@ -107,11 +116,11 @@ test('kind con un valor arbitrario se ignora (no cualquier string pasa)', async 
   server.close();
 });
 
-test('GET /identities devuelve los nombres configurados en SALA_TOKENS, sin los tokens', async () => {
+test('GET /identities devuelve los nombres configurados en SALA_TOKENS y SALA_HUMANS, sin los tokens', async () => {
   const server = await listen(app);
   const { port } = server.address();
   const res = await fetch(`http://127.0.0.1:${port}/identities`, { headers: { Authorization: 'Bearer tok-diego' } }).then(r => r.json());
-  assert.deepEqual(res.identities.sort(), ['FerStark', 'Jarvis']);
+  assert.deepEqual(res.identities.sort(), ['FerStark', 'Fernando', 'Jarvis', 'Diego'].sort());
   server.close();
 });
 

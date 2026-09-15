@@ -25,6 +25,24 @@ function parseTokens(raw) {
 
 const TOKENS = parseTokens(process.env.SALA_TOKENS || '');
 
+// "NombreAgente1:NombreHumano1,NombreAgente2:NombreHumano2" → lista de
+// nombres humanos ("Diego","Fernando"). Formato análogo a SALA_TOKENS pero
+// sin tokens (esto no es auth, es solo label) — separado a propósito: el
+// token sigue identificando una INSTANCIA (Jarvis/FerStark) para firmar
+// mensajes, esto solo le suma a /identities el nombre humano de cada una
+// para que el autocompletar de @menciones pueda ofrecerlo. Ver charla
+// 15/09/2026 ("no me deja arrobar a Fernando").
+function parseHumans(raw) {
+  const names = [];
+  for (const pair of (raw || '').split(',')) {
+    const [, human] = pair.split(':').map(s => (s || '').trim());
+    if (human) names.push(human);
+  }
+  return names;
+}
+
+const HUMANS = parseHumans(process.env.SALA_HUMANS || '');
+
 const app = express();
 app.use(express.json());
 
@@ -44,13 +62,16 @@ app.get('/rooms', (req, res) => {
   res.json({ rooms: rooms.listRooms(indexFile, roomsDir) });
 });
 
-// Nombres de las instancias configuradas (Jarvis/FerStark), sin los
-// tokens — lo usa el autocompletar de @menciones del lado del cliente.
-// A diferencia de listRooms(), esto NO depende de que alguien ya haya
-// hablado en una sala puntual: es justo el caso que más importa (mencionar
-// a alguien que todavía no participó, para que se sume).
+// Nombres disponibles para @mencionar — instancias (Jarvis/FerStark, de
+// SALA_TOKENS) MÁS sus humanos (Diego/Fernando, de SALA_HUMANS), sin
+// tokens. A diferencia de listRooms(), esto NO depende de que alguien ya
+// haya hablado en una sala puntual: es justo el caso que más importa
+// (mencionar a alguien que todavía no participó, para que se sume). El
+// cliente ya filtra su propio nombre y el de su propio agente (ver
+// salaMentionCandidates en app.js), así que sumar los 4 acá alcanza para
+// que cada lado vea exactamente a los otros dos.
 app.get('/identities', (req, res) => {
-  res.json({ identities: [...new Set(TOKENS.values())] });
+  res.json({ identities: [...new Set([...TOKENS.values(), ...HUMANS])] });
 });
 
 app.post('/rooms', (req, res) => {
@@ -77,4 +98,4 @@ if (require.main === module) {
   app.listen(PORT, () => console.log(`sala-jarvis escuchando en :${PORT}`));
 }
 
-module.exports = { app, parseTokens };
+module.exports = { app, parseTokens, parseHumans };
