@@ -4809,7 +4809,6 @@ function pollTrees() {
   api('/sala/rooms').then(({ rooms: list }) => setPaneUnread('5', list.some(r => r.unread))).catch(() => {});
 }
 loadAccounts().then(() => safeLoadTree());
-loadCodexAvailability();
 let treePollTimer = setInterval(pollTrees, 15000);
 // En segundo plano (celu minimizado, pantalla bloqueada) no tiene sentido
 // seguir pinchando el server cada 15s — cada poll despierta la antena y el

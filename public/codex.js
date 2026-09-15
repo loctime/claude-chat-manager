@@ -2,6 +2,14 @@
 // Extraído de app.js (split por dominio, sesión 15/09/2026).
 // Script clásico (no ES module): comparte el scope global con el resto de los scripts.
 
+// currentCodexConv: {id, name} de la conversación Codex abierta en #codex-chat,
+// o null si no hay ninguna. Se declara acá (no en app.js) porque este archivo
+// es el primero en referenciarla en ejecución — codex.js carga después de
+// app.js en index.html, así que la declaración tiene que vivir donde carga.
+let currentCodexConv = null;
+let codexStream = null;
+let codexMainBusy = false;
+
 async function codexApi(path, opts) {
   const method = (opts && opts.method) || 'GET';
   const res = method === 'GET'
@@ -523,3 +531,8 @@ async function createCodexSharedConversation() {
   openChat();
   loadCodexSharedTree();
 }
+
+// Movido acá desde el final de app.js: la llamada original se ejecutaba
+// antes de que este script cargara (app.js va primero en index.html) y
+// tiraba ReferenceError, cortando el resto del arranque de app.js.
+loadCodexAvailability();

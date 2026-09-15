@@ -1825,6 +1825,25 @@ body.hide-tools details.tool { display: none !important; }
 .ctx-menu .ctx-danger:hover { background: rgba(255,138,128,.12); }
 .ctx-menu hr { border: none; border-top: 1px solid var(--border); margin: 4px 2px; }
 
+/* Picker de "+ Nuevo proyecto…" (showNewProjectFolderMenu): input de filtro
+   fijo arriba + lista scrolleable — sin esto, con ~90 carpetas reales el
+   .ctx-menu base (sin max-height) se desborda de la pantalla sin forma de
+   llegar a los últimos items. */
+.ctx-menu.folder-menu { min-width: 240px; }
+.ctx-menu-filter {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 4px;
+  padding: 8px 10px;
+  font-size: 13px;
+  background: var(--input-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.ctx-menu-list { max-height: 45vh; overflow-y: auto; }
+
 /* Autocompletar @menciones en el composer de Sala — mismo lenguaje visual
    que .ctx-menu, pero posicionado relativo al form (arriba del textarea),
    no en el punto del cursor/click. Ver #sala-composer (position:relative)
