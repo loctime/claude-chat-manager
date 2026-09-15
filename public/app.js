@@ -1152,18 +1152,6 @@ async function loadUsage(force) {
 }
 $('account-status-refresh').onclick = () => loadUsage(true);
 
-// Codex es opcional: en una instalación sin CLI o sin login la pestaña no se
-// muestra. El endpoint usa `codex login status`, no inicia un agente ni gasta
-// cuota; si falla, la app sigue funcionando normalmente como chat de Claude.
-async function loadCodexAvailability() {
-  codexAvailable = false;
-  try {
-    const res = await fetch('/api/codex/status');
-    const data = await res.json();
-    codexAvailable = Boolean(res.ok && data.available);
-  } catch { /* Codex no está configurado en esta instalación */ }
-}
-
 // ── Toast: ver toast.js ──
 // ── PWA (service worker + install): ver pwa.js ──
 
@@ -1613,603 +1601,21 @@ async function safeLoadArchivedTree() {
   catch (err) { toast('No se pudo actualizar archivadas: ' + err.message); }
 }
 
-// ── Codex: árbol de conversaciones (pane 4) ──
-// Codex es single-account (no hay withAccount/withAccountBody acá) y su
-// árbol no tiene ni de lejos la complejidad del de Claude (sin proyectos
-// anidados, sin badges de modelo/costo) — wrapper y fila propios en vez de
-// reusar api()/convElement().
-async function codexApi(path, opts) {
-  const method = (opts && opts.method) || 'GET';
-  const res = method === 'GET'
-    ? await netFetch('/api/codex' + path, opts)
-    : await fetch('/api/codex' + path, opts).catch(err => { throw netError(err); });
-  if (!res.ok && res.status !== 202) throw new Error((await res.json()).error || res.statusText);
-  return res.json();
-}
-
-async function geminiApi(path, opts) {
-  const method = (opts && opts.method) || 'GET';
-  const res = method === 'GET' ? await netFetch('/api/gemini' + path, opts) : await fetch('/api/gemini' + path, opts).catch(err => { throw netError(err); });
-  if (!res.ok && res.status !== 202) throw new Error((await res.json()).error || res.statusText);
-  return res.json();
-}
-
-async function codexTogglePin(convId, pinned) {
-  await codexApi(`/conversations/${convId}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pinned }),
-  });
-  codexLoadTree();
-}
-
-async function codexToggleArchive(convId, archived) {
-  await codexApi(`/conversations/${convId}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ archived }),
-  });
-  codexLoadTree();
-}
-
-function codexConvElement(c) {
-  const div = document.createElement('div');
-  div.className = 'tree-row';
-  div.dataset.convId = c.convId;
-  const badgeEl = badge(c.status) || (c.unread ? '<span class="unread-dot"></span>' : '');
-  const main = document.createElement('div');
-  main.className = 'tree-row-main';
-  const nameEl = document.createElement('span');
-  nameEl.className = 'tree-row-name';
-  nameEl.textContent = c.name; // textContent, no innerHTML — mismo criterio de escape que convElement()
-  main.appendChild(nameEl);
-  if (badgeEl) main.insertAdjacentHTML('beforeend', badgeEl);
-  const snippet = document.createElement('div');
-  snippet.className = 'tree-row-snippet';
-  snippet.textContent = c.snippet;
-  const pinBtn = document.createElement('button');
-  pinBtn.type = 'button';
-  pinBtn.className = 'tree-row-action';
-  pinBtn.textContent = c.pinned ? '📌' : '📍';
-  pinBtn.title = c.pinned ? 'Desanclar' : 'Anclar';
-  pinBtn.onclick = ev => { ev.stopPropagation(); codexTogglePin(c.convId, !c.pinned); };
-  const archiveBtn = document.createElement('button');
-  archiveBtn.type = 'button';
-  archiveBtn.className = 'tree-row-action';
-  archiveBtn.textContent = c.archived ? '↩️' : '🗄️';
-  archiveBtn.title = c.archived ? 'Desarchivar' : 'Archivar';
-  archiveBtn.onclick = ev => { ev.stopPropagation(); codexToggleArchive(c.convId, !c.archived); };
-  div.appendChild(main);
-  div.appendChild(snippet);
-  div.appendChild(pinBtn);
-  div.appendChild(archiveBtn);
-  div.onclick = () => codexSelectConv(c.convId, c.name);
-  return div;
-}
-
-let codexShowingArchived = false;
-
-async function codexLoadTree() {
-  const { conversations, archivedTotal: codexArchivedTotal } = await codexApi(`/tree${codexShowingArchived ? '?archived=1' : ''}`);
-  const nav = $('codex-tree-list');
-  nav.innerHTML = '';
-  if (conversations.length === 0) {
-    nav.innerHTML = `<div class="empty-state">${codexShowingArchived ? 'Sin conversaciones archivadas' : 'Sin conversaciones de Codex todavía'}</div>`;
-  } else {
-    for (const c of conversations) nav.appendChild(codexConvElement(c));
-  }
-  $('codex-archived-toggle').textContent = codexShowingArchived ? '← Volver a activas' : `Ver archivadas (${codexArchivedTotal})`;
-}
-
-function codexToggleArchivedView() {
-  codexShowingArchived = !codexShowingArchived;
-  codexLoadTree();
-}
-
-async function codexNewConversation() {
-  try {
-    const { convId } = await codexApi('/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    codexSelectConv(convId, 'Nueva conversación');
-  } catch (err) {
-    toast('No se pudo crear la conversación de Codex: ' + err.message);
-  }
-}
-
-// currentCodexConv: {id, name} de la conversación Codex abierta en #codex-chat,
-// o null si estamos viendo la lista.
-let currentCodexConv = null;
-// EventSource activo del stream de la conversación Codex abierta, o null.
-let codexStream = null;
-
-async function codexLoadMessages(convId) {
-  const container = $('codex-messages');
-  container.innerHTML = '';
-  const msgs = await codexApi(`/conversations/${convId}/messages`);
-  for (const m of msgs) {
-    if (m.role === 'tool') addTool(m.name, m.input, m.output, { container, ts: m.ts });
-    else addMsg(m.role, m.text, { container, ts: m.ts });
-  }
-  if (msgs.length === 0) container.innerHTML = '<div id="empty-state" class="empty-state">Escribile algo a Codex</div>';
-}
-
-function codexOpenStream(convId) {
-  const es = new EventSource(`/api/codex/conversations/${convId}/stream`);
-  es.onmessage = e => {
-    if (!currentCodexConv || convId !== currentCodexConv.id) return; // la conversación activa cambió mientras este fetch/stream estaba en vuelo — ignorar (mismo guard que el openStream de Claude, app.js:2716)
-    const data = JSON.parse(e.data);
-    const container = $('codex-messages');
-    if (data.kind === 'status') {
-      if (data.status === 'idle') {
-        setCodexBusy(false);
-        // Recargar para reconciliar contra lo que quedó en disco — mismo motivo
-        // que loadMessages() en el openStream de Claude (app.js:2740): si el
-        // turno terminó durante un corte del stream (túnel Cloudflare, app en
-        // background), acá es la única forma de que la respuesta aparezca.
-        // Trade-off aceptado: toChatMessages (codex-scanner.js) descarta tool
-        // calls, así que un reload por idle hace desaparecer las tarjetas de
-        // command_execution que se hayan renderizado en vivo durante el turno.
-        codexLoadMessages(convId).then(() => {
-          if (data.code !== 0 && data.stderr) addMsg('error', 'Error: ' + data.stderr, { container });
-        });
-      } else {
-        setCodexBusy(true);
-      }
-      return;
-    }
-    if (data.kind !== 'codex') return;
-    const ev = data.event;
-    if (ev.type === 'item.completed' && ev.item) {
-      if (ev.item.type === 'agent_message' && ev.item.text) {
-        addMsg('assistant', ev.item.text, { container });
-      } else if (ev.item.type === 'command_execution') {
-        addTool('command_execution', { command: ev.item.command }, ev.item.aggregated_output || '', { container });
-      }
-    }
-  };
-  es.onerror = () => {
-    if (!currentCodexConv || convId !== currentCodexConv.id) return;
-    // Mismo fix que el onerror de Claude (app.js:2780): el túnel de Cloudflare
-    // puede cortar el stream SSE a mitad de un turno largo. EventSource
-    // reconecta solo, pero cualquier evento emitido durante el corte se
-    // pierde (el servidor no los reenvía) — sin este reload la respuesta de
-    // Codex nunca se renderiza y el composer queda bloqueado para siempre.
-    setTimeout(() => {
-      if (!currentCodexConv || convId !== currentCodexConv.id) return;
-      codexLoadMessages(convId);
-    }, 1500);
-  };
-  return es;
-}
-
-function codexShowChat() {
-  $('codex-tree').style.display = 'none';
-  $('codex-chat').style.display = '';
-}
-
-function codexShowTreeList() {
-  if (codexStream) { codexStream.close(); codexStream = null; }
-  currentCodexConv = null;
-  $('codex-chat').style.display = 'none';
-  $('codex-tree').style.display = '';
-  codexLoadTree();
-}
-
-async function codexSelectConv(convId, name) {
-  currentCodexConv = { id: convId, name };
-  $('codex-chat-title').textContent = name;
-  codexShowChat();
-  if (codexStream) { codexStream.close(); codexStream = null; }
-  // Limpiar "no leído" al abrir, en paralelo con la carga de mensajes — mismo
-  // orden que usa selectConv() para Claude (PATCH antes de refrescar el árbol,
-  // evita que el punto quede pegado un instante de más por una carrera).
-  codexApi(`/conversations/${convId}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ unread: false }),
-  }).catch(() => {});
-  await codexLoadMessages(convId);
-  codexStream = codexOpenStream(convId);
-}
-
-function setCodexBusy(b) {
-  $('codex-send-btn').disabled = b;
-  $('codex-cancel-btn').style.display = b ? '' : 'none';
-}
-
-async function codexCancel() {
-  if (!currentCodexConv) return;
-  try {
-    await codexApi(`/conversations/${currentCodexConv.id}/message`, { method: 'DELETE' });
-  } catch (err) {
-    addMsg('error', 'No se pudo cancelar: ' + err.message, { container: $('codex-messages') });
-  }
-}
-
-async function codexPerformSend(convId, text, imagePath) {
-  addMsg('user', text, { container: $('codex-messages'), composerId: 'codex-composer-text' });
-  setCodexBusy(true);
-  try {
-    await codexApi(`/conversations/${convId}/message`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, imagePath }),
-    });
-  } catch (err) {
-    addMsg('error', 'No se pudo enviar: ' + err.message, { container: $('codex-messages') });
-    setCodexBusy(false);
-  }
-}
-
-// Sube una imagen a /api/upload (mismo endpoint genérico que ya usa el
-// composer de Chats, no es Codex-específico) y devuelve la ruta local.
-// No se reusa uploadAttachment() tal cual: esa función está acoplada al DOM
-// del composer de Claude (escribe en #composer-attachments, empuja a
-// pendingAttachments, y aborta si currentConv es null) — para Codex hace
-// falta solo la subida, sin esos efectos secundarios. Sí se reusa
-// prepareForUpload(), que es genérica (File → Blob, sin tocar el DOM).
-async function codexUploadImage(file) {
-  const { blob, name } = await prepareForUpload(file, file.name);
-  const fd = new FormData();
-  fd.append('file', blob, name);
-  const res = await netFetch('/api/upload', { method: 'POST', body: fd });
-  if (!res.ok) throw new Error((await res.json()).error || res.statusText);
-  const { path: filePath } = await res.json();
-  return filePath;
-}
-
-async function codexSubmitComposer() {
-  const textEl = $('codex-composer-text');
-  const text = textEl.value.trim();
-  if (!text || !currentCodexConv) return;
-  const imageInput = $('codex-image-input');
-  let imagePath;
-  try {
-    if (imageInput.files[0]) {
-      imagePath = await codexUploadImage(imageInput.files[0]);
-      imageInput.value = '';
-    }
-  } catch (err) {
-    addMsg('error', 'No se pudo subir la imagen: ' + err.message, { container: $('codex-messages') });
-    return;
-  }
-  textEl.value = '';
-  await codexPerformSend(currentCodexConv.id, text, imagePath);
-}
-
-// Codex usa la misma pantalla de chat que Claude. Sus endpoints siguen siendo
-// propios, pero lista, header, mensajes y composer ya no viven en un mini-chat.
-let codexMainBusy = false;
-
-function codexProjectName(conv) {
-  // gitRepo se asocia al detectar el proyecto en cualquier mensaje de la
-  // conversación. No usar projectDir como fallback: las conversaciones nuevas
-  // arrancan en HOME y mostraría "User", que no aporta contexto.
-  const repo = String(conv.gitRepo || '').replace(/[\\/]+$/, '');
-  return repo ? repo.split(/[\\/]/).pop() : '';
-}
-
 // Las pestañas resumen el mismo estado "sin leer" que ya muestran las filas.
 // Se ilumina la pestaña completa (en vez de sumar otro punto) para avisar que
-// una respuesta terminÃ³ en un agente que no estabas mirando.
+// una respuesta terminó en un agente que no estabas mirando.
 function setPaneUnread(pane, hasUnread) {
   const tab = document.querySelector(`.pane-tab[data-pane="${pane}"]`);
   if (tab) tab.classList.toggle('has-unread', hasUnread);
 }
 
-function codexConversationLabel(conv) {
-  if (conv.name) return conv.name;
-  const project = codexProjectName(conv);
-  return project || 'Sin proyecto';
-}
-
-function codexSharedRow(c) {
-  const label = codexConversationLabel(c);
-  const div = document.createElement('div');
-  div.className = 'conv' + (currentCodexConv && c.convId === currentCodexConv.id ? ' active' : '');
-  const pin = c.pinned ? '<span class="conv-pin" title="Fijada">📌</span>' : '';
-  const ai = c.aiTitle ? '<span class="conv-ai" title="Título generado por IA">✨</span>' : '';
-  div.innerHTML = `<div class="conv-avatar"></div><div class="conv-body"><div class="name">${pin}${ai}<span class="conv-name-text"></span></div><div class="sub"><span class="conv-date"></span></div></div>${badge(c.status) || (c.unread ? '<span class="unread-dot" title="Sin leer"></span>' : '')}`;
-  div.querySelector('.conv-avatar').textContent = avatarChar(label);
-  div.querySelector('.conv-name-text').textContent = label;
-  div.querySelector('.conv-date').textContent = c.snippet || (c.lastActivity || '').slice(0, 16).replace('T', ' ');
-  div._codexConv = c;
-  div.onclick = () => selectCodexShared(c.convId, label, c.gitRepo || c.projectDir);
-  attachCodexRowGestures(div, c);
-  return div;
-}
-
-async function loadCodexSharedTree({ skipAvailability = false } = {}) {
-  const nav = $('codex-pane');
-  // No vaciar el árbol antes del fetch: en desktop queda visible detrás del
-  // chat abierto y ese vacío momentáneo se percibía como un reinicio cada vez
-  // que seleccionabas o enviabas un mensaje a Codex.
-  if (!skipAvailability) await loadCodexAvailability();
-  if (!skipAvailability && !codexAvailable) {
-    nav.innerHTML = '<div id="empty-state"><p>Codex no está configurado en esta instalación.</p><p>En la PC que ejecuta J.A.R.V.I.S, iniciá sesión con <code>codex login</code> y actualizá esta página.</p></div>';
-    return false;
-  }
-  const { conversations, unreadTotal } = await codexApi('/tree');
-  setPaneUnread('2', unreadTotal > 0);
-  const next = document.createDocumentFragment();
-  if (!conversations.length) {
-    const empty = document.createElement('div');
-    empty.id = 'empty-state';
-    empty.innerHTML = '<p>Sin conversaciones de Codex todavía</p>';
-    next.appendChild(empty);
-  } else {
-    conversations.forEach(c => next.appendChild(codexSharedRow(c)));
-  }
-  // El reemplazo es atómico desde el punto de vista visual: la lista anterior
-  // queda durante el request y la nueva aparece en el mismo frame.
-  nav.replaceChildren(next);
-  return true;
-}
-
-// Codex no se archiva con arrastre: cualquier swipe horizontal se cede al
-// carrusel. Así, desde Codex un swipe a la derecha vuelve a Archivado y uno
-// a la izquierda avanza a Notas.
-function attachCodexRowGestures(el, conv) {
-  let touchTimer = null, longPressed = false, startX = 0, startY = 0;
-  let axisLocked = null, rowDragging = false, currentDx = 0, redirectedToPane = false;
-  const resetRow = () => {
-    el.style.transition = 'transform .2s ease, opacity .2s ease';
-    el.style.transform = ''; el.style.opacity = '';
-    setTimeout(() => { el.style.transition = ''; }, 200);
-  };
-  el.addEventListener('contextmenu', e => { e.preventDefault(); showCodexConvMenu(e.clientX, e.clientY, conv); });
-  el.addEventListener('touchstart', e => {
-    longPressed = false; axisLocked = null; rowDragging = false; currentDx = 0; redirectedToPane = false;
-    const touch = e.touches[0]; startX = touch.clientX; startY = touch.clientY;
-    touchTimer = setTimeout(() => {
-      longPressed = true; touchTimer = null; showCodexConvMenu(startX, startY, conv);
-      if (navigator.vibrate) { try { navigator.vibrate(30); } catch {} }
-    }, 500);
-  }, { passive: true });
-  el.addEventListener('touchmove', e => {
-    if (longPressed) return;
-    const touch = e.touches[0];
-    if (redirectedToPane) { if (paneSwipeMove(touch.clientX, touch.clientY)) e.preventDefault(); return; }
-    const dx = touch.clientX - startX, dy = touch.clientY - startY;
-    if (axisLocked === null) {
-      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
-      axisLocked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
-      if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
-      if (axisLocked === 'x') {
-        redirectedToPane = true;
-        if (paneSwipeStart(startX, startY) && paneSwipeMove(touch.clientX, touch.clientY)) e.preventDefault();
-        return;
-      }
-    }
-    if (axisLocked !== 'x') return;
-    e.preventDefault(); rowDragging = true; currentDx = Math.max(0, dx);
-    el.style.transform = `translateX(${currentDx}px)`;
-    el.style.opacity = String(Math.max(0.3, 1 - currentDx / 200));
-  }, { passive: false });
-  el.addEventListener('touchend', async () => {
-    if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
-    if (redirectedToPane) await paneSwipeEnd();
-    else if (rowDragging && !longPressed) resetRow();
-    redirectedToPane = false; rowDragging = false; axisLocked = null;
-  });
-  el.addEventListener('touchcancel', () => {
-    if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
-    if (redirectedToPane) paneSwipeEnd(); else if (rowDragging) resetRow();
-    redirectedToPane = false; rowDragging = false; axisLocked = null;
-  });
-  el.addEventListener('click', e => {
-    if (longPressed) { longPressed = false; e.stopPropagation(); e.preventDefault(); }
-  }, { capture: true });
-}
-
-function showCodexConvMenu(x, y, conv) {
-  document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
-  const menu = document.createElement('div');
-  menu.className = 'ctx-menu';
-  menu.innerHTML = `<button data-action="copy-conversation">📋 Copiar conversación</button><button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button><button data-action="git-sync">⬆️ Git: commit + pull + push</button><button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`;
-  document.body.appendChild(menu);
-  const rect = menu.getBoundingClientRect();
-  menu.style.left = Math.min(x, window.innerWidth - rect.width - 8) + 'px';
-  menu.style.top = Math.min(y, window.innerHeight - rect.height - 8) + 'px';
-  const dismiss = e => {
-    if (menu.contains(e.target)) return;
-    menu.remove(); document.removeEventListener('click', dismiss, true); document.removeEventListener('touchstart', dismiss, true);
-  };
-  menu.addEventListener('click', async e => {
-    e.stopPropagation();
-    const action = e.target.dataset && e.target.dataset.action;
-    if (!action) return;
-    menu.remove(); document.removeEventListener('click', dismiss, true); document.removeEventListener('touchstart', dismiss, true);
-    if (action === 'copy-conversation') {
-      try {
-        await copyConversationMessages(() => codexApi(`/conversations/${conv.convId}/messages`));
-      } catch (err) {
-        toast('No se pudo copiar la conversación: ' + err.message);
-      }
-      return;
-    }
-    if (action === 'git-sync') {
-      if (!confirm('Sincronizar Git en el repo de esta conversación?\n\nEjecuta directo: commit de cambios pendientes, pull con rebase y push. No hace force push ni descarta cambios.')) return;
-      try {
-        const result = await codexApi(`/conversations/${conv.convId}/git-sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-        toast(gitSyncToast(result), 'info', 5000);
-      } catch (err) {
-        toast('No se pudo sincronizar Git: ' + err.message);
-      }
-      return;
-    }
-    try {
-      const patch = action === 'pin' ? { pinned: !conv.pinned } : { hidden: true };
-      await codexApi(`/conversations/${conv.convId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) });
-      if (action === 'hide' && currentCodexConv && currentCodexConv.id === conv.convId) closeChat();
-      loadCodexSharedTree();
-      if (action === 'hide') toast('Conversación ocultada', 'info', 2500);
-    } catch (err) { toast('No se pudo actualizar: ' + err.message); }
-  });
-  menu.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
-  setTimeout(() => { document.addEventListener('click', dismiss, true); document.addEventListener('touchstart', dismiss, true); }, 350);
-}
-
-function setCodexMainBusy(value) {
-  codexMainBusy = value;
-  $('input').disabled = !currentCodexConv || value;
-  $('send').disabled = !currentCodexConv || value;
-  $('attach-btn').disabled = !currentCodexConv || value;
-  $('cancel-btn').hidden = !value;
-  $('conv-status').textContent = value ? 'escribiendo…' : '';
-}
-
-async function loadCodexSharedMessages(convId) {
-  messagesEl.innerHTML = '';
-  const msgs = await codexApi(`/conversations/${convId}/messages`);
-  if (!msgs.length) {
-    messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Codex</p></div>';
-    return;
-  }
-  let lastAssistantDiv = null;
-  let lastAssistantMsg = null;
-  for (const m of msgs) {
-    if (m.role === 'tool') {
-      addTool(m.name, m.input, m.output);
-      lastAssistantDiv = null;
-    } else {
-      const div = addMsg(m.role, m.text, { ts: m.ts });
-      if (m.role === 'assistant') {
-        lastAssistantDiv = div;
-        lastAssistantMsg = m;
-      } else {
-        lastAssistantDiv = null;
-      }
-    }
-  }
-  scrollToBottom();
-  if (lastAssistantDiv && !codexMainBusy) {
-    maybeShowReplySuggestions(convId, lastAssistantDiv, lastAssistantMsg.text, lastAssistantMsg.uuid || lastAssistantMsg.id, 'codex');
-  }
-}
-
-function openCodexSharedStream(convId) {
-  const stream = new EventSource(`/api/codex/conversations/${convId}/stream`);
-  stream.onmessage = e => {
-    if (!currentCodexConv || currentCodexConv.id !== convId) return;
-    const payload = JSON.parse(e.data);
-    if (payload.kind === 'status') {
-      if (payload.status === 'idle') {
-        setCodexMainBusy(false);
-        loadCodexSharedMessages(convId).then(() => loadCodexSharedTree());
-      } else {
-        setCodexMainBusy(true);
-        loadCodexSharedTree();
-      }
-      return;
-    }
-    if (payload.kind === 'meta') {
-      if (payload.name) {
-        if (currentCodexConv && currentCodexConv.id === convId) {
-          currentCodexConv.name = payload.name;
-          $('conv-title').textContent = payload.name;
-        }
-        loadCodexSharedTree();
-      }
-      return;
-    }
-    if (payload.kind !== 'codex') return;
-    const item = payload.event && payload.event.item;
-    if (!item || payload.event.type !== 'item.completed') return;
-    if (item.type === 'agent_message' && item.text) addMsg('assistant', item.text);
-    if (item.type === 'command_execution') addTool('command_execution', { command: item.command }, item.aggregated_output || '');
-  };
-  stream.onerror = () => setTimeout(() => {
-    if (currentCodexConv && currentCodexConv.id === convId) loadCodexSharedMessages(convId);
-  }, 1500);
-  return stream;
-}
-
-async function selectCodexShared(convId, name, projectDir = '') {
-  saveCurrentDraft();
-  $('panel-chat').classList.add('codex-chat-theme');
-  $('panel-chat').classList.remove('antigravity-chat-theme');
-  if (eventSource) { eventSource.close(); eventSource = null; }
-  if (codexStream) codexStream.close();
-  if (geminiStream) { geminiStream.close(); geminiStream = null; }
-  currentGeminiConv = null;
-  currentConv = null;
-  currentCodexConv = { id: convId, name };
-  $('conv-title').textContent = name;
-  $('input').placeholder = 'Escribile a Codex…';
-  restoreDraft(codexDrafts.get(convId));
-  $('model-select').hidden = true;
-  setConversationRepoChip(projectDir);
-  $('cost-badge').hidden = true;
-  $('mic-btn').hidden = true;
-  $('attach-btn').hidden = false;
-  // Sin audio/video acá, un .mp3 no aparecía ni seleccionable en la galería
-  // del celu — aunque el server (multer, sin fileFilter) y el render de
-  // mensajes (makeFileCard) ya aceptan cualquier extensión desde la
-  // generalización del 2026-08-13, este `accept` seguía filtrando ANTES de
-  // llegar a elegir el archivo. Diego lo pidió para adjuntar un mp3 solo
-  // para guardarlo, no para transcribirlo (eso es /api/transcribe, un flujo
-  // aparte). Mismo `accept` repetido en selectConv() y
-  // createCodexSharedConversation() — 2026-09-07.
-  $('file-input').accept = 'image/*,text/*,application/*,audio/*,video/*';
-  $('queued-bar').hidden = true;
-  $('last-user-pin').hidden = true;
-  setCodexMainBusy(false);
-  showNotebookView(false);
-  showSalaView(false); // si había una sala abierta, se cierra — ver bug reportado por Diego
-  openChat();
-  const markRead = codexApi(`/conversations/${convId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ unread: false }) }).catch(() => {});
-  await loadCodexSharedMessages(convId);
-  await markRead;
-  codexStream = openCodexSharedStream(convId);
-  loadCodexSharedTree();
-  codexApi(`/conversations/${convId}/repo`).then(({ repo }) => {
-    if (currentCodexConv && currentCodexConv.id === convId && repo) setConversationRepoChip(repo);
-  }).catch(() => {});
-  if (!isMobile()) $('input').focus();
-}
-
-async function createCodexSharedConversation() {
-  // Igual que Chats: abrimos un borrador local. La metadata y su fila recién
-  // existen cuando se manda el primer mensaje.
-  await loadCodexAvailability();
-  if (!codexAvailable) {
-    await loadCodexSharedTree();
-    return;
-  }
-  saveCurrentDraft();
-  if (eventSource) { eventSource.close(); eventSource = null; }
-  if (codexStream) { codexStream.close(); codexStream = null; }
-  const { convId } = await codexApi('/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-  currentConv = null;
-  currentGeminiConv = null;
-  $('panel-chat').classList.add('codex-chat-theme');
-  currentCodexConv = { id: convId, name: 'Nueva conversación' };
-  $('conv-title').textContent = currentCodexConv.name;
-  $('input').placeholder = 'Escribile a Codex…';
-  restoreDraft(null);
-  $('model-select').hidden = true;
-  $('conv-folder').hidden = true;
-  $('cost-badge').hidden = true;
-  $('mic-btn').hidden = true;
-  $('attach-btn').hidden = false;
-  $('file-input').accept = 'image/*,text/*,application/*,audio/*,video/*';
-  $('queued-bar').hidden = true;
-  $('last-user-pin').hidden = true;
-  messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Codex</p></div>';
-  setCodexMainBusy(false);
-  showNotebookView(false);
-  showSalaView(false); // si había una sala abierta, se cierra — ver bug reportado por Diego
-  openChat();
-  loadCodexSharedTree();
-}
+// ── Codex: ver codex.js ──
 
 const CLAUDE_MODELS = [
   { value: 'sonnet', label: 'Sonnet' },
   { value: 'opus', label: 'Opus' },
   { value: 'fable', label: 'Fable' },
   { value: 'haiku', label: 'Haiku' },
-];
-
-const AGY_MODELS = [
-  { value: 'claude-sonnet-4-6', label: 'Sonnet' },
-  { value: 'gemini-3.8-flash-high', label: 'Flash High' },
-  { value: 'gemini-3.8-flash-medium', label: 'Flash Medium' },
 ];
 
 function setModelSelectOptions(options, selectedValue) {
@@ -2219,109 +1625,7 @@ function setModelSelectOptions(options, selectedValue) {
   sel.value = exists ? selectedValue : (options.find(o => o.value === 'gemini-3.8-flash-high') ? 'gemini-3.8-flash-high' : options[0]?.value);
 }
 
-function setGeminiBusy(value) { geminiMainBusy = value; $('input').disabled = !currentGeminiConv || value; $('send').disabled = !currentGeminiConv || value; $('attach-btn').disabled = !currentGeminiConv || value; $('cancel-btn').hidden = !value; $('conv-status').textContent = value ? 'escribiendo…' : ''; }
-async function loadGeminiMessages(id) {
-  messagesEl.innerHTML = '';
-  const messages = await geminiApi(`/conversations/${id}/messages`);
-  if (!messages.length) {
-    messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Antigravity</p></div>';
-  } else {
-    let lastAssistantDiv = null;
-    let lastAssistantMsg = null;
-    for (const m of messages) {
-      if (m.role === 'tool') {
-        addTool(m.name, m.input, m.output);
-        lastAssistantDiv = null;
-      } else {
-        const div = addMsg(m.role, m.text, { ts: m.ts });
-        if (m.role === 'assistant') {
-          lastAssistantDiv = div;
-          lastAssistantMsg = m;
-        } else {
-          lastAssistantDiv = null;
-        }
-      }
-    }
-    if (lastAssistantDiv && !geminiMainBusy) {
-      maybeShowReplySuggestions(id, lastAssistantDiv, lastAssistantMsg.text, lastAssistantMsg.uuid || lastAssistantMsg.id, 'gemini');
-    }
-  }
-  scrollToBottom();
-}
-function openGeminiStream(id) { let live = '', bubble = null; const seenTools = new Set(); const stream = new EventSource(`/api/gemini/conversations/${id}/stream`); stream.onmessage = e => { if (!currentGeminiConv || currentGeminiConv.id !== id) return; const payload = JSON.parse(e.data); if (payload.kind === 'gemini') { const step = payload.event?.step_update; const delta = step?.text_delta; if (typeof delta === 'string') { live += delta; if (!bubble) bubble = addMsg('assistant', ''); const text = bubble.querySelector('.msg-text'); if (text) text.textContent = live; autoScroll(); }
-    // Antigravity entrega las herramientas como step_update, con el estado real
-    // en step.state (ACTIVE/DONE/ERROR) — no step.status, que es la convención
-    // de otro lado de este archivo y no existe acá. Con el nombre de campo
-    // equivocado la condición de abajo daba siempre true (step.status es
-    // undefined), así que la tool se agregaba en ACTIVE (sin output todavía) y
-    // el chequeo de "ya visto" descartaba el DONE real con el resultado.
-    const tool = step?.tool_info; const toolKey = step?.step_index ?? step?.id;
-    if (tool && (step?.state === 'DONE' || step?.state === 'ERROR') && !seenTools.has(toolKey)) { seenTools.add(toolKey); addTool(tool.name || step.tool_name || step.step_type || 'herramienta', tool.parameters || tool.args || {}, tool.output || tool.error?.message || tool.result || ''); autoScroll(); }
-    return; }
-    if (payload.kind === 'status') { setGeminiBusy(payload.status !== 'idle'); if (payload.status === 'idle') { if (payload.incomplete && !payload.cancelled) toast(payload.stderr || 'Antigravity no entregó una respuesta final.'); loadGeminiMessages(id).then(loadGeminiTree); } return; }
-    if (payload.kind === 'meta') { if (payload.name) { if (currentGeminiConv && currentGeminiConv.id === id) { currentGeminiConv.name = payload.name; $('conv-title').textContent = payload.name; } loadGeminiTree(); } return; }
-  }; stream.onerror = () => setTimeout(() => { if (currentGeminiConv?.id === id) loadGeminiMessages(id); }, 1500); return stream; }
-function geminiRow(c) {
-  const div = document.createElement('div');
-  div.className = 'conv' + (currentGeminiConv?.id === c.convId ? ' active' : '');
-  const label = c.name || c.snippet || '(nueva conversación)';
-  const pin = c.pinned ? '<span class="conv-pin" title="Fijada">📌</span>' : '';
-  const ai = c.aiTitle ? '<span class="conv-ai" title="Título generado por IA">✨</span>' : '';
-  div.innerHTML = `<div class="conv-avatar">A</div><div class="conv-body"><div class="name">${pin}${ai}<span class="conv-name-text"></span></div><div class="sub"></div></div>${badge(c.status) || (c.unread ? '<span class="unread-dot"></span>' : '')}`;
-  div.querySelector('.conv-name-text').textContent = label;
-  div.querySelector('.sub').textContent = c.snippet;
-  div.onclick = () => {
-    currentGeminiConv = { id: c.convId, name: label, model: c.model || 'gemini-3.8-flash-high' };
-    selectGemini(c.convId, label, c.gitRepo || c.projectDir);
-  };
-  attachGeminiRowGestures(div, c);
-  return div;
-}
-async function loadGeminiTree() { const { conversations, unreadTotal } = await geminiApi('/tree'); setPaneUnread('6', unreadTotal > 0); const pane = $('gemini-pane'); if (!conversations.length) pane.innerHTML = '<div id="empty-state"><p>Sin conversaciones de Antigravity todavía</p></div>'; else pane.replaceChildren(...conversations.map(geminiRow)); geminiTreeLoaded = true; }
-function attachGeminiRowGestures(el, conv) { let timer = null, longPressed = false; const show = (x, y) => showGeminiConvMenu(x, y, conv); el.addEventListener('contextmenu', e => { e.preventDefault(); show(e.clientX, e.clientY); }); el.addEventListener('touchstart', e => { const t = e.touches[0]; longPressed = false; timer = setTimeout(() => { longPressed = true; show(t.clientX, t.clientY); if (navigator.vibrate) navigator.vibrate(30); }, 500); }, { passive: true }); el.addEventListener('touchmove', () => { if (timer) { clearTimeout(timer); timer = null; } }, { passive: true }); el.addEventListener('touchend', () => { if (timer) clearTimeout(timer); timer = null; }); el.addEventListener('click', e => { if (longPressed) { longPressed = false; e.preventDefault(); e.stopPropagation(); } }, { capture: true }); }
-function showGeminiConvMenu(x, y, conv) { document.querySelectorAll('.ctx-menu').forEach(m => m.remove()); const menu = document.createElement('div'); menu.className = 'ctx-menu'; menu.innerHTML = `<button data-action="copy">📋 Copiar conversación</button><button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button><button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`; document.body.appendChild(menu); const rect = menu.getBoundingClientRect(); menu.style.left = Math.min(x, window.innerWidth - rect.width - 8) + 'px'; menu.style.top = Math.min(y, window.innerHeight - rect.height - 8) + 'px'; const dismiss = () => { menu.remove(); document.removeEventListener('click', dismiss, true); document.removeEventListener('touchstart', dismiss, true); }; menu.addEventListener('click', async e => { const action = e.target.dataset.action; if (!action) return; dismiss(); try { if (action === 'copy') await copyConversationMessages(() => geminiApi(`/conversations/${conv.convId}/messages`)); else { await geminiApi(`/conversations/${conv.convId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(action === 'pin' ? { pinned: !conv.pinned } : { hidden: true }) }); if (action === 'hide' && currentGeminiConv?.id === conv.convId) closeChat(); loadGeminiTree(); } } catch (err) { toast('No se pudo actualizar: ' + err.message); } }); setTimeout(() => { document.addEventListener('click', dismiss, true); document.addEventListener('touchstart', dismiss, true); }, 250); }
-async function selectGemini(id, name, projectDir = '') {
-  saveCurrentDraft();
-  if (eventSource) { eventSource.close(); eventSource = null; }
-  if (codexStream) codexStream.close();
-  if (geminiStream) geminiStream.close();
-  currentConv = null;
-  currentCodexConv = null;
-  const currentModel = (id ? currentGeminiConv?.model : 'gemini-3.8-flash-high') || 'gemini-3.8-flash-high';
-  currentGeminiConv = { id, name, model: currentModel };
-  $('panel-chat').classList.remove('codex-chat-theme');
-  $('panel-chat').classList.add('antigravity-chat-theme');
-  $('conv-title').textContent = name;
-  $('input').placeholder = 'Escribile a Antigravity…';
-  setModelSelectOptions(AGY_MODELS, currentModel);
-  $('model-select').hidden = false;
-  setConversationRepoChip(projectDir);
-  $('mic-btn').hidden = true;
-  $('cost-badge').hidden = true;
-  $('attach-btn').hidden = false;
-  $('file-input').accept = 'image/*,text/*,application/*,audio/*,video/*';
-  restoreDraft(antigravityDrafts.get(id || '__new__'));
-  setGeminiBusy(false);
-  showNotebookView(false);
-  showSalaView(false);
-  openChat();
-  if (id) {
-    await geminiApi(`/conversations/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ unread: false }) });
-    geminiApi(`/conversations/${id}/repo`).then(({ repo }) => {
-      if (currentGeminiConv?.id === id && repo) setConversationRepoChip(repo);
-    }).catch(() => {});
-    await loadGeminiMessages(id);
-    geminiStream = openGeminiStream(id);
-    loadGeminiTree();
-  } else {
-    messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Antigravity</p></div>';
-  }
-  if (!isMobile()) $('input').focus();
-}
-async function createGeminiConversation() {
-  saveCurrentDraft();
-  await selectGemini(null, 'Nueva conversación');
-}
+// ── Antigravity (AgY / Gemini): ver gemini.js ──
 
 let paneNavGeneration = 0;
 let paneNavTarget = 0; // pane que debe quedar activo una vez termine la navegación en curso
@@ -2873,8 +2177,13 @@ $('project-bar-btn').onclick = async () => {
 // "+ Nuevo proyecto…" desde la barra global (sin conversación de referencia):
 // en vez de texto libre, ofrece elegir una carpeta real de Desktop\Proyectos
 // (mismas raíces que ya escanea inferRepoFromMessage en el server) — así el
-// nombre queda garantizado igual al de la carpeta. "Otro (nombre libre)…"
-// preserva el flujo viejo para tags que no son una carpeta (ej. "Salas").
+// nombre queda garantizado igual al de la carpeta. Con ~90 carpetas entre
+// esta PC y la de Fernando, una lista plana no escala: hay un input de
+// filtro arriba (autofocus, dispara teclado en el celu) que acota la lista
+// en vivo, y la lista en sí scrollea (max-height) en vez de desbordar la
+// pantalla. "Otro (nombre libre)…" preserva el flujo viejo para tags que no
+// son una carpeta (ej. "Salas"), y queda siempre visible aunque el filtro
+// no matchee nada.
 async function showNewProjectFolderMenu() {
   document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
   let folders = [];
@@ -2883,13 +2192,22 @@ async function showNewProjectFolderMenu() {
     folders = resp.folders || [];
   } catch (err) { toast('No se pudo listar carpetas: ' + err.message); }
   const menu = document.createElement('div');
-  menu.className = 'ctx-menu';
-  for (const name of folders) {
+  menu.className = 'ctx-menu folder-menu';
+  const filterInput = document.createElement('input');
+  filterInput.type = 'text';
+  filterInput.className = 'ctx-menu-filter';
+  filterInput.placeholder = 'Buscar carpeta…';
+  menu.appendChild(filterInput);
+  const list = document.createElement('div');
+  list.className = 'ctx-menu-list';
+  const folderBtns = folders.map(name => {
     const btn = document.createElement('button');
     btn.textContent = name;
     btn.dataset.folder = name;
-    menu.appendChild(btn);
-  }
+    list.appendChild(btn);
+    return btn;
+  });
+  menu.appendChild(list);
   if (folders.length) menu.appendChild(document.createElement('hr'));
   const otherBtn = document.createElement('button');
   otherBtn.textContent = 'Otro (nombre libre)…';
@@ -2900,6 +2218,12 @@ async function showNewProjectFolderMenu() {
   const maxX = window.innerWidth - menu.offsetWidth - 8;
   menu.style.left = Math.max(8, Math.min(rect.left, maxX)) + 'px';
   menu.style.top = (rect.bottom + 4) + 'px';
+  filterInput.focus();
+
+  filterInput.addEventListener('input', () => {
+    const q = filterInput.value.trim().toLowerCase();
+    for (const btn of folderBtns) btn.hidden = q && !btn.textContent.toLowerCase().includes(q);
+  });
 
   menu.addEventListener('click', e => {
     e.stopPropagation();
@@ -2907,7 +2231,7 @@ async function showNewProjectFolderMenu() {
     if (!btn) return;
     menu.remove();
     if (btn.dataset.action === 'other') {
-      const p = promptNewProjectName();
+      const p = promptNewProjectName(filterInput.value.trim());
       if (p) createProject(p.name, p.hideFromAll).then(() => setActiveProject(p.name));
       return;
     }
@@ -4309,84 +3633,7 @@ async function loadMessages(convId) {
   }
 }
 
-// ── Respuestas sugeridas por IA (Groq) ──
-// Se dispara solo para el ÚLTIMO mensaje de la conversación, cuando es de
-// Claude/Codex/Antigravity y el turno no sigue en curso. El server decide si
-// corresponde sugerir algo — puede devolver [] (mensaje informativo, nada que
-// confirmar) y ahí no se pinta nada. Sin GROQ_KEY_SET ni siquiera pega al server.
-const suggestionCache = new Map(); // key -> string[] — vive mientras dure la pestaña, no se persiste
-
-async function maybeShowReplySuggestions(convId, div, text, uuid, paneType = 'claude') {
-  if (!GROQ_KEY_SET || !text || !text.trim()) return;
-  const key = uuid ? `${convId}:${uuid}` : `${convId}:${text.trim().slice(0, 150)}`;
-  let suggestions = suggestionCache.get(key);
-  if (suggestions === undefined) {
-    try {
-      const r = await api('/suggest-replies', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      });
-      suggestions = r.suggestions || [];
-    } catch {
-      suggestions = []; // nunca rompe el chat por esto
-    }
-    suggestionCache.set(key, suggestions);
-  }
-  // Puede haber pasado tiempo real esperando a Groq: si te fuiste de la
-  // conversación, o ese mensaje ya no es el último (llegó una respuesta
-  // nueva, por ejemplo el disparo automático de un mensaje en cola),
-  // no pintamos botones desactualizados.
-  const isCurrent = (paneType === 'gemini' && currentGeminiConv?.id === convId) ||
-                    (paneType === 'codex' && currentCodexConv?.id === convId) ||
-                    (paneType === 'claude' && currentConv === convId);
-  if (!isCurrent || div !== messagesEl.lastElementChild || !suggestions.length) return;
-  renderReplySuggestions(div, suggestions);
-}
-
-function renderReplySuggestions(div, suggestions) {
-  const existing = div.querySelector('.reply-suggestions');
-  if (existing) existing.remove();
-  const bar = document.createElement('div');
-  bar.className = 'reply-suggestions';
-  suggestions.forEach(text => {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'reply-suggestion';
-    btn.textContent = text;
-    btn.addEventListener('click', () => sendSuggestedReply(text, bar));
-    bar.appendChild(btn);
-  });
-  div.appendChild(bar);
-  if (stickToBottom) scrollToBottom();
-}
-
-// Un toque = mandado directo (no rellena el composer) — respeta el flujo de
-// cada pestaña (Antigravity, Codex o Claude) y cola si hay turno en curso.
-async function sendSuggestedReply(text, bar) {
-  bar.remove();
-  if (currentGeminiConv) {
-    if (geminiMainBusy) return;
-    $('input').value = text;
-    $('composer').requestSubmit();
-    return;
-  }
-  if (currentCodexConv) {
-    if (codexMainBusy) return;
-    $('input').value = text;
-    $('composer').requestSubmit();
-    return;
-  }
-  if (!currentConv) return;
-  const convId = currentConv;
-  if (busy) {
-    queueMessage(convId, text, []);
-    renderQueuedBar();
-    updateComposerLock();
-    return;
-  }
-  await performSend(convId, text, []);
-}
+// ── Respuestas sugeridas por IA (Groq): ver suggest.js ──
 
 // ── Status ──
 function setStatus(text) {

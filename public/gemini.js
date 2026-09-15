@@ -1,0 +1,252 @@
+// ── Antigravity (AgY / Gemini) ──
+// Extraído de app.js (split por dominio, sesión 15/09/2026).
+// Script clásico (no ES module): comparte el scope global con el resto de los scripts.
+
+async function geminiApi(path, opts) {
+  const method = (opts && opts.method) || 'GET';
+  const res = method === 'GET'
+    ? await netFetch('/api/gemini' + path, opts)
+    : await fetch('/api/gemini' + path, opts).catch(err => { throw netError(err); });
+  if (!res.ok && res.status !== 202) throw new Error((await res.json()).error || res.statusText);
+  return res.json();
+}
+
+const AGY_MODELS = [
+  { value: 'claude-sonnet-4-6', label: 'Sonnet' },
+  { value: 'gemini-3.8-flash-high', label: 'Flash High' },
+  { value: 'gemini-3.8-flash-medium', label: 'Flash Medium' },
+];
+
+function setGeminiBusy(value) {
+  geminiMainBusy = value;
+  $('input').disabled = !currentGeminiConv || value;
+  $('send').disabled = !currentGeminiConv || value;
+  $('attach-btn').disabled = !currentGeminiConv || value;
+  $('cancel-btn').hidden = !value;
+  $('conv-status').textContent = value ? 'escribiendo…' : '';
+}
+
+async function loadGeminiMessages(id) {
+  messagesEl.innerHTML = '';
+  const messages = await geminiApi(`/conversations/${id}/messages`);
+  if (!messages.length) {
+    messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Antigravity</p></div>';
+  } else {
+    let lastAssistantDiv = null;
+    let lastAssistantMsg = null;
+    for (const m of messages) {
+      if (m.role === 'tool') {
+        addTool(m.name, m.input, m.output);
+        lastAssistantDiv = null;
+      } else {
+        const div = addMsg(m.role, m.text, { ts: m.ts });
+        if (m.role === 'assistant') {
+          lastAssistantDiv = div;
+          lastAssistantMsg = m;
+        } else {
+          lastAssistantDiv = null;
+        }
+      }
+    }
+    if (lastAssistantDiv && !geminiMainBusy) {
+      maybeShowReplySuggestions(id, lastAssistantDiv, lastAssistantMsg.text, lastAssistantMsg.uuid || lastAssistantMsg.id, 'gemini');
+    }
+  }
+  scrollToBottom();
+}
+
+function openGeminiStream(id) {
+  let live = '', bubble = null;
+  const seenTools = new Set();
+  const stream = new EventSource(`/api/gemini/conversations/${id}/stream`);
+  stream.onmessage = e => {
+    if (!currentGeminiConv || currentGeminiConv.id !== id) return;
+    const payload = JSON.parse(e.data);
+    if (payload.kind === 'gemini') {
+      const step = payload.event?.step_update;
+      const delta = step?.text_delta;
+      if (typeof delta === 'string') {
+        live += delta;
+        if (!bubble) bubble = addMsg('assistant', '');
+        const text = bubble.querySelector('.msg-text');
+        if (text) text.textContent = live;
+        autoScroll();
+      }
+      const tool = step?.tool_info;
+      const toolKey = step?.step_index ?? step?.id;
+      if (tool && (step?.state === 'DONE' || step?.state === 'ERROR') && !seenTools.has(toolKey)) {
+        seenTools.add(toolKey);
+        addTool(tool.name || step.tool_name || step.step_type || 'herramienta', tool.parameters || tool.args || {}, tool.output || tool.error?.message || tool.result || '');
+        autoScroll();
+      }
+      return;
+    }
+    if (payload.kind === 'status') {
+      setGeminiBusy(payload.status !== 'idle');
+      if (payload.status === 'idle') {
+        if (payload.incomplete && !payload.cancelled) toast(payload.stderr || 'Antigravity no entregó una respuesta final.');
+        loadGeminiMessages(id).then(loadGeminiTree);
+      }
+      return;
+    }
+    if (payload.kind === 'meta') {
+      if (payload.name) {
+        if (currentGeminiConv && currentGeminiConv.id === id) {
+          currentGeminiConv.name = payload.name;
+          $('conv-title').textContent = payload.name;
+        }
+        loadGeminiTree();
+      }
+      return;
+    }
+  };
+  stream.onerror = () => setTimeout(() => {
+    if (currentGeminiConv?.id === id) loadGeminiMessages(id);
+  }, 1500);
+  return stream;
+}
+
+function geminiRow(c) {
+  const div = document.createElement('div');
+  div.className = 'conv' + (currentGeminiConv?.id === c.convId ? ' active' : '');
+  const label = c.name || c.snippet || '(nueva conversación)';
+  const pin = c.pinned ? '<span class="conv-pin" title="Fijada">📌</span>' : '';
+  const ai = c.aiTitle ? '<span class="conv-ai" title="Título generado por IA">✨</span>' : '';
+  div.innerHTML = `<div class="conv-avatar">A</div><div class="conv-body"><div class="name">${pin}${ai}<span class="conv-name-text"></span></div><div class="sub"></div></div>${badge(c.status) || (c.unread ? '<span class="unread-dot"></span>' : '')}`;
+  div.querySelector('.conv-name-text').textContent = label;
+  div.querySelector('.sub').textContent = c.snippet;
+  div.onclick = () => {
+    currentGeminiConv = { id: c.convId, name: label, model: c.model || 'gemini-3.8-flash-high' };
+    selectGemini(c.convId, label, c.gitRepo || c.projectDir);
+  };
+  attachGeminiRowGestures(div, c);
+  return div;
+}
+
+async function loadGeminiTree() {
+  const { conversations, unreadTotal } = await geminiApi('/tree');
+  setPaneUnread('6', unreadTotal > 0);
+  const pane = $('gemini-pane');
+  if (!conversations.length) {
+    pane.innerHTML = '<div id="empty-state"><p>Sin conversaciones de Antigravity todavía</p></div>';
+  } else {
+    pane.replaceChildren(...conversations.map(geminiRow));
+  }
+  geminiTreeLoaded = true;
+}
+
+function attachGeminiRowGestures(el, conv) {
+  let timer = null, longPressed = false;
+  const show = (x, y) => showGeminiConvMenu(x, y, conv);
+  el.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    show(e.clientX, e.clientY);
+  });
+  el.addEventListener('touchstart', e => {
+    const t = e.touches[0];
+    longPressed = false;
+    timer = setTimeout(() => {
+      longPressed = true;
+      show(t.clientX, t.clientY);
+      if (navigator.vibrate) navigator.vibrate(30);
+    }, 500);
+  }, { passive: true });
+  el.addEventListener('touchmove', () => {
+    if (timer) { clearTimeout(timer); timer = null; }
+  }, { passive: true });
+  el.addEventListener('touchend', () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+  });
+  el.addEventListener('click', e => {
+    if (longPressed) {
+      longPressed = false;
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, { capture: true });
+}
+
+function showGeminiConvMenu(x, y, conv) {
+  document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  menu.innerHTML = `<button data-action="copy">📋 Copiar conversación</button><button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button><button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`;
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = Math.min(x, window.innerWidth - rect.width - 8) + 'px';
+  menu.style.top = Math.min(y, window.innerHeight - rect.height - 8) + 'px';
+  const dismiss = () => {
+    menu.remove();
+    document.removeEventListener('click', dismiss, true);
+    document.removeEventListener('touchstart', dismiss, true);
+  };
+  menu.addEventListener('click', async e => {
+    const action = e.target.dataset.action;
+    if (!action) return;
+    dismiss();
+    try {
+      if (action === 'copy') {
+        await copyConversationMessages(() => geminiApi(`/conversations/${conv.convId}/messages`));
+      } else {
+        await geminiApi(`/conversations/${conv.convId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(action === 'pin' ? { pinned: !conv.pinned } : { hidden: true }),
+        });
+        if (action === 'hide' && currentGeminiConv?.id === conv.convId) closeChat();
+        loadGeminiTree();
+      }
+    } catch (err) {
+      toast('No se pudo actualizar: ' + err.message);
+    }
+  });
+  setTimeout(() => {
+    document.addEventListener('click', dismiss, true);
+    document.addEventListener('touchstart', dismiss, true);
+  }, 250);
+}
+
+async function selectGemini(id, name, projectDir = '') {
+  saveCurrentDraft();
+  if (eventSource) { eventSource.close(); eventSource = null; }
+  if (codexStream) codexStream.close();
+  if (geminiStream) geminiStream.close();
+  currentConv = null;
+  currentCodexConv = null;
+  const currentModel = (id ? currentGeminiConv?.model : 'gemini-3.8-flash-high') || 'gemini-3.8-flash-high';
+  currentGeminiConv = { id, name, model: currentModel };
+  $('panel-chat').classList.remove('codex-chat-theme');
+  $('panel-chat').classList.add('antigravity-chat-theme');
+  $('conv-title').textContent = name;
+  $('input').placeholder = 'Escribile a Antigravity…';
+  setModelSelectOptions(AGY_MODELS, currentModel);
+  $('model-select').hidden = false;
+  setConversationRepoChip(projectDir);
+  $('mic-btn').hidden = true;
+  $('cost-badge').hidden = true;
+  $('attach-btn').hidden = false;
+  $('file-input').accept = 'image/*,text/*,application/*,audio/*,video/*';
+  restoreDraft(antigravityDrafts.get(id || '__new__'));
+  setGeminiBusy(false);
+  showNotebookView(false);
+  showSalaView(false);
+  openChat();
+  if (id) {
+    await geminiApi(`/conversations/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ unread: false }) });
+    geminiApi(`/conversations/${id}/repo`).then(({ repo }) => {
+      if (currentGeminiConv?.id === id && repo) setConversationRepoChip(repo);
+    }).catch(() => {});
+    await loadGeminiMessages(id);
+    geminiStream = openGeminiStream(id);
+    loadGeminiTree();
+  } else {
+    messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Antigravity</p></div>';
+  }
+  if (!isMobile()) $('input').focus();
+}
+
+async function createGeminiConversation() {
+  saveCurrentDraft();
+  await selectGemini(null, 'Nueva conversación');
+}
