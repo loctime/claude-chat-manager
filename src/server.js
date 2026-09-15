@@ -1646,11 +1646,16 @@ geminiRunner.on('status', rawStatus => {
   // mirando esta convId por SSE → marcarla no leída. Faltaba acá — la pestaña
   // AgY nunca prendía el punto de "no leído" aunque el backend ya lo soporta.
   if (status.status === 'idle' && !status.cancelled) {
-    const hasViewer = (geminiSseClients.get(status.convId)?.size || 0) > 0;
-    if (!hasViewer) {
-      const data = meta.load(GEMINI_META_FILE), conv = data.conversations[status.convId];
-      if (conv) { conv.unread = true; meta.save(data, GEMINI_META_FILE); }
-    }
+    // Darle un instante al cierre de SSE para llegar al server. Sin esta
+    // espera, si Diego cambia de pestaña justo cuando termina AgY, todavía
+    // contamos un viewer fantasma y se pierde el triángulo de “finalizado”.
+    setTimeout(() => {
+      const hasViewer = (geminiSseClients.get(status.convId)?.size || 0) > 0;
+      if (!hasViewer) {
+        const data = meta.load(GEMINI_META_FILE), conv = data.conversations[status.convId];
+        if (conv) { conv.unread = true; meta.save(data, GEMINI_META_FILE); }
+      }
+    }, 150).unref();
   }
   geminiBroadcast(status.convId, { kind: 'status', ...status });
 });

@@ -602,6 +602,7 @@ async function loadTree() {
   treeTotal = resp.total;
   archivedTotal = resp.archivedTotal || 0;
   setPaneUnread('0', resp.unreadTotal > 0);
+  setPaneProcessing('0', resp.tree.some(project => project.conversations.some(conversation => conversation.status && conversation.status !== 'idle')));
   const nav = $('tree');
   buildTreePane(nav, resp);
 
@@ -663,6 +664,14 @@ async function safeLoadArchivedTree() {
 function setPaneUnread(pane, hasUnread) {
   const tab = document.querySelector(`.pane-tab[data-pane="${pane}"]`);
   if (tab) tab.classList.toggle('has-unread', hasUnread);
+}
+
+// Una pestaña pulsa mientras alguno de sus agentes está trabajando. Es un
+// resumen del mismo estado que muestra el ping en la fila, para detectarlo
+// aunque estés mirando otra pestaña.
+function setPaneProcessing(pane, hasProcessing) {
+  const tab = document.querySelector(`.pane-tab[data-pane="${pane}"]`);
+  if (tab) tab.classList.toggle('has-processing', hasProcessing);
 }
 
 // ── Codex: ver codex.js ──
@@ -3422,6 +3431,9 @@ $('composer').onsubmit = async e => {
       addUserMsgWithFiles(rawText, attachments);
       await geminiApi(`/conversations/${id}/message`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
       antigravityDrafts.delete(id); antigravityDrafts.delete('__new__');
+      // Respaldo si el primer evento SSE llegó antes de que el stream quedara
+      // abierto: la lista igual refleja “procesando” al enviar.
+      loadGeminiTree();
     }
     catch (err) { addMsg('error', 'No se pudo enviar: ' + err.message); setGeminiBusy(false); }
     return;

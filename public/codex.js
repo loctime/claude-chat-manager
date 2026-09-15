@@ -274,6 +274,7 @@ async function loadCodexSharedTree({ skipAvailability = false } = {}) {
   }
   const { conversations, unreadTotal } = await codexApi('/tree');
   setPaneUnread('2', unreadTotal > 0);
+  setPaneProcessing('2', conversations.some(conversation => conversation.status && conversation.status !== 'idle'));
   const next = document.createDocumentFragment();
   if (!conversations.length) {
     const empty = document.createElement('div');

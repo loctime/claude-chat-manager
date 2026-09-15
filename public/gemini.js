@@ -85,8 +85,12 @@ function openGeminiStream(id) {
       setGeminiBusy(payload.status !== 'idle');
       if (payload.status === 'idle') {
         if (payload.incomplete && !payload.cancelled) toast(payload.stderr || 'Antigravity no entregó una respuesta final.');
-        loadGeminiMessages(id).then(loadGeminiTree);
+        loadGeminiMessages(id);
       }
+      // El runner ya está marcado como busy cuando emite este evento. Sin este
+      // refresh el composer decía “escribiendo”, pero la fila AgY podía quedar
+      // sin su ping hasta el final de la respuesta.
+      loadGeminiTree();
       return;
     }
     if (payload.kind === 'meta') {
@@ -126,6 +130,7 @@ function geminiRow(c) {
 async function loadGeminiTree() {
   const { conversations, unreadTotal } = await geminiApi('/tree');
   setPaneUnread('6', unreadTotal > 0);
+  setPaneProcessing('6', conversations.some(conversation => conversation.status && conversation.status !== 'idle'));
   const pane = $('gemini-pane');
   if (!conversations.length) {
     pane.innerHTML = '<div id="empty-state"><p>Sin conversaciones de Antigravity todavía</p></div>';
