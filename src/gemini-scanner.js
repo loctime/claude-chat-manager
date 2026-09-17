@@ -149,12 +149,23 @@ function sessionInfo(sessionId, baseDir = BASE_DIR) {
   const msgs = getMessages(sessionId, baseDir);
   const firstUser = msgs.find(m => m.role === 'user');
   const last = msgs[msgs.length - 1];
+  let approxTokens = 0;
+  if (msgs.length > 0) {
+    let totalChars = 0;
+    for (const m of msgs) {
+      totalChars += (m.text || '').length;
+      if (m.input) totalChars += typeof m.input === 'string' ? m.input.length : JSON.stringify(m.input).length;
+      if (m.output) totalChars += typeof m.output === 'string' ? m.output.length : String(m.output).length;
+    }
+    approxTokens = 12000 + Math.round(totalChars / 4);
+  }
   const info = {
     sessionId,
     snippet: firstUser ? firstUser.text.slice(0, 60) : '',
     messageCount: msgs.length,
     lastActivity: (last && last.ts) || new Date(mtimeMs).toISOString(),
     workspace: findSessionWorkspace(sessionId, baseDir),
+    contextTokens: approxTokens,
   };
   _infoCache.set(sessionId, { mtimeMs, info });
   return info;

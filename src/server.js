@@ -19,7 +19,7 @@ const { CLAUDE_CMD } = require('./claude-cmd');
 const { CodexRunner } = require('./codex-runner');
 const { createCodexRouter } = require('./routes/codex');
 const { GeminiRunner } = require('./gemini-runner');
-const { createGeminiRouter, createAntigravityRouter } = require('./routes/gemini');
+const { createGeminiRouter, createAntigravityRouter, resolveContextTokens } = require('./routes/gemini');
 const { createSalaRouter } = require('./routes/sala');
 const { createConversationsRouter, resolveConversationGitRepo } = require('./routes/conversations');
 const {
@@ -1421,7 +1421,6 @@ app.get('/api/tree', (req, res) => {
   // Filtro de proyecto: ?project=<etiqueta> muestra solo esas; ?project=__none__
   // muestra las que todavía no tienen etiqueta asignada. Sin el parámetro, no
   // filtra (comportamiento de siempre).
-  const projectFilter = req.query.project;
   if (projectFilter) {
     filtered = projectFilter === '__none__'
       ? filtered.filter(c => !c.project)
@@ -1626,7 +1625,22 @@ function findFreshGeminiAnswer(conv, turnStartedAt) {
   if (!Number.isFinite(ts) || ts < turnStartedAt - 2000) return null;
   return lastAssistant.text;
 }
-geminiRunner.on('event', ({ convId, event }) => geminiBroadcast(convId, { kind: 'gemini', event }));
+geminiRunner.on('event', ({ convId, event }) => {
+  if (event.event === 'result' && event.result?.usage) {
+    const data = meta.load(GEMINI_META_FILE), conv = data.conversations[convId];
+    if (conv) {
+      conv.lastUsage = event.result.usage;
+      if (event.result.conversation_id && !conv.currentSessionId) {
+        conv.currentSessionId = event.result.conversation_id;
+      }
+      const s = conv.currentSessionId ? geminiScanner.sessionInfo(conv.currentSessionId) : null;
+      conv.contextTokens = resolveContextTokens(conv, s);
+      meta.save(data, GEMINI_META_FILE);
+    }
+    geminiBroadcast(convId, { kind: 'usage', usage: event.result.usage });
+  }
+  geminiBroadcast(convId, { kind: 'gemini', event });
+});
 geminiRunner.on('status', rawStatus => {
   const turnStartedAt = geminiTurnStartedAt.get(rawStatus.convId);
   if (rawStatus.status === 'idle') geminiTurnStartedAt.delete(rawStatus.convId);
@@ -1642,7 +1656,25 @@ geminiRunner.on('status', rawStatus => {
   // incomplete (result real, sin status:"ERROR").
   if (status.status === 'idle' && !status.incomplete && !status.cancelled && status.response) {
     const data = meta.load(GEMINI_META_FILE), conv = data.conversations[status.convId];
-    if (conv) { conv.messages.push({ role: 'assistant', text: status.response, ts: new Date().toISOString() }); conv.currentSessionId = status.conversationId || conv.currentSessionId; conv.lastActivity = new Date().toISOString(); meta.save(data, GEMINI_META_FILE); }
+    if (conv) {
+      conv.messages.push({ role: 'assistant', text: status.response, ts: new Date().toISOString() });
+      conv.currentSessionId = status.conversationId || conv.currentSessionId;
+      conv.lastActivity = new Date().toISOString();
+      if (status.usage) {
+        conv.lastUsage = status.usage;
+      }
+      const s = conv.currentSessionId ? geminiScanner.sessionInfo(conv.currentSessionId) : null;
+      conv.contextTokens = resolveContextTokens(conv, s);
+      meta.save(data, GEMINI_META_FILE);
+    }
+  } else if (status.status === 'idle' && status.usage) {
+    const data = meta.load(GEMINI_META_FILE), conv = data.conversations[status.convId];
+    if (conv) {
+      conv.lastUsage = status.usage;
+      const s = conv.currentSessionId ? geminiScanner.sessionInfo(conv.currentSessionId) : null;
+      conv.contextTokens = resolveContextTokens(conv, s);
+      meta.save(data, GEMINI_META_FILE);
+    }
   }
   // Bug real del 2026-09-14: un pedido grande se cortó sin dejar NINGÚN
   // rastro — ni mensaje de error en el historial, ni toast (nadie miraba en

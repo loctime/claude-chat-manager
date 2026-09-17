@@ -156,4 +156,22 @@ test('emite evento session apenas aparece conversation_id en stdout', () => {
   assert.equal(r.getActiveSessionIds().size, 0);
 });
 
+test('emite status idle con usage si result o step_update lo incluye', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  const statuses = [];
+  r.on('status', s => statuses.push(s));
+  r.send({ convId: 'c1', sessionId: null, cwd: 'C:\\p', text: 'hola' });
+  const { child } = spawned[0];
+  emitLines(child, [
+    { event: 'step_update', step_update: { step_index: 1, state: 'DONE', usage: { input_tokens: 15000, output_tokens: 50, total_tokens: 15050 } } },
+    { event: 'result', result: { status: 'SUCCESS', response: 'listo', conversation_id: 'conv1', usage: { input_tokens: 15000, output_tokens: 50, total_tokens: 15050 } } },
+  ]);
+  child.emit('close', 0);
+  const final = statuses.find(s => s.status === 'idle');
+  assert.equal(final.incomplete, false);
+  assert.deepEqual(final.usage, { input_tokens: 15000, output_tokens: 50, total_tokens: 15050 });
+});
+
+
 

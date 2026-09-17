@@ -37,7 +37,7 @@ class GeminiRunner extends EventEmitter {
     this.running.set(job.convId, child);
     this.activeSessions.set(job.convId, job.sessionId || null);
     this.emit('status', { convId: job.convId, status: 'running' });
-    let buf = '', stderr = '', response = '', conversationId = null, gotResult = false, resultFailed = false, resultError = null, done = false;
+    let buf = '', stderr = '', response = '', conversationId = null, gotResult = false, resultFailed = false, resultError = null, done = false, lastUsage = null;
     // El id puede aparecer antes del evento final. Guardarlo permite continuar
     // una conversación que Antigravity corte por límite de herramientas.
     const findConversationId = value => {
@@ -63,7 +63,7 @@ class GeminiRunner extends EventEmitter {
           : incomplete
             ? 'Antigravity terminó sin una respuesta final (probablemente alcanzó el límite de herramientas, el timeout, o se cortó la conexión).'
             : error;
-      this.emit('status', { convId: job.convId, status: 'idle', code, stderr: reason, response, conversationId, incomplete, cancelled: wasCancelled });
+      this.emit('status', { convId: job.convId, status: 'idle', code, stderr: reason, response, conversationId, incomplete, cancelled: wasCancelled, usage: lastUsage });
     };
     const ingest = line => {
       let event; try { event = JSON.parse(line); } catch { return; }
@@ -75,13 +75,17 @@ class GeminiRunner extends EventEmitter {
       } else if (foundId) {
         conversationId = foundId;
       }
-      if (event.event === 'step_update' && typeof event.step_update?.text_delta === 'string') response += event.step_update.text_delta;
+      if (event.event === 'step_update') {
+        if (typeof event.step_update?.text_delta === 'string') response += event.step_update.text_delta;
+        if (event.step_update?.usage) lastUsage = event.step_update.usage;
+      }
       if (event.event === 'result') {
         gotResult = true;
         resultFailed = event.result?.status === 'ERROR';
         resultError = event.result?.error || null;
         if (typeof event.result?.response === 'string') response = event.result.response;
         conversationId = event.result?.conversation_id || conversationId;
+        if (event.result?.usage) lastUsage = event.result.usage;
       }
       this.emit('event', { convId: job.convId, event });
     };

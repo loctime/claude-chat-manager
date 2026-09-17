@@ -409,13 +409,13 @@ function createConversationsRouter({
     res.write('\n');
     if (!sseClients.has(convId)) sseClients.set(convId, new Set());
     sseClients.get(convId).add(res);
-    // Si la conversación ya está procesando un turno cuando este cliente se
-    // conecta (ej. volviste a abrirla mientras corría, o el broadcast único de
-    // 'running' pasó mientras estabas mirando otra conversación), el cliente
-    // nunca se entera y el botón de cancelar queda oculto hasta el 'idle' final.
-    // Mandamos el estado actual como primer evento para que se sincronice solo.
+    // Snapshot siempre, incluso idle. Si el SSE se cortó justo antes del
+    // broadcast final (común al volver del background en móvil), el cliente
+    // puede haber quedado con busy=true. En una reconexión, omitir idle lo
+    // dejaba permanentemente en "mensaje pendiente" hasta salir y volver a
+    // entrar a la conversación.
     const st = convStatus(convId);
-    if (st !== 'idle') res.write(`data: ${JSON.stringify({ kind: 'status', status: st })}\n\n`);
+    res.write(`data: ${JSON.stringify({ kind: 'status', status: st })}\n\n`);
     // Cloudflare Tunnel corta conexiones SSE inactivas (~100s de idle).
     // Sin este ping, un turno largo de Claude sin output deja el stream mudo
     // y el edge lo mata a mitad de camino, perdiendo el evento 'idle' final.

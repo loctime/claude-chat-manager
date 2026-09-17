@@ -12,6 +12,47 @@ const AGY_MODELS = [
   { id: 'gemini-3.8-flash-medium', name: 'Flash Medium' },
 ];
 
+const AGY_CONTEXT_WINDOW_TABLE = [
+  { prefix: 'gemini-3.1-pro', tokens: 2_000_000 },
+  { prefix: 'gemini-1.5-pro', tokens: 2_000_000 },
+  { prefix: 'gemini-2.0-pro', tokens: 2_000_000 },
+  { prefix: 'gemini-', tokens: 1_000_000 },
+  { prefix: 'claude-sonnet-4-6', tokens: 1_000_000 },
+  { prefix: 'claude-opus-4-6', tokens: 1_000_000 },
+  { prefix: 'claude-', tokens: 200_000 },
+  { prefix: 'gpt-', tokens: 128_000 },
+];
+
+function agyContextWindowFor(model) {
+  if (!model) return 1_000_000;
+  const row = AGY_CONTEXT_WINDOW_TABLE.find(p => model.startsWith(p.prefix));
+  return row ? row.tokens : 1_000_000;
+}
+
+function resolveContextTokens(c, s) {
+  if (s && typeof s.contextTokens === 'number' && s.contextTokens > 0) return s.contextTokens;
+  if (c && c.currentSessionId) {
+    const sInfo = geminiScanner.sessionInfo(c.currentSessionId);
+    if (sInfo && typeof sInfo.contextTokens === 'number' && sInfo.contextTokens > 0) {
+      return sInfo.contextTokens;
+    }
+  }
+  const window = agyContextWindowFor(c?.model);
+  if (c && typeof c.contextTokens === 'number' && c.contextTokens > 0 && c.contextTokens <= window) {
+    return c.contextTokens;
+  }
+  if (c && Array.isArray(c.messages) && c.messages.length > 0) {
+    let totalChars = 0;
+    for (const m of c.messages) {
+      totalChars += (m.text || '').length;
+      if (m.input) totalChars += typeof m.input === 'string' ? m.input.length : JSON.stringify(m.input).length;
+      if (m.output) totalChars += typeof m.output === 'string' ? m.output.length : String(m.output).length;
+    }
+    return 12000 + Math.round(totalChars / 4);
+  }
+  return 0;
+}
+
 function createAntigravityRouter() {
   const router = express.Router();
   const antigravityUsage = new AntigravityUsageService();
@@ -124,6 +165,7 @@ function createGeminiRouter({
     for (const sId of geminiRunner.getActiveSessionIds()) knownSessions.add(sId);
 
     // Si hay una conversación en vuelo que arrancó sin sessionId, cualquier sesión nueva en disco le pertenece
+    const pendingConvId = Object.keys(data.conversations).find(id => geminiRunner.isBusy(id) && !data.conversations[id].currentSessionId);
     const projectFilter = req.query.project;
     const shouldDiscover = (!projectFilter || projectFilter === '__none__' || pendingConvId);
 
@@ -139,6 +181,11 @@ function createGeminiRouter({
           continue;
         }
 
+        let discoveredProject = undefined;
+        if (session.snippet) {
+          const m = session.snippet.match(/^\[Estamos trabajando en el proyecto "([^"]+)"/);
+          if (m) discoveredProject = m[1];
+        }
         const convId = crypto.randomUUID();
         data.conversations[convId] = {
           currentSessionId: session.sessionId,
@@ -147,7 +194,9 @@ function createGeminiRouter({
           messages: [],
           lastActivity: session.lastActivity,
           model: 'gemini-3.8-flash-high',
+          ...(discoveredProject ? { project: discoveredProject } : {}),
         };
+        if (discoveredProject && typeof registerProject === 'function') registerProject(discoveredProject);
         knownSessions.add(session.sessionId);
         metadataChanged = true;
       }
@@ -157,7 +206,28 @@ function createGeminiRouter({
     const seenSessions = new Set();
     for (const [convId, c] of Object.entries(data.conversations)) {
       if (c.hidden) continue;
-      if (projectFilter && (projectFilter === '__none__' ? !!c.project : c.project !== projectFilter)) continue;
+      if (!c.project && (c.name || '').startsWith('[Estamos trabajando en el proyecto "')) {
+        const m = c.name.match(/^\[Estamos trabajando en el proyecto "([^"]+)"/);
+        if (m) {
+          c.project = m[1];
+          metadataChanged = true;
+          if (typeof registerProject === 'function') registerProject(c.project);
+        }
+      }
+      if (c.name && c.name.startsWith('[Estamos trabajando en el proyecto "')) {
+        const userMsg = c.messages?.find(m => m.role === 'user')?.text;
+        if (userMsg) {
+          c.name = userMsg.slice(0, 60);
+          metadataChanged = true;
+        }
+      }
+      if (projectFilter) {
+        if (projectFilter === '__none__') {
+          if (c.project) continue;
+        } else if (!c.project || c.project.toLowerCase() !== projectFilter.toLowerCase()) {
+          continue;
+        }
+      }
       if (c.currentSessionId) {
         if (seenSessions.has(c.currentSessionId)) continue;
         seenSessions.add(c.currentSessionId);
@@ -170,6 +240,14 @@ function createGeminiRouter({
           c.gitRepo = repo;
           metadataChanged = true;
         }
+      }
+      const model = c.model || 'gemini-3.8-flash-high';
+      const window = agyContextWindowFor(model);
+      const contextTokens = resolveContextTokens(c, s);
+      const contextPct = window > 0 ? Math.min(1, contextTokens / window) : 0;
+      if (c.contextTokens !== contextTokens) {
+        c.contextTokens = contextTokens;
+        metadataChanged = true;
       }
       const snippet = s.snippet || c.messages?.at(-1)?.text.slice(0, 90) || '';
       conversations.push({
@@ -185,7 +263,10 @@ function createGeminiRouter({
         projectDir: c.projectDir || s.workspace || null,
         gitRepo: c.gitRepo || null,
         project: c.project || null,
-        model: c.model || 'gemini-3.8-flash-high',
+        model,
+        contextTokens,
+        contextWindow: window,
+        contextPct,
       });
     }
 
@@ -193,12 +274,11 @@ function createGeminiRouter({
 
     conversations.sort((a, b) => Number(b.pinned) - Number(a.pinned) || String(b.lastActivity || '').localeCompare(String(a.lastActivity || '')));
     const unreadTotal = conversations.filter(c => c.unread).length;
-    const projectFilter = req.query.project;
     let filtered = conversations;
     if (projectFilter) {
       filtered = projectFilter === '__none__'
         ? filtered.filter(c => !c.project)
-        : filtered.filter(c => c.project === projectFilter);
+        : filtered.filter(c => c.project && c.project.toLowerCase() === projectFilter.toLowerCase());
     } else {
       const hidden = typeof getHiddenProjectNames === 'function' ? getHiddenProjectNames() : new Set();
       if (hidden && hidden.size > 0) filtered = filtered.filter(c => !c.project || !hidden.has(c.project));
@@ -222,6 +302,29 @@ function createGeminiRouter({
     }
     meta.save(data, geminiMetaFile);
     res.json({ ok: true });
+  });
+
+  router.get('/conversations/:id/usage', (req, res) => {
+    const data = meta.load(geminiMetaFile);
+    const { conv: c } = resolveGeminiConv(data, req.params.id);
+    if (!c) return res.status(404).json({ error: 'conversación no encontrada' });
+    const s = (c.currentSessionId && geminiScanner.sessionInfo(c.currentSessionId)) || {};
+    const model = c.model || 'gemini-3.8-flash-high';
+    const window = agyContextWindowFor(model);
+    const contextTokens = resolveContextTokens(c, s);
+    const contextPct = window > 0 ? Math.min(1, contextTokens / window) : 0;
+    const usage = c.lastUsage || {};
+    res.json({
+      model,
+      contextTokens,
+      contextWindow: window,
+      contextPct,
+      input_tokens: usage.input_tokens != null ? usage.input_tokens : contextTokens,
+      output_tokens: usage.output_tokens || 0,
+      thinking_tokens: usage.thinking_tokens || 0,
+      cache_read_tokens: usage.cache_read_tokens || 0,
+      total_tokens: usage.total_tokens || contextTokens,
+    });
   });
 
   router.get('/conversations/:id/messages', (req, res) => {
@@ -326,4 +429,9 @@ function createGeminiRouter({
   return router;
 }
 
-module.exports = { createGeminiRouter, createAntigravityRouter };
+module.exports = {
+  createGeminiRouter,
+  createAntigravityRouter,
+  agyContextWindowFor,
+  resolveContextTokens,
+};

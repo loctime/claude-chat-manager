@@ -15,16 +15,31 @@
 # "Root cause del EPERM de PM2 identificado"): el daemon de PM2 puede quedar
 # colgado (EPERM en \\.\pipe\rpc.sock) por procesos misterio de Session 0 que
 # le toman el pipe -- distinto del 3777 no respondiendo, la app puede seguir
-# sirviendo mientras el supervisor ya esta roto por debajo. Se chequea "pm2 ping"
-# en cada corrida (barato) y si esta roto se intenta reparar solo: matar
-# Daemon.js zombies a integridad normal, y si no alcanza, matar los procesos
-# Session 0 sospechosos (node/cloudflared con CommandLine vacio) via una
-# PowerShell elevada -- esta PC tiene UAC en "elevar sin preguntar"
+# sirviendo mientras el supervisor ya esta roto por debajo. Se chequea salud
+# real del daemon en cada corrida (barato) y si esta roto se intenta reparar
+# solo: matar Daemon.js zombies a integridad normal, y si no alcanza, matar los
+# procesos Session 0 sospechosos (node/cloudflared con CommandLine vacio) via
+# una PowerShell elevada -- esta PC tiene UAC en "elevar sin preguntar"
 # (ConsentPromptBehaviorAdmin=0), asi que esto corre en silencio, sin que Diego
 # tenga que aprobar nada, SI la tarea programada tiene acceso a un escritorio
-# interactivo. Si no lo tiene (corre "no logueado"), la elevacion no deja
-# marcador y el script lo loguea en vez de asumir que funciono -- ahi si hace
-# falta "Reiniciar Jarvis (Admin).bat" a mano.
+# interactivo.
+#
+# Verificacion real post-restart (agregado 2026-09-17, ver CLAUDE.local.md "EPERM
+# volvio a pasar pese al fix del 09/10"): el 17/9 el watchdog repitio "pm2 restart"
+# + "relanzado (pm2)" cada 5 min durante 70 min SIN disparar nunca la reparacion
+# de arriba, mientras el server seguia caido. Dos causas reales: (1) el chequeo de
+# salud de entonces (`pm2 ping` buscando el texto "EPERM") no detecta el caso
+# donde el daemon esta roto pero ese texto no llega al stdout/stderr que
+# capturamos (el respawn puede fallar en un proceso hijo aparte, de forma
+# asincrona); y (2) el bloque de "3777 no responde" nunca comprobaba si el
+# `pm2 restart` que acababa de correr habia funcionado de verdad -- logueaba
+# "relanzado (pm2)" sin condicion y salia, ciego a si el proceso realmente volvio
+# a escuchar el puerto. Fix: el chequeo de salud ahora exige que `pm2 jlist`
+# parsee como JSON valido (cualquier salida rota ya no pasa el chequeo), y tras
+# un restart por 3777 caido se re-verifica el puerto real antes de loguear
+# exito; si sigue caido, escala a la reparacion de daemon aunque el chequeo
+# inicial haya dado sano, y reintenta una vez mas -- el log siempre distingue
+# "arriba" de "requiere revision manual" en vez de asumir que funciono.
 $logFile = "$env:TEMP\jarvis-watchdog.log"
 $publicUrl = "https://jarvis.controlapps.ar"
 $projectDir = "C:\Users\User\Desktop\Proyectos\claude-chat-manager"
@@ -38,12 +53,30 @@ function Log($msg) {
 }
 
 function Test-Pm2Healthy {
-    $out = & $pm2 ping 2>&1 | Out-String
-    return ($out -notmatch 'EPERM')
+    try {
+        $out = & $pm2 jlist 2>&1 | Out-String
+    } catch {
+        return $false
+    }
+    try {
+        $null = $out | ConvertFrom-Json
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Test-Port3777 {
+    try {
+        $r = Invoke-WebRequest -Uri http://127.0.0.1:3777 -UseBasicParsing -TimeoutSec 5
+        return ($r.StatusCode -eq 200)
+    } catch {
+        return $false
+    }
 }
 
 function Repair-Pm2Daemon {
-    Log "PM2 daemon no responde (EPERM) -- iniciando reparacion automatica"
+    Log "PM2 daemon no responde bien (jlist no parsea) -- iniciando reparacion automatica"
 
     $daemons = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -like '*pm2*Daemon.js*' }
@@ -82,13 +115,7 @@ if (-not (Test-Pm2Healthy)) {
     }
 }
 
-$localAlive = $false
-try {
-    $r = Invoke-WebRequest -Uri http://127.0.0.1:3777 -UseBasicParsing -TimeoutSec 5
-    if ($r.StatusCode -eq 200) { $localAlive = $true }
-} catch { $localAlive = $false }
-
-if (-not $localAlive) {
+if (-not (Test-Port3777)) {
     Push-Location $projectDir
     $npmOut = & $npm install --no-audit --no-fund 2>&1 | Out-String
     Pop-Location
@@ -99,9 +126,29 @@ if (-not $localAlive) {
     }
 
     Log "3777 no responde, pm2 restart server + tunnel"
-    & $pm2 restart jarvis-server 2>&1 | Out-Null
+    $restartOut = & $pm2 restart jarvis-server 2>&1 | Out-String
     & $pm2 restart jarvis-tunnel 2>&1 | Out-Null
-    Log "relanzado (pm2)"
+    Start-Sleep -Seconds 3
+
+    if (Test-Port3777) {
+        Log "relanzado (pm2) -- puerto confirmado arriba"
+        exit 0
+    }
+
+    Log "pm2 restart no lo levanto (salida: $($restartOut.Trim())) -- probando reparacion de daemon aunque el chequeo inicial haya dado sano"
+    if (Repair-Pm2Daemon) {
+        & $pm2 resurrect 2>&1 | Out-Null
+        Start-Sleep -Seconds 3
+        & $pm2 restart jarvis-server 2>&1 | Out-Null
+        & $pm2 restart jarvis-tunnel 2>&1 | Out-Null
+        Start-Sleep -Seconds 3
+    }
+
+    if (Test-Port3777) {
+        Log "relanzado tras reparacion de daemon -- puerto confirmado arriba"
+    } else {
+        Log "SIGUE CAIDO tras reparacion + restart -- requiere revision manual (Reiniciar Jarvis (Admin).bat)"
+    }
     exit 0
 }
 
