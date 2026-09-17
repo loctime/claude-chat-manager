@@ -1638,8 +1638,11 @@ function showProjectBarMenu() {
   menu._renderList = renderList;
   const rect = $('project-bar-btn').getBoundingClientRect();
   const maxX = window.innerWidth - menu.offsetWidth - 8;
+  const top = rect.bottom + 4;
   menu.style.left = Math.max(8, Math.min(rect.left, maxX)) + 'px';
-  menu.style.top = (rect.bottom + 4) + 'px';
+  menu.style.top = top + 'px';
+  menu.style.maxHeight = (window.innerHeight - top - 8) + 'px';
+  menu.style.overflowY = 'auto';
 
   menu.addEventListener('click', e => {
     e.stopPropagation();

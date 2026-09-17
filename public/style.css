@@ -1435,6 +1435,7 @@ dialog button:hover { background: var(--border); }
   color: var(--text2); font-size: 11px;
 }
 .ctx-menu.font-menu { max-height: 260px; overflow-y: auto; min-width: 200px; }
+.ctx-menu.project-bar-dropdown { overflow-y: auto; }
 .ctx-menu.font-menu button { font-size: 14px; }
 .ctx-menu.font-menu button.active { color: var(--accent); background: var(--input-bg); }
 
