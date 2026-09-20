@@ -185,4 +185,25 @@ test('registerProject y projectsWithCounts soportan lista de carpetas asociadas'
   ]);
 });
 
+test('renameProject permite actualizar las carpetas asociadas a un proyecto', () => {
+  const data = {
+    projects: [
+      { name: 'App', hideFromAll: false, folders: ['old-folder'] },
+    ],
+  };
+  // Actualizar carpetas sin cambiar nombre
+  renameProject(data, [], 'App', 'App', undefined, ['folder-1', 'folder-2']);
+  assert.deepEqual(data.projects[0].folders, ['folder-1', 'folder-2']);
+
+  // Vaciar carpetas explícitamente
+  renameProject(data, [], 'App', 'App', undefined, []);
+  assert.equal(data.projects[0].folders, undefined);
+
+  // Dejar folders como undefined preserva las existentes
+  data.projects[0].folders = ['keep-me'];
+  renameProject(data, [], 'App', 'AppRenamed', undefined, undefined);
+  assert.equal(data.projects[0].name, 'AppRenamed');
+  assert.deepEqual(data.projects[0].folders, ['keep-me']);
+});
+
 

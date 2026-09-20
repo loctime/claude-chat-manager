@@ -98,7 +98,6 @@ function createCodexRouter({
     if (metadataChanged) meta.save(data, codexMetaFile);
     const showArchived = req.query.archived === '1';
     let filtered = showArchived ? convs.filter(c => c.archived) : convs.filter(c => !c.archived);
-    const projectFilter = req.query.project;
     if (projectFilter) {
       filtered = projectFilter === '__none__'
         ? filtered.filter(c => !c.project)

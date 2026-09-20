@@ -9,16 +9,39 @@
 #
 # Requiere que esta PC tenga UAC en "elevar sin preguntar"
 # (ConsentPromptBehaviorAdmin=0) para que la elevacion sea silenciosa.
+#
+# -WindowStyle Hidden en el Start-Process de abajo (agregado 2026-09-17): sin
+# esto, cada vez que el watchdog repara zombies aparece un flash de terminal
+# visible en el escritorio de Diego -- pasaba inadvertido mientras el chequeo
+# de salud tenia el bug que casi nunca disparaba esta rama (ver CLAUDE.local.md,
+# "Automatizacion real del playbook"); al arreglar ese chequeo la reparacion
+# empezo a dispararse seguido y el flash se volvio visible/molesto.
+#
+# Exclusion del puerto 3778 (agregado 2026-09-17, ver CLAUDE.local.md "Pista real
+# sobre el origen de los zombies de Session 0"): el proceso node.exe legitimo de
+# la instancia de locti corre en Session 0 con CommandLine ilegible via WMI desde
+# User -- exactamente la misma firma que un zombie real. Sin esta exclusion, este
+# script puede matar por error el server de locti en vez de (o ademas de) un
+# zombie de verdad. Se excluye por PID el proceso que en el momento de correr
+# tiene el puerto 3778 escuchando, no por nombre/cuenta (mas robusto: sigue
+# aplicando aunque locti cambie de puerto o el owner no se pueda leer).
 
 function Repair-SessionZeroZombies {
     param(
         [string[]]$ProcessNames = @('node.exe', 'cloudflared.exe')
     )
 
+    $lockedPorts = @(3778)
+    $protectedPids = @()
+    foreach ($p in $lockedPorts) {
+        $protectedPids += Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess
+    }
+
     $suspects = @()
     foreach ($name in $ProcessNames) {
         $suspects += Get-CimInstance Win32_Process -Filter "Name='$name'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.SessionId -eq 0 -and [string]::IsNullOrEmpty($_.CommandLine) }
+            Where-Object { $_.SessionId -eq 0 -and [string]::IsNullOrEmpty($_.CommandLine) -and $protectedPids -notcontains $_.ProcessId }
     }
 
     if ($suspects.Count -eq 0) { return @() }
@@ -40,7 +63,7 @@ foreach (`$p in `$targetPids) {
 "@ | Out-File -FilePath $killScriptPath -Encoding utf8 -Force
 
     try {
-        Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$killScriptPath`"" -ErrorAction Stop
+        Start-Process powershell -Verb RunAs -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$killScriptPath`"" -ErrorAction Stop
     } catch {
         return @()
     }

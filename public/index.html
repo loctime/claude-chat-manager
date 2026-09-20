@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=87">
+  <link rel="stylesheet" href="style.css?v=88">
   <!-- Color de identidad server-side (Configuración → Color de identidad). Va
        después de style.css para pisar el --accent default de ahí; el ajuste
        personal por-dispositivo ("Acento" en Colores, más abajo) sigue
@@ -61,18 +61,18 @@
       <nav id="pane-tabs">
         <button type="button" class="pane-tab active" data-pane="0" title="Razonamiento y planificación">Chats</button>
         <button type="button" class="pane-tab" data-pane="1" hidden>Archivado</button>
-        <button type="button" class="pane-tab" id="codex-tab" data-pane="2" title="Ejecución de tareas e implementación de planes">Codex</button>
         <button type="button" class="pane-tab" id="gemini-tab" data-pane="6" title="Otro punto de vista y mucho contexto">AgY</button>
         <button type="button" class="pane-tab" data-pane="3">📝 Notas</button>
         <button type="button" class="pane-tab" data-pane="4">🚦 Task<span id="agenda-badge" class="tab-badge" hidden></span></button>
         <button type="button" class="pane-tab" data-pane="5">💬 Sala</button>
+        <button type="button" class="pane-tab" id="codex-tab" data-pane="2" title="Ejecución de tareas e implementación de planes">Codex</button>
       </nav>
       <!-- Selector de proyecto: en qué tema/carpeta estamos parados ahora
            mismo cuando tenemos varias charlas abiertas a la vez. Filtra Chats,
            Archivado, Codex y AgY; "Nueva conversación" hereda el proyecto activo.
            Solo metadata (etiqueta de texto), no toca carpeta/cwd real. -->
       <div id="project-bar">
-        <button type="button" id="project-bar-btn" aria-haspopup="true" aria-label="Elegir proyecto">
+        <button type="button" id="project-bar-btn" aria-haspopup="true" aria-label="Elegir proyecto" title="Elegir proyecto (doble click: Todos los proyectos)">
           <span id="project-bar-label">📁 Todos los proyectos</span>
           <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M7 10l5 5 5-5z"/></svg>
         </button>
@@ -536,7 +536,7 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=108"></script>
+  <script src="app.js?v=112"></script>
   <!-- Split de app.js por dominio (sesión 2026-08-20) — scripts clásicos, no
        ES modules: siguen compartiendo el mismo scope global que app.js, por
        eso cargan DESPUÉS (usan $()/settings/selectConv/etc. definidos ahí).
@@ -548,8 +548,8 @@
   <script src="lightbox.js?v=66"></script>
   <script src="sessions-cleanup.js?v=69"></script>
   <script src="suggest.js?v=1"></script>
-  <script src="gemini.js?v=1"></script>
-  <script src="codex.js?v=2"></script>
+  <script src="gemini.js?v=5"></script>
+  <script src="codex.js?v=5"></script>
   <script src="notes.js?v=1"></script>
   <script src="agenda.js?v=1"></script>
   <script src="sala.js?v=1"></script>

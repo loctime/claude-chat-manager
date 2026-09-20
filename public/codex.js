@@ -104,6 +104,7 @@ async function codexNewConversation() {
     const p = activeProjectFilter && activeProjectFilter !== '__none__' ? activeProjectFilter : undefined;
     if (p) body.project = p;
     const { convId } = await codexApi('/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (typeof invalidateUnifiedTreeCache === 'function') invalidateUnifiedTreeCache();
     codexSelectConv(convId, 'Nueva conversación');
   } catch (err) {
     toast('No se pudo crear la conversación de Codex: ' + err.message);
@@ -350,8 +351,8 @@ function attachCodexRowGestures(el, conv) {
       if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
       if (rowDragging) resetRow();
       rowDragging = false;
-      if (!redirectedToPane) { redirectedToPane = true; paneSwipeStart(startX); }
-      paneSwipeMove(touch.clientX);
+      if (!redirectedToPane) { redirectedToPane = true; paneSwipeStart(startX, startY); }
+      paneSwipeMove(touch.clientX, touch.clientY);
       return;
     }
     if (redirectedToPane) return;
@@ -380,7 +381,10 @@ function showCodexConvMenu(x, y, conv) {
   document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
   const menu = document.createElement('div');
   menu.className = 'ctx-menu';
-  menu.innerHTML = `<button data-action="copy-conversation">📋 Copiar conversación</button><button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button><button data-action="project">🏷️ ${conv.project ? 'Cambiar proyecto…' : 'Asignar proyecto…'}</button><button data-action="git-sync">⬆️ Git: commit + pull + push</button><button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`;
+  const newInProjectBtn = (conv && conv.project)
+    ? `<button data-action="new-in-project" title="Crear nueva conversación en ${String(conv.project).replace(/"/g, '&quot;')}">➕ Nueva conversación</button>`
+    : '';
+  menu.innerHTML = `${newInProjectBtn}<button data-action="copy-conversation">📋 Copiar conversación</button><button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button><button data-action="project">🏷️ ${conv.project ? 'Cambiar proyecto…' : 'Asignar proyecto…'}</button><button data-action="git-sync">⬆️ Git: commit + pull + push</button><button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`;
   document.body.appendChild(menu);
   const rect = menu.getBoundingClientRect();
   menu.style.left = Math.min(x, window.innerWidth - rect.width - 8) + 'px';
@@ -394,6 +398,26 @@ function showCodexConvMenu(x, y, conv) {
     const action = e.target.dataset && e.target.dataset.action;
     if (!action) return;
     menu.remove(); document.removeEventListener('click', dismiss, true); document.removeEventListener('touchstart', dismiss, true);
+    if (action === 'new-in-project') {
+      try {
+        if (activePane !== 2) await goToPane(2);
+        const body = { project: conv.project };
+        const { convId } = await codexApi('/conversations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (typeof invalidateUnifiedTreeCache === 'function') invalidateUnifiedTreeCache();
+        if (activeProjectFilter !== conv.project) {
+          setActiveProject(conv.project);
+        }
+        await selectCodexShared(convId, 'Nueva conversación', '', conv.project);
+        $('input').focus();
+      } catch (err) {
+        toast('No se pudo crear la conversación: ' + err.message);
+      }
+      return;
+    }
     if (action === 'copy-conversation') {
       try {
         await copyConversationMessages(() => codexApi(`/conversations/${conv.convId}/messages`));
@@ -512,7 +536,10 @@ async function selectCodexShared(convId, name, projectDir = '', project = undefi
   if (geminiStream) { geminiStream.close(); geminiStream = null; }
   currentGeminiConv = null;
   currentConv = null;
-  currentCodexConv = { id: convId, name, project };
+  const resolvedProject = project !== undefined
+    ? project
+    : (!convId ? (activeProjectFilter && activeProjectFilter !== '__none__' ? activeProjectFilter : undefined) : currentCodexConv?.project);
+  currentCodexConv = { id: convId, name, project: resolvedProject };
   $('conv-title').textContent = name;
   $('input').placeholder = 'Escribile a Codex…';
   restoreDraft(codexDrafts.get(convId));
@@ -571,6 +598,7 @@ async function createCodexSharedConversation() {
   showNotebookView(false);
   showSalaView(false);
   openChat();
+  if (typeof invalidateUnifiedTreeCache === 'function') invalidateUnifiedTreeCache();
   loadCodexSharedTree();
 }
 

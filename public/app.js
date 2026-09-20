@@ -66,7 +66,7 @@ async function loadAccounts() {
     const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName, appColor, userName, groqApiKeySet, salaUrl, salaTokenSet } = await r.json();
     activeAccount = active;
     if (appName) { APP_NAME = appName; updateGlobalBusyIndicator(); }
-    if (appColor) APP_COLOR = appColor;
+    if (appColor) { APP_COLOR = appColor; applySettings(); }
     if (userName) USER_NAME = userName;
     GROQ_KEY_SET = !!groqApiKeySet;
     SALA_URL = salaUrl || '';
@@ -1185,7 +1185,11 @@ function showConvMenu(x, y, conv) {
   document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
   const menu = document.createElement('div');
   menu.className = 'ctx-menu';
+  const newInProjectBtn = (conv && conv.project)
+    ? `<button data-action="new-in-project" title="Crear nueva conversación en ${String(conv.project).replace(/"/g, '&quot;')}">➕ Nueva conversación</button>`
+    : '';
   menu.innerHTML = `
+    ${newInProjectBtn}
     <button data-action="copy-conversation">📋 Copiar conversación</button>
     <button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button>
     <button data-action="archive">${conv.archived ? '📂 Desarchivar' : '📁 Archivar'}</button>
@@ -1205,6 +1209,25 @@ function showConvMenu(x, y, conv) {
     menu.remove();
     document.removeEventListener('click', dismiss, true);
     document.removeEventListener('touchstart', dismiss, true);
+    if (action === 'new-in-project') {
+      try {
+        if (activePane !== 0) await goToPane(0);
+        const { convId, projectDir } = await api('/conversations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(withAccountBody({ project: conv.project })),
+        });
+        if (typeof invalidateUnifiedTreeCache === 'function') invalidateUnifiedTreeCache();
+        if (activeProjectFilter !== conv.project) {
+          setActiveProject(conv.project);
+        }
+        await selectConv(convId, 'Nueva conversación', undefined, null, projectDir);
+        $('input').focus();
+      } catch (err) {
+        toast('No se pudo crear la conversación: ' + err.message);
+      }
+      return;
+    }
     if (action === 'copy-conversation') {
       try {
         await copyConversationMessages(() => api(withAccount(`/conversations/${conv.convId}/messages`)));
@@ -1385,6 +1408,173 @@ function setActiveProject(name) {
 
 let activeProjectActionMenu = null;
 
+async function showEditProjectFoldersMenu(projectName, onDone = null, anchorX, anchorY) {
+  document.querySelectorAll('.project-actions-menu').forEach(m => m.remove());
+
+  await loadProjects(true).catch(() => {});
+
+  let availableFolders = [];
+  try {
+    const resp = await api('/project-folders');
+    availableFolders = resp.folders || [];
+  } catch (err) {
+    toast('No se pudo listar carpetas: ' + err.message);
+  }
+
+  const proj = (knownProjects || []).find(p => p.name.toLowerCase() === projectName.toLowerCase());
+  const initialFolders = Array.isArray(proj?.folders) ? proj.folders : [];
+  const initialSet = new Set(initialFolders.map(f => f.toLowerCase()));
+
+  const allFolders = [...availableFolders];
+  for (const f of initialFolders) {
+    if (!allFolders.some(af => af.toLowerCase() === f.toLowerCase())) {
+      allFolders.unshift(f);
+    }
+  }
+
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu folder-menu project-actions-menu';
+  menu.style.zIndex = '10060';
+  activeProjectActionMenu = menu;
+
+  const header = document.createElement('div');
+  header.className = 'ctx-menu-header';
+  header.textContent = `📁 Carpetas de "${projectName}"`;
+  menu.appendChild(header);
+
+  const filterInput = document.createElement('input');
+  filterInput.type = 'text';
+  filterInput.className = 'ctx-menu-filter';
+  filterInput.placeholder = 'Buscar carpeta…';
+  menu.appendChild(filterInput);
+
+  const list = document.createElement('div');
+  list.className = 'ctx-menu-list';
+
+  function closeMenu() {
+    menu.remove();
+    if (activeProjectActionMenu === menu) activeProjectActionMenu = null;
+    document.removeEventListener('click', dismiss, true);
+    document.removeEventListener('touchstart', dismiss, true);
+  }
+
+  const folderItems = allFolders.map(name => {
+    const label = document.createElement('label');
+    label.className = 'ctx-menu-folder-item';
+    label.dataset.folder = name;
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.dataset.folder = name;
+    cb.checked = initialSet.has(name.toLowerCase());
+
+    const span = document.createElement('span');
+    span.textContent = name;
+
+    label.appendChild(cb);
+    label.appendChild(span);
+    list.appendChild(label);
+    return label;
+  });
+  menu.appendChild(list);
+
+  const actions = document.createElement('div');
+  actions.className = 'folder-menu-actions';
+
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'folder-menu-create-btn';
+  actions.appendChild(saveBtn);
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Cancelar';
+  cancelBtn.onclick = (e) => {
+    e.stopPropagation();
+    closeMenu();
+  };
+  actions.appendChild(cancelBtn);
+
+  menu.appendChild(actions);
+
+  document.body.appendChild(menu);
+
+  const posX = typeof anchorX === 'number' ? anchorX : window.innerWidth / 2 - 140;
+  const posY = typeof anchorY === 'number' ? anchorY : 100;
+  const maxX = window.innerWidth - menu.offsetWidth - 8;
+  const maxY = window.innerHeight - menu.offsetHeight - 8;
+  menu.style.left = Math.max(8, Math.min(posX, maxX)) + 'px';
+  menu.style.top = Math.max(8, Math.min(posY, maxY)) + 'px';
+  filterInput.focus();
+
+  function getSelectedFolders() {
+    return Array.from(list.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.dataset.folder);
+  }
+
+  function updateSaveBtn() {
+    const selected = getSelectedFolders();
+    if (selected.length === 0) {
+      saveBtn.textContent = 'Guardar (sin carpetas)';
+    } else if (selected.length === 1) {
+      saveBtn.textContent = 'Guardar carpeta (1)';
+    } else {
+      saveBtn.textContent = `Guardar carpetas (${selected.length})`;
+    }
+  }
+  updateSaveBtn();
+
+  list.addEventListener('change', () => {
+    updateSaveBtn();
+  });
+
+  filterInput.addEventListener('input', () => {
+    const q = filterInput.value.trim().toLowerCase();
+    for (const item of folderItems) {
+      item.hidden = q && !item.dataset.folder.toLowerCase().includes(q);
+    }
+  });
+
+  filterInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      saveBtn.click();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeMenu();
+    }
+  });
+
+  saveBtn.onclick = async (e) => {
+    e.stopPropagation();
+    const selected = getSelectedFolders();
+    saveBtn.disabled = true;
+    try {
+      const resp = await api('/projects/' + encodeURIComponent(projectName), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(withAccountBody({ folders: selected })),
+      });
+      knownProjects = resp.projects || knownProjects;
+      closeMenu();
+      refreshVisibleTrees();
+      if (typeof onDone === 'function') onDone();
+      toast(selected.length ? `Carpetas de "${projectName}" actualizadas (${selected.length})` : `"${projectName}" quedó sin carpetas asociadas`, 'info', 2500);
+    } catch (err) {
+      toast('No se pudieron actualizar las carpetas: ' + err.message);
+      saveBtn.disabled = false;
+    }
+  };
+
+  function dismiss(e) {
+    if (menu.contains(e.target)) return;
+    closeMenu();
+  }
+  setTimeout(() => {
+    document.addEventListener('click', dismiss, true);
+    document.addEventListener('touchstart', dismiss, true);
+  }, 350);
+
+  return menu;
+}
+
 function showProjectItemMenu(x, y, projectName, onDone = null) {
   if (!projectName || projectName === '__none__') return null;
   // Solo eliminamos menús de acción previos, NO el menú de la lista de proyectos
@@ -1407,6 +1597,11 @@ function showProjectItemMenu(x, y, projectName, onDone = null) {
   renameBtn.textContent = '✏️ Renombrar proyecto…';
   renameBtn.dataset.action = 'rename';
   menu.appendChild(renameBtn);
+
+  const editFoldersBtn = document.createElement('button');
+  editFoldersBtn.textContent = '📁 Editar carpetas…';
+  editFoldersBtn.dataset.action = 'edit-folders';
+  menu.appendChild(editFoldersBtn);
 
   const hideBtn = document.createElement('button');
   hideBtn.textContent = isHidden ? '👁️ Mostrar en "Todos los proyectos"' : '🙈 Ocultar de "Todos los proyectos"';
@@ -1464,6 +1659,8 @@ function showProjectItemMenu(x, y, projectName, onDone = null) {
       } catch (err) {
         toast('No se pudo renombrar el proyecto: ' + err.message);
       }
+    } else if (action === 'edit-folders') {
+      showEditProjectFoldersMenu(projectName, onDone, x, y);
     } else if (action === 'toggle-hide') {
       try {
         const resp = await api('/projects/' + encodeURIComponent(projectName), {
@@ -1699,13 +1896,51 @@ function showProjectBarMenu() {
   }, 350);
 }
 
-$('project-bar-btn').onclick = () => {
+function resetToAllProjects() {
+  document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
+  if (activeProjectActionMenu) { activeProjectActionMenu.remove(); activeProjectActionMenu = null; }
+  if (activeProjectFilter) {
+    setActiveProject('');
+    toast('Todos los proyectos', 'info', 1500);
+  }
+}
+
+let lastProjectBarTap = 0;
+$('project-bar-btn').addEventListener('touchend', () => {
+  const now = Date.now();
+  if (now - lastProjectBarTap < 350) {
+    lastProjectBarTap = 0;
+    resetToAllProjects();
+  } else {
+    lastProjectBarTap = now;
+  }
+}, { passive: true });
+
+$('project-bar-btn').onclick = (e) => {
+  if (e && e.detail > 1) {
+    resetToAllProjects();
+    return;
+  }
   showProjectBarMenu();
   loadProjects(true).then(() => {
     const m = document.querySelector('.project-bar-dropdown');
     if (m && typeof m._renderList === 'function') m._renderList();
   }).catch(() => {});
 };
+
+$('project-bar-btn').ondblclick = (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  resetToAllProjects();
+};
+
+if ($('project-bar')) {
+  $('project-bar').ondblclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    resetToAllProjects();
+  };
+}
 
 // "+ Nuevo proyecto…" desde la barra global (sin conversación de referencia):
 // en vez de texto libre, ofrece elegir una carpeta real de Desktop\Proyectos
@@ -3280,6 +3515,21 @@ function setBusy(b) {
   setStatus(busy ? 'escribiendo…' : '');
 }
 
+// Si un EventSource se corta en móvil, puede perder el `idle` final. El árbol
+// ya expone el estado vivo del runner, así que se usa como reconciliación rara
+// (solo tras un error SSE), sin inventar que una conversación terminó.
+async function syncBusyFromTree(convId) {
+  const params = new URLSearchParams({ limit: '1000' });
+  if (activeAccount) params.set('account', activeAccount);
+  try {
+    const snapshot = await api('/tree?' + params);
+    const conv = snapshot.tree
+      .flatMap(project => project.conversations)
+      .find(item => item.convId === convId);
+    if (currentConv === convId && conv) setBusy(conv.status !== 'idle');
+  } catch { /* el próximo reconnect SSE vuelve a intentar sincronizar */ }
+}
+
 // ── Stream ──
 function openStream(convId) {
   if (eventSource) eventSource.close();
@@ -3359,6 +3609,7 @@ function openStream(convId) {
     setTimeout(() => {
       if (convId !== currentConv) return;
       loadMessages(convId);
+      syncBusyFromTree(convId);
       refreshVisibleTrees();
     }, 1500);
   };
@@ -3417,7 +3668,7 @@ function fmtTokens(n) {
 }
 function fmtCtxPct(pct) {
   if (!pct) return '';
-  const p = pct * 100;
+  const p = Math.min(100, pct * 100);
   return p < 1 ? '<1%' : Math.round(p) + '%';
 }
 function ctxTone(pct) {
@@ -4068,18 +4319,24 @@ $('composer').onsubmit = async e => {
     $('input').value = ''; autoResize($('input')); clearAttachments(); setGeminiBusy(true);
     try {
       if (!id) {
+        const p = activeProjectFilter && activeProjectFilter !== '__none__'
+          ? activeProjectFilter
+          : (draft.project || undefined);
         const body = {
           model: $('model-select').value || 'gemini-3.8-flash-high',
+          ...(p ? { project: p } : {}),
         };
         const created = await geminiApi('/conversations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         if (currentGeminiConv !== draft) return;
-        id = created.convId; currentGeminiConv = { id, name: 'Nueva conversación', model: body.model }; geminiStream = openGeminiStream(id);
+        id = created.convId; currentGeminiConv = { id, name: 'Nueva conversación', model: body.model, project: p }; geminiStream = openGeminiStream(id);
+        if (typeof invalidateUnifiedTreeCache === 'function') invalidateUnifiedTreeCache();
       }
       addUserMsgWithFiles(rawText, attachments);
       await geminiApi(`/conversations/${id}/message`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
       antigravityDrafts.delete(id); antigravityDrafts.delete('__new__');
       // Respaldo si el primer evento SSE llegó antes de que el stream quedara
       // abierto: la lista igual refleja “procesando” al enviar.
+      if (typeof invalidateUnifiedTreeCache === 'function') invalidateUnifiedTreeCache();
       loadGeminiTree();
     }
     catch (err) { addMsg('error', 'No se pudo enviar: ' + err.message); setGeminiBusy(false); }
@@ -4102,19 +4359,26 @@ $('composer').onsubmit = async e => {
     setCodexMainBusy(true);
     try {
       if (!convId) {
+        const p = activeProjectFilter && activeProjectFilter !== '__none__'
+          ? activeProjectFilter
+          : (draft.project || undefined);
+        const body = p ? { project: p } : {};
         const created = await codexApi('/conversations', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         });
         if (currentCodexConv !== draft) return;
         convId = created.convId;
-        currentCodexConv = { id: convId, name: 'Nueva conversación' };
+        currentCodexConv = { id: convId, name: 'Nueva conversación', project: p };
         codexStream = openCodexSharedStream(convId);
+        if (typeof invalidateUnifiedTreeCache === 'function') invalidateUnifiedTreeCache();
       }
       addUserMsgWithFiles(rawText, attachments);
       await codexApi(`/conversations/${convId}/message`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, imagePath }),
       });
       codexDrafts.delete(convId);
+      if (typeof invalidateUnifiedTreeCache === 'function') invalidateUnifiedTreeCache();
+      loadCodexSharedTree();
     } catch (err) {
       addMsg('error', 'No se pudo enviar: ' + err.message);
       setCodexMainBusy(false);
@@ -4225,6 +4489,7 @@ $('new-conv').onclick = async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(withAccountBody({ project: newConvProject })),
     });
+    if (typeof invalidateUnifiedTreeCache === 'function') invalidateUnifiedTreeCache();
     await selectConv(convId, 'Nueva conversación', undefined, null, projectDir);
     // Crear conversación es una acción explícita (no un tap en la lista),
     // así que acá sí autofocuseamos el campo aunque estemos en mobile.
@@ -4334,10 +4599,12 @@ function initPaneSwipe() {
   const viewport = $('tree-viewport');
 
   viewport.addEventListener('touchstart', e => {
-    // Las filas de libreta (.notebook-row) no tienen attachRowGestures propio
-    // (ver notebookElement) — se excluyen del bail-out para que el swipe de
-    // pantalla siga andando sobre ellas (Finding 2 del review final).
-    if (e.target.closest('.conv:not(.notebook-row)')) return; // una fila de chat maneja su propio gesto (ver attachRowGestures)
+    // Solo las filas de Claude manejan el gesto horizontal por su cuenta:
+    // derecha archiva y izquierda se lo cede al carrusel. Codex, AgY, Sala y
+    // Notas también usan la clase visual `.conv`, pero no todos redirigen el
+    // gesto; descartarlas acá dejaba al carrusel sin zona tocable cuando la
+    // lista estaba llena.
+    if (e.target.closest('.conv-engine-claude')) return;
     const t = e.touches[0];
     paneSwipeStart(t.clientX, t.clientY);
   }, { passive: true });
@@ -4508,7 +4775,6 @@ function applySettings() {
   const root = document.documentElement;
   const vars = {
     '--accent': settings.colorAccent,
-    '--claude-accent': settings.colorAccent,
     '--tab-alert': settings.colorAccent,
     '--codex-accent': settings.colorCodex,
     '--antigravity-accent': settings.colorAntigravity,
@@ -4519,8 +4785,15 @@ function applySettings() {
     if (v) root.style.setProperty(k, v);
     else root.style.removeProperty(k);
   }
-  if (settings.colorAccent) root.style.setProperty('--claude-accent-contrast', contrastTextColor(settings.colorAccent) || '#fff');
-  else root.style.removeProperty('--claude-accent-contrast');
+  // --claude-accent alimenta la preservación de color por motor
+  // (.conv-engine-claude en style.css) y, a diferencia de --accent, no puede
+  // sacarse sin más cuando no hay Acento personal: su fallback en style.css
+  // es un verde hardcodeado, no el "Color de identidad" de la instancia
+  // (APP_COLOR). Sin este fallback explícito, configurar el color de
+  // identidad dejaba de pintar las filas de Chats.
+  const claudeAccent = settings.colorAccent || APP_COLOR;
+  root.style.setProperty('--claude-accent', claudeAccent);
+  root.style.setProperty('--claude-accent-contrast', contrastTextColor(claudeAccent) || '#fff');
   if (settings.colorCodex) root.style.setProperty('--codex-accent-contrast', contrastTextColor(settings.colorCodex) || '#fff');
   else root.style.removeProperty('--codex-accent-contrast');
   if (settings.colorAntigravity) root.style.setProperty('--antigravity-accent-contrast', contrastTextColor(settings.colorAntigravity) || '#fff');

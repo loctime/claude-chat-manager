@@ -133,6 +133,39 @@ test('findSessionTranscript y getMessages leen desde directorio mock', () => {
   assert.strictEqual(info.sessionId, sessionId);
   assert.strictEqual(info.snippet, 'hola agy');
   assert.strictEqual(info.messageCount, 2);
+  assert.ok(info.contextTokens > 0);
 
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+test('sessionInfo: calcula approxTokens si la sesion tiene mensajes', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gemini-scanner-tokens-'));
+  const sessionId = 'test-tokens-session';
+  const logsDir = path.join(tmp, 'brain', sessionId, '.system_generated', 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+
+  const transcriptFile = path.join(logsDir, 'transcript.jsonl');
+  fs.writeFileSync(
+    transcriptFile,
+    JSON.stringify({
+      step_index: 0,
+      type: 'USER_INPUT',
+      created_at: '2026-09-14T19:00:00Z',
+      content: '<USER_REQUEST>\n' + 'a'.repeat(400) + '\n</USER_REQUEST>',
+    }) + '\n' +
+    JSON.stringify({
+      step_index: 1,
+      type: 'PLANNER_RESPONSE',
+      created_at: '2026-09-14T19:00:01Z',
+      content: 'b'.repeat(400),
+    }) + '\n'
+  );
+
+  _clearSessionInfoCache();
+  const info = sessionInfo(sessionId, tmp);
+  // 12000 base + Math.round(800 / 4) = 12200
+  assert.strictEqual(info.contextTokens, 12200);
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+

@@ -93,7 +93,7 @@ function hiddenProjectNames(data) {
   return new Set((data.projects || []).filter(p => projectEntry(p).hideFromAll).map(p => projectEntry(p).name));
 }
 
-function renameProject(data, extraDataList = [], oldName, newName, hideFromAll) {
+function renameProject(data, extraDataList = [], oldName, newName, hideFromAll, folders) {
   if (!oldName) return false;
   const oldLower = oldName.toLowerCase();
   const targetName = (newName || '').trim();
@@ -104,16 +104,19 @@ function renameProject(data, extraDataList = [], oldName, newName, hideFromAll) 
   if (!Array.isArray(data.projects)) data.projects = [];
   const oldIdx = data.projects.findIndex(p => projectEntry(p).name.toLowerCase() === oldLower);
   let resolvedHide = hideFromAll !== undefined ? !!hideFromAll : undefined;
+  const normFolders = Array.isArray(folders) ? folders.map(f => String(f).trim()).filter(Boolean) : undefined;
 
   if (oldIdx !== -1) {
     const oldEntry = projectEntry(data.projects[oldIdx]);
     if (resolvedHide === undefined) resolvedHide = oldEntry.hideFromAll;
-    const oldFolders = oldEntry.folders;
+    const oldFolders = normFolders !== undefined ? normFolders : oldEntry.folders;
     if (oldLower !== targetLower) {
       const newIdx = data.projects.findIndex(p => projectEntry(p).name.toLowerCase() === targetLower);
       if (newIdx !== -1) {
         const targetEntry = projectEntry(data.projects[newIdx]);
-        const mergedFolders = [...new Set([...(targetEntry.folders || []), ...(oldFolders || [])])];
+        const mergedFolders = normFolders !== undefined
+          ? normFolders
+          : [...new Set([...(targetEntry.folders || []), ...(oldFolders || [])])];
         const updated = {
           name: targetEntry.name,
           hideFromAll: resolvedHide || targetEntry.hideFromAll,
@@ -132,7 +135,7 @@ function renameProject(data, extraDataList = [], oldName, newName, hideFromAll) 
       data.projects[oldIdx] = entry;
     }
   } else {
-    registerProject(data, targetName, resolvedHide);
+    registerProject(data, targetName, resolvedHide, normFolders);
   }
 
   // 2. Renombrar en data.conversations si el nombre cambió
@@ -274,8 +277,31 @@ function createProjectsRouter({ getActiveAccount, accountMetaFile, listProjectFo
       extraItems.map(e => e.data),
       oldName,
       newName,
-      'hideFromAll' in req.body ? !!req.body.hideFromAll : undefined
+      'hideFromAll' in req.body ? !!req.body.hideFromAll : undefined,
+      'folders' in req.body ? req.body.folders : undefined
     );
+
+    if (Array.isArray(req.body.folders) && req.body.folders.length > 0) {
+      const folderSet = new Set(req.body.folders.map(f => folderBaseName(f).toLowerCase()).filter(Boolean));
+      if (folderSet.size > 0) {
+        for (const c of Object.values(data.conversations || {})) {
+          if (!c || c.hidden || c.project) continue;
+          const fb = folderBaseName(c.projectDir || c.gitRepo).toLowerCase();
+          if (fb && folderSet.has(fb)) {
+            c.project = newName;
+          }
+        }
+        for (const item of extraItems) {
+          for (const c of Object.values(item.data.conversations || {})) {
+            if (!c || c.hidden || c.project) continue;
+            const fb = folderBaseName(c.projectDir || c.gitRepo || c.workspace).toLowerCase();
+            if (fb && folderSet.has(fb)) {
+              c.project = newName;
+            }
+          }
+        }
+      }
+    }
 
     meta.save(data, metaFile);
     for (const item of extraItems) {

@@ -230,52 +230,64 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
 .usage-bar-fill[data-tone="hot"]  { background: #e05a5a; }
 .usage-bar-pct { font-size: 10px; color: var(--text2); flex-shrink: 0; min-width: 26px; text-align: right; }
 
-#pane-tabs { display: none; }
+/* Antes #pane-tabs solo se mostraba en desktop (>=768px) — en mobile la
+   única forma de cambiar de pestaña era el swipe horizontal. Pedido de
+   Diego (15/09/2026): que las pestañas también se vean en el celu como
+   respaldo, para el caso de que el swipe no ande (gesto nativo de "atrás"
+   de Android compitiendo por el mismo arrastre, dedo que no dispara el
+   umbral, etc.) — no reemplaza el swipe, lo complementa. En mobile no entran
+   los 7 labels con ancho fijo (`flex:1`) sin achicarse hasta ilegibles, así
+   que ahí se angostan a su contenido y la barra scrollea horizontal. */
+#pane-tabs {
+  display: flex; flex: none;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+#pane-tabs::-webkit-scrollbar { display: none; }
+.pane-tab {
+  flex: 0 0 auto; background: none; border: none; cursor: pointer;
+  padding: 10px 12px; font-size: 13px; color: var(--text2);
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+}
+.pane-tab:hover { color: var(--text); }
+.pane-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.pane-tab[data-pane="0"] { color: var(--tab-alert); }
+.pane-tab[data-pane="0"].active { color: var(--tab-alert); border-bottom-color: var(--tab-alert); }
+.pane-tab.has-unread {
+  --pane-alert: var(--tab-alert);
+  color: #bcebdd;
+  background: color-mix(in srgb, var(--pane-alert) 22%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pane-alert) 65%, transparent), 0 0 12px color-mix(in srgb, var(--pane-alert) 45%, transparent);
+  animation: pane-unread-glow 1.7s ease-in-out infinite;
+}
+.pane-tab[data-pane="2"] { color: var(--codex-accent); }
+.pane-tab[data-pane="2"].active { color: var(--codex-accent); border-bottom-color: var(--codex-accent); }
+.pane-tab[data-pane="2"].has-unread {
+  --pane-alert: var(--codex-accent);
+  color: color-mix(in srgb, var(--codex-accent) 35%, white);
+  background: color-mix(in srgb, var(--codex-accent) 22%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--codex-accent) 65%, transparent), 0 0 12px color-mix(in srgb, var(--codex-accent) 45%, transparent);
+}
+.pane-tab[data-pane="6"] { color: var(--antigravity-accent); }
+.pane-tab[data-pane="6"].active { color: var(--antigravity-accent); border-bottom-color: var(--antigravity-accent); }
+.pane-tab[data-pane="6"].has-unread { --pane-alert: var(--antigravity-accent); color: color-mix(in srgb, var(--antigravity-accent) 35%, white); background: color-mix(in srgb, var(--antigravity-accent) 22%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--antigravity-accent) 65%, transparent), 0 0 12px color-mix(in srgb, var(--antigravity-accent) 45%, transparent); }
+.pane-tab.has-processing {
+  --pane-processing: var(--tab-alert);
+  border-bottom-color: color-mix(in srgb, var(--pane-processing) 85%, white);
+  animation: pane-processing-pulse 1.8s ease-in-out infinite;
+}
+.pane-tab[data-pane="2"].has-processing { --pane-processing: var(--codex-accent); }
+.pane-tab[data-pane="6"].has-processing { --pane-processing: var(--antigravity-accent); }
+@keyframes pane-unread-glow {
+  50% { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pane-alert) 90%, transparent), 0 0 20px color-mix(in srgb, var(--pane-alert) 75%, transparent); }
+}
+@keyframes pane-processing-pulse {
+  50% { border-bottom-color: color-mix(in srgb, var(--pane-processing) 45%, transparent); box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--pane-processing) 25%, transparent); }
+}
 @media (min-width: 768px) {
-  #pane-tabs {
-    display: flex; flex: none;
-    border-bottom: 1px solid var(--border);
-  }
-  .pane-tab {
-    flex: 1; background: none; border: none; cursor: pointer;
-    padding: 10px 4px; font-size: 13px; color: var(--text2);
-    border-bottom: 2px solid transparent;
-  }
-  .pane-tab:hover { color: var(--text); }
-  .pane-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-  .pane-tab[data-pane="0"] { color: var(--tab-alert); }
-  .pane-tab[data-pane="0"].active { color: var(--tab-alert); border-bottom-color: var(--tab-alert); }
-  .pane-tab.has-unread {
-    --pane-alert: var(--tab-alert);
-    color: #bcebdd;
-    background: color-mix(in srgb, var(--pane-alert) 22%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pane-alert) 65%, transparent), 0 0 12px color-mix(in srgb, var(--pane-alert) 45%, transparent);
-    animation: pane-unread-glow 1.7s ease-in-out infinite;
-  }
-  .pane-tab[data-pane="2"] { order: 1; color: var(--codex-accent); }
-  .pane-tab[data-pane="2"].active { color: var(--codex-accent); border-bottom-color: var(--codex-accent); }
-  .pane-tab[data-pane="2"].has-unread {
-    --pane-alert: var(--codex-accent);
-    color: color-mix(in srgb, var(--codex-accent) 35%, white);
-    background: color-mix(in srgb, var(--codex-accent) 22%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--codex-accent) 65%, transparent), 0 0 12px color-mix(in srgb, var(--codex-accent) 45%, transparent);
-  }
-  .pane-tab[data-pane="6"] { color: var(--antigravity-accent); }
-  .pane-tab[data-pane="6"].active { color: var(--antigravity-accent); border-bottom-color: var(--antigravity-accent); }
-  .pane-tab[data-pane="6"].has-unread { --pane-alert: var(--antigravity-accent); color: color-mix(in srgb, var(--antigravity-accent) 35%, white); background: color-mix(in srgb, var(--antigravity-accent) 22%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--antigravity-accent) 65%, transparent), 0 0 12px color-mix(in srgb, var(--antigravity-accent) 45%, transparent); }
-  .pane-tab.has-processing {
-    --pane-processing: var(--tab-alert);
-    border-bottom-color: color-mix(in srgb, var(--pane-processing) 85%, white);
-    animation: pane-processing-pulse 1.8s ease-in-out infinite;
-  }
-  .pane-tab[data-pane="2"].has-processing { --pane-processing: var(--codex-accent); }
-  .pane-tab[data-pane="6"].has-processing { --pane-processing: var(--antigravity-accent); }
-  @keyframes pane-unread-glow {
-    50% { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pane-alert) 90%, transparent), 0 0 20px color-mix(in srgb, var(--pane-alert) 75%, transparent); }
-  }
-  @keyframes pane-processing-pulse {
-    50% { border-bottom-color: color-mix(in srgb, var(--pane-processing) 45%, transparent); box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--pane-processing) 25%, transparent); }
-  }
+  .pane-tab { flex: 1 1 0; padding: 10px 4px; }
 }
 
 /* ── Barra de proyecto activo ── */
@@ -300,6 +312,8 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
   font-size: 13px;
   font-weight: 600;
   color: var(--text2);
+  -webkit-user-select: none;
+  user-select: none;
 }
 #project-bar-btn:hover { color: var(--text); }
 #project-bar-btn svg { flex-shrink: 0; opacity: .7; }
