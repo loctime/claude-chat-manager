@@ -1574,15 +1574,35 @@ function showProjectBarMenu() {
   const menu = document.createElement('div');
   menu.className = 'ctx-menu project-bar-dropdown';
 
-  function renderList() {
-    menu.innerHTML = '';
-    menu.appendChild(projectMenuItem('Todos los proyectos', ''));
-    menu.appendChild(projectMenuItem('Sin proyecto', '__none__'));
+  // Input de filtro fijo arriba (mismo patrón que showNewProjectFolderMenu):
+  // con muchos proyectos etiquetados la lista plana no escala, así que se
+  // puede escribir para acotarla en vivo en vez de scrollear a mano.
+  const filterInput = document.createElement('input');
+  filterInput.type = 'text';
+  filterInput.className = 'ctx-menu-filter';
+  filterInput.placeholder = '🔍 Buscar proyecto…';
+  filterInput.addEventListener('click', e => e.stopPropagation());
+  filterInput.addEventListener('input', () => renderList());
+  menu.appendChild(filterInput);
 
-    if (knownProjects.length) {
+  const listWrap = document.createElement('div');
+  listWrap.className = 'ctx-menu-list';
+  menu.appendChild(listWrap);
+
+  function renderList() {
+    const q = filterInput.value.trim().toLowerCase();
+    listWrap.innerHTML = '';
+    if (!q) {
+      listWrap.appendChild(projectMenuItem('Todos los proyectos', ''));
+      listWrap.appendChild(projectMenuItem('Sin proyecto', '__none__'));
+    }
+
+    const filtered = q ? knownProjects.filter(p => p.name.toLowerCase().includes(q)) : knownProjects;
+
+    if (filtered.length) {
       const hr = document.createElement('hr');
-      menu.appendChild(hr);
-      for (const p of knownProjects) {
+      listWrap.appendChild(hr);
+      for (const p of filtered) {
         const row = document.createElement('div');
         row.className = 'ctx-menu-item-row';
 
@@ -1615,12 +1635,17 @@ function showProjectBarMenu() {
           showProjectItemMenu(e.clientX, e.clientY, p.name, renderList);
         });
 
-        menu.appendChild(row);
+        listWrap.appendChild(row);
       }
+    } else if (q) {
+      const empty = document.createElement('div');
+      empty.className = 'ctx-menu-empty';
+      empty.textContent = 'Sin proyectos que coincidan';
+      listWrap.appendChild(empty);
     }
 
     const hr2 = document.createElement('hr');
-    menu.appendChild(hr2);
+    listWrap.appendChild(hr2);
     const newBtn = document.createElement('button');
     newBtn.textContent = '+ Nuevo proyecto…';
     newBtn.dataset.action = 'new-project';
@@ -1630,7 +1655,7 @@ function showProjectBarMenu() {
       if (activeProjectActionMenu) { activeProjectActionMenu.remove(); activeProjectActionMenu = null; }
       showNewProjectFolderMenu();
     };
-    menu.appendChild(newBtn);
+    listWrap.appendChild(newBtn);
   }
 
   renderList();
@@ -1641,8 +1666,13 @@ function showProjectBarMenu() {
   const top = rect.bottom + 4;
   menu.style.left = Math.max(8, Math.min(rect.left, maxX)) + 'px';
   menu.style.top = top + 'px';
+  // El scroll va en listWrap, no en menu entero, así el input de filtro
+  // queda siempre visible arriba en vez de scrollearse junto con la lista.
   menu.style.maxHeight = (window.innerHeight - top - 8) + 'px';
-  menu.style.overflowY = 'auto';
+  menu.style.overflowY = 'hidden';
+  listWrap.style.maxHeight = (window.innerHeight - top - 8 - filterInput.offsetHeight - 12) + 'px';
+  listWrap.style.overflowY = 'auto';
+  filterInput.focus();
 
   menu.addEventListener('click', e => {
     e.stopPropagation();

@@ -1940,6 +1940,12 @@ body.hide-tools details.tool { display: none !important; }
   border-radius: 4px;
 }
 .ctx-menu-list { max-height: 45vh; overflow-y: auto; }
+.ctx-menu-empty {
+  padding: 10px;
+  font-size: 13px;
+  color: var(--text2);
+  text-align: center;
+}
 .ctx-menu-folder-item {
   display: flex;
   align-items: center;
