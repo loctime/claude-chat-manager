@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=88">
+  <link rel="stylesheet" href="style.css?v=89">
   <!-- Color de identidad server-side (Configuración → Color de identidad). Va
        después de style.css para pisar el --accent default de ahí; el ajuste
        personal por-dispositivo ("Acento" en Colores, más abajo) sigue
@@ -509,6 +509,14 @@
             <span class="settings-hint" title="Aplica código nuevo (git pull). Corta la conexión unos segundos.">Aplica código nuevo (git pull). Corta la conexión unos segundos.</span>
           </div>
         </details>
+
+        <details class="settings-section">
+          <summary class="settings-section-label">Sistema</summary>
+          <div class="settings-server">
+            <button type="button" id="cfg-shutdown-btn">🔌 Apagar PC</button>
+            <span class="settings-hint">Apaga la PC donde corre {{APP_NAME}} (20s de margen para cancelar a mano). Esto también corta esta conversación.</span>
+          </div>
+        </details>
       </div>
 
       <div class="settings-footer">
@@ -553,6 +561,6 @@
   <script src="notes.js?v=1"></script>
   <script src="agenda.js?v=1"></script>
   <script src="sala.js?v=1"></script>
-  <script src="settings-dialog.js?v=1"></script>
+  <script src="settings-dialog.js?v=2"></script>
 </body>
 </html>

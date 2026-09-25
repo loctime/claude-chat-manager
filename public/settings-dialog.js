@@ -415,6 +415,22 @@ $('cfg-restart-btn').onclick = async () => {
   }
 };
 
+// Apagado remoto de la PC — ver /api/shutdown-pc en server.js. Doble
+// confirmación (confirm() acá + el /t 20 del lado del server) porque no hay
+// vuelta atrás fácil una vez que Windows empieza a cerrar sesión.
+$('cfg-shutdown-btn').onclick = async () => {
+  if (!confirm('Apagar la PC?\n\nEsto corta esta conversación y todo lo que esté abierto en esa máquina. Hay ~20s de margen antes de que se apague de verdad.')) return;
+  toast('Apagando la PC en 20s…', 'info', 6000);
+  try {
+    const r = await fetch('/api/shutdown-pc', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    const data = await r.json();
+    if (!r.ok) toast(data.error || 'no se pudo apagar', 'error', 5000);
+  } catch {
+    // Igual que /api/restart: el server puede cortar la conexión antes de
+    // que el fetch termine de leer, no es necesariamente un error real.
+  }
+};
+
 $('cfg-reset').onclick = () => {
   // Confirm agregado al pasar el botón a ícono (perdió el texto "Restaurar"
   // que antes avisaba qué hacía) — pierde voz, colores, tipografía, todo.

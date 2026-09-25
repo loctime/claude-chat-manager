@@ -626,6 +626,23 @@ app.post('/api/restart', (req, res) => {
   }, 300));
 });
 
+// ── Apagar la PC donde corre esto — control remoto desde el celular. Mismo
+// gotcha que /api/reveal: bajo WSL el PATH del proceso no siempre trae el de
+// Windows, así que shutdown.exe se llama con ruta absoluta vía interop.
+// Delay de 20s (no /t 0) a propósito: si fue un toque accidental, da margen a
+// cancelarlo a mano abriendo una terminal y corriendo "shutdown /a".
+app.post('/api/shutdown-pc', (req, res) => {
+  if (!IS_WIN && !IS_WSL) return res.status(400).json({ error: 'solo disponible en Windows/WSL' });
+  const shutdownBin = IS_WSL ? '/mnt/c/Windows/System32/shutdown.exe' : 'shutdown.exe';
+  execFile(shutdownBin, ['/s', '/t', '20', '/c', 'Apagado pedido desde Claude Chat Manager'], (err) => {
+    if (err) {
+      console.error('[shutdown-pc] no se pudo lanzar', shutdownBin, ':', err.message);
+      return res.status(500).json({ error: 'no se pudo apagar: ' + err.message });
+    }
+    res.json({ ok: true });
+  });
+});
+
 // Read-once: el cliente lo pregunta al abrir la PWA y, si hay algo, lo
 // muestra como toast y se borra acá mismo — así no vuelve a aparecer en el
 // próximo refresh ni queda pisando la lista de conversaciones.

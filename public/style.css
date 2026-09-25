@@ -1490,6 +1490,7 @@ dialog button:hover { background: var(--border); }
   border-radius: 50%; font-size: 18px; line-height: 1;
 }
 #cfg-restart-btn { color: var(--danger); border-color: var(--danger); flex-shrink: 0; }
+#cfg-shutdown-btn { background: var(--danger); color: #fff; border: none; flex-shrink: 0; }
 #cfg-reset { color: var(--danger); border-color: var(--danger); }
 #settings-dialog .settings-version {
   font-size: 12px; color: var(--text2); white-space: nowrap;
