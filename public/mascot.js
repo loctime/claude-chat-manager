@@ -313,6 +313,8 @@
   let lastFlingTime = 0;
   let lastImpactTime = 0;
   let dazedTimer = null;
+  let snapTimer = null;
+  let wasHardFlung = false;
 
   const HIT_PHRASES = [
     'Ay!',
@@ -395,7 +397,7 @@
     }, duration);
   }
 
-  // ── Drag & Drop + Fling Physics ──
+  // ── Drag & Drop + Fling Physics (Zero-G + Snap al borde) ──
 
   function cancelFling() {
     if (isFlinging) {
@@ -411,6 +413,84 @@
     }
   }
 
+  function getNearestEdgePosition(x, y) {
+    const wrap = document.getElementById('messages-wrap');
+    const widget = document.getElementById('mascot-widget');
+    if (!wrap || !widget) return { targetX: x, targetY: y };
+
+    const wrapW = wrap.clientWidth;
+    const wrapH = wrap.clientHeight;
+    const widgetW = widget.offsetWidth || 68;
+    const widgetH = widget.offsetHeight || 68;
+
+    const minX = 8;
+    const maxX = Math.max(minX, wrapW - widgetW - 8);
+    const minY = 8;
+    const maxY = Math.max(minY, wrapH - widgetH - 8);
+
+    const cx = Math.max(minX, Math.min(maxX, x));
+    const cy = Math.max(minY, Math.min(maxY, y));
+
+    const dLeft = cx - minX;
+    const dRight = maxX - cx;
+    const dTop = cy - minY;
+    const dBottom = maxY - cy;
+
+    const minD = Math.min(dLeft, dRight, dTop, dBottom);
+
+    let targetX = cx;
+    let targetY = cy;
+
+    if (minD === dLeft) {
+      targetX = minX;
+    } else if (minD === dRight) {
+      targetX = maxX;
+    } else if (minD === dTop) {
+      targetY = minY;
+    } else {
+      targetY = maxY;
+    }
+
+    return { targetX, targetY };
+  }
+
+  function snapToNearestEdge(currentX, currentY, wasFlung = false) {
+    cancelFling();
+
+    const widget = document.getElementById('mascot-widget');
+    if (!widget) return;
+
+    const { targetX, targetY } = getNearestEdgePosition(currentX, currentY);
+
+    clearTimeout(snapTimer);
+    widget.classList.add('snapping');
+    widget.style.left = `${targetX}px`;
+    widget.style.top = `${targetY}px`;
+    widget.style.right = 'auto';
+    widget.style.bottom = 'auto';
+
+    snapTimer = setTimeout(() => {
+      if (widget) {
+        widget.classList.remove('snapping');
+      }
+      saveCurrentPosition();
+
+      if (wasFlung && currentState === 'idle') {
+        currentVisual = 'thinking_6_clueless';
+        updateDOM();
+        showBubble('... qué viaje.', 1800);
+
+        clearTimeout(dazedTimer);
+        dazedTimer = setTimeout(() => {
+          if (currentState === 'idle' && !isDragging && !isFlinging) {
+            currentVisual = 'idle';
+            updateDOM();
+          }
+        }, 2000);
+      }
+    }, 290);
+  }
+
   function onPointerDown(e) {
     if (!isEnabled) return;
     if (e.button !== undefined && e.button !== 0) return;
@@ -420,7 +500,9 @@
     if (!widget || !wrap) return;
 
     cancelFling();
+    clearTimeout(snapTimer);
     clearTimeout(dazedTimer);
+    widget.classList.remove('snapping');
 
     isDragging = true;
     hasMoved = false;
@@ -503,10 +585,10 @@
       }
 
       const speed = Math.hypot(vx, vy);
-      if (speed > 260) {
+      if (speed > 160) {
         startFling(vx, vy);
       } else {
-        saveCurrentPosition();
+        snapToNearestEdge(widget.offsetLeft, widget.offsetTop, false);
       }
     } else {
       onMascotTap();
@@ -520,20 +602,26 @@
     if (widget) {
       widget.classList.remove('dragging');
       try { widget.releasePointerCapture(e.pointerId); } catch (_) {}
+      snapToNearestEdge(widget.offsetLeft, widget.offsetTop, false);
+    } else {
+      cancelFling();
     }
-    cancelFling();
-    saveCurrentPosition();
   }
 
   function startFling(vx, vy) {
     cancelFling();
+    clearTimeout(snapTimer);
 
     const widget = document.getElementById('mascot-widget');
     const wrap = document.getElementById('messages-wrap');
     if (!widget || !wrap) return;
 
+    widget.classList.remove('snapping');
+
     const initialSpeed = Math.hypot(vx, vy);
-    const maxSpeed = 2400;
+    wasHardFlung = initialSpeed > 500;
+
+    const maxSpeed = 2200;
     if (initialSpeed > maxSpeed) {
       const scale = maxSpeed / initialSpeed;
       vx *= scale;
@@ -550,7 +638,7 @@
 
     widget.classList.add('flinging');
 
-    if (currentState === 'idle') {
+    if (currentState === 'idle' && wasHardFlung) {
       currentVisual = 'working_6_pressure';
       updateDOM();
     }
@@ -587,11 +675,9 @@
     const dt = Math.min((now - lastFlingTime) / 1000, 0.05);
     lastFlingTime = now;
 
-    // Gravedad hacia abajo
-    flingVy += 1350 * dt;
-
-    // Fricción del aire
-    const airDecay = Math.pow(0.991, dt * 60);
+    // Sin gravedad: desplazamiento puro según dirección
+    // Fricción suave en el aire
+    const airDecay = Math.pow(0.965, dt * 60);
     flingVx *= airDecay;
     flingVy *= airDecay;
 
@@ -615,12 +701,12 @@
     if (posLeft <= minX) {
       posLeft = minX;
       impactSpeed = Math.max(impactSpeed, Math.abs(flingVx));
-      flingVx = -flingVx * 0.72;
+      flingVx = -flingVx * 0.78;
       hit = true;
     } else if (posLeft >= maxX) {
       posLeft = maxX;
       impactSpeed = Math.max(impactSpeed, Math.abs(flingVx));
-      flingVx = -flingVx * 0.72;
+      flingVx = -flingVx * 0.78;
       hit = true;
     }
 
@@ -628,18 +714,16 @@
     if (posTop <= minY) {
       posTop = minY;
       impactSpeed = Math.max(impactSpeed, Math.abs(flingVy));
-      flingVy = -flingVy * 0.70;
+      flingVy = -flingVy * 0.78;
       hit = true;
     } else if (posTop >= maxY) {
       posTop = maxY;
       impactSpeed = Math.max(impactSpeed, Math.abs(flingVy));
-      flingVy = -flingVy * 0.60;
-      // Fricción con el piso
-      flingVx *= Math.pow(0.90, dt * 60);
+      flingVy = -flingVy * 0.78;
       hit = true;
     }
 
-    if (hit && impactSpeed > 220 && now - lastImpactTime > 260) {
+    if (hit && impactSpeed > 200 && now - lastImpactTime > 240) {
       lastImpactTime = now;
       onWallImpact(impactSpeed);
     }
@@ -649,33 +733,14 @@
     widget.style.right = 'auto';
     widget.style.bottom = 'auto';
 
-    // Frenado completo si la velocidad es muy baja y está en el piso
+    // Cuando la velocidad baja (< 75 px/s), se acopla magnéticamente al borde más cercano
     const currentSpeed = Math.hypot(flingVx, flingVy);
-    if ((currentSpeed < 45 && posTop >= maxY - 4) || currentSpeed < 18) {
-      endFling();
+    if (currentSpeed < 75) {
+      snapToNearestEdge(posLeft, posTop, wasHardFlung);
       return;
     }
 
     flingRaf = requestAnimationFrame(stepFling);
-  }
-
-  function endFling() {
-    cancelFling();
-    saveCurrentPosition();
-
-    if (currentState === 'idle') {
-      currentVisual = 'thinking_6_clueless';
-      updateDOM();
-      showBubble('... qué viaje.', 1800);
-
-      clearTimeout(dazedTimer);
-      dazedTimer = setTimeout(() => {
-        if (currentState === 'idle' && !isDragging && !isFlinging) {
-          currentVisual = 'idle';
-          updateDOM();
-        }
-      }, 2000);
-    }
   }
 
   function saveCurrentPosition() {
@@ -748,11 +813,13 @@
   function resetPosition(e) {
     if (e) e.stopPropagation();
     cancelFling();
+    clearTimeout(snapTimer);
     clearTimeout(dazedTimer);
     const widget = document.getElementById('mascot-widget');
     if (!widget) return;
 
     localStorage.removeItem(POS_STORAGE_KEY);
+    widget.classList.remove('snapping');
     widget.style.left = '';
     widget.style.top = '';
     widget.style.right = '';
@@ -798,6 +865,7 @@
     if (!STATES.includes(state)) return;
 
     cancelFling();
+    clearTimeout(snapTimer);
     clearTimeout(dazedTimer);
     clearTimeout(tapVisualTimer);
 

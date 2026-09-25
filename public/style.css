@@ -930,6 +930,9 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
   transition: none !important;
   filter: drop-shadow(0 12px 24px rgba(0, 0, 0, .55));
 }
+#mascot-widget.snapping {
+  transition: left .28s cubic-bezier(.25, 1, .5, 1), top .28s cubic-bezier(.25, 1, .5, 1) !important;
+}
 #mascot-widget.hit-bounce {
   animation: mascot-impact .24s cubic-bezier(.17, .89, .32, 1.28);
 }
