@@ -295,13 +295,37 @@
     return getNextPhrase('working');
   }
 
-  // Drag & drop state
+  // Drag & drop & physics fling state
   let isDragging = false;
   let dragStartX = 0;
   let dragStartY = 0;
   let initialLeft = 0;
   let initialTop = 0;
   let hasMoved = false;
+
+  let velocitySamples = [];
+  let isFlinging = false;
+  let flingRaf = null;
+  let flingVx = 0;
+  let flingVy = 0;
+  let posLeft = 0;
+  let posTop = 0;
+  let lastFlingTime = 0;
+  let lastImpactTime = 0;
+  let dazedTimer = null;
+
+  const HIT_PHRASES = [
+    'Ay!',
+    'Pará un poco!',
+    'Qué hacés, animal!',
+    'Me rompiste un tornillo!',
+    'Bruto!',
+    'Dejá de revolearme!',
+    'Ojo con la pared!',
+    'La cabeza me diste!',
+    'Te voy a cobrar el arreglo!',
+    'Pará la mano!'
+  ];
 
   function init() {
     ALL_ANIMATIONS.forEach(st => {
@@ -371,7 +395,21 @@
     }, duration);
   }
 
-  // ── Drag & Drop ──
+  // ── Drag & Drop + Fling Physics ──
+
+  function cancelFling() {
+    if (isFlinging) {
+      isFlinging = false;
+      if (flingRaf) {
+        cancelAnimationFrame(flingRaf);
+        flingRaf = null;
+      }
+      const widget = document.getElementById('mascot-widget');
+      if (widget) {
+        widget.classList.remove('flinging');
+      }
+    }
+  }
 
   function onPointerDown(e) {
     if (!isEnabled) return;
@@ -380,6 +418,9 @@
     const widget = document.getElementById('mascot-widget');
     const wrap = document.getElementById('messages-wrap');
     if (!widget || !wrap) return;
+
+    cancelFling();
+    clearTimeout(dazedTimer);
 
     isDragging = true;
     hasMoved = false;
@@ -392,11 +433,19 @@
     initialLeft = widgetRect.left - wrapRect.left;
     initialTop = widgetRect.top - wrapRect.top;
 
+    velocitySamples = [{ x: e.clientX, y: e.clientY, time: performance.now() }];
+
     widget.setPointerCapture(e.pointerId);
   }
 
   function onPointerMove(e) {
     if (!isDragging) return;
+
+    const now = performance.now();
+    velocitySamples.push({ x: e.clientX, y: e.clientY, time: now });
+    while (velocitySamples.length > 1 && now - velocitySamples[0].time > 120) {
+      velocitySamples.shift();
+    }
 
     const dx = e.clientX - dragStartX;
     const dy = e.clientY - dragStartY;
@@ -441,7 +490,24 @@
     widget.classList.remove('dragging');
 
     if (hasMoved) {
-      saveCurrentPosition();
+      let vx = 0;
+      let vy = 0;
+      if (velocitySamples.length >= 2) {
+        const first = velocitySamples[0];
+        const last = velocitySamples[velocitySamples.length - 1];
+        const dt = (last.time - first.time) / 1000;
+        if (dt > 0.015) {
+          vx = (last.x - first.x) / dt;
+          vy = (last.y - first.y) / dt;
+        }
+      }
+
+      const speed = Math.hypot(vx, vy);
+      if (speed > 260) {
+        startFling(vx, vy);
+      } else {
+        saveCurrentPosition();
+      }
     } else {
       onMascotTap();
     }
@@ -454,6 +520,161 @@
     if (widget) {
       widget.classList.remove('dragging');
       try { widget.releasePointerCapture(e.pointerId); } catch (_) {}
+    }
+    cancelFling();
+    saveCurrentPosition();
+  }
+
+  function startFling(vx, vy) {
+    cancelFling();
+
+    const widget = document.getElementById('mascot-widget');
+    const wrap = document.getElementById('messages-wrap');
+    if (!widget || !wrap) return;
+
+    const initialSpeed = Math.hypot(vx, vy);
+    const maxSpeed = 2400;
+    if (initialSpeed > maxSpeed) {
+      const scale = maxSpeed / initialSpeed;
+      vx *= scale;
+      vy *= scale;
+    }
+
+    flingVx = vx;
+    flingVy = vy;
+    posLeft = widget.offsetLeft;
+    posTop = widget.offsetTop;
+    isFlinging = true;
+    lastFlingTime = performance.now();
+    lastImpactTime = 0;
+
+    widget.classList.add('flinging');
+
+    if (currentState === 'idle') {
+      currentVisual = 'working_6_pressure';
+      updateDOM();
+    }
+
+    flingRaf = requestAnimationFrame(stepFling);
+  }
+
+  function onWallImpact(speed) {
+    const widget = document.getElementById('mascot-widget');
+    if (widget) {
+      widget.classList.remove('hit-bounce');
+      void widget.offsetWidth;
+      widget.classList.add('hit-bounce');
+    }
+
+    if (currentState === 'idle') {
+      currentVisual = speed > 600 ? 'thinking_8_headache' : 'thinking_6_clueless';
+      updateDOM();
+    }
+
+    showBubble(randomChoice(HIT_PHRASES), 1300);
+  }
+
+  function stepFling(now) {
+    if (!isFlinging) return;
+
+    const widget = document.getElementById('mascot-widget');
+    const wrap = document.getElementById('messages-wrap');
+    if (!widget || !wrap) {
+      cancelFling();
+      return;
+    }
+
+    const dt = Math.min((now - lastFlingTime) / 1000, 0.05);
+    lastFlingTime = now;
+
+    // Gravedad hacia abajo
+    flingVy += 1350 * dt;
+
+    // Fricción del aire
+    const airDecay = Math.pow(0.991, dt * 60);
+    flingVx *= airDecay;
+    flingVy *= airDecay;
+
+    posLeft += flingVx * dt;
+    posTop += flingVy * dt;
+
+    const wrapW = wrap.clientWidth;
+    const wrapH = wrap.clientHeight;
+    const widgetW = widget.offsetWidth || 68;
+    const widgetH = widget.offsetHeight || 68;
+
+    const minX = 8;
+    const maxX = Math.max(minX, wrapW - widgetW - 8);
+    const minY = 8;
+    const maxY = Math.max(minY, wrapH - widgetH - 8);
+
+    let hit = false;
+    let impactSpeed = 0;
+
+    // Paredes laterales (X)
+    if (posLeft <= minX) {
+      posLeft = minX;
+      impactSpeed = Math.max(impactSpeed, Math.abs(flingVx));
+      flingVx = -flingVx * 0.72;
+      hit = true;
+    } else if (posLeft >= maxX) {
+      posLeft = maxX;
+      impactSpeed = Math.max(impactSpeed, Math.abs(flingVx));
+      flingVx = -flingVx * 0.72;
+      hit = true;
+    }
+
+    // Techo y piso (Y)
+    if (posTop <= minY) {
+      posTop = minY;
+      impactSpeed = Math.max(impactSpeed, Math.abs(flingVy));
+      flingVy = -flingVy * 0.70;
+      hit = true;
+    } else if (posTop >= maxY) {
+      posTop = maxY;
+      impactSpeed = Math.max(impactSpeed, Math.abs(flingVy));
+      flingVy = -flingVy * 0.60;
+      // Fricción con el piso
+      flingVx *= Math.pow(0.90, dt * 60);
+      hit = true;
+    }
+
+    if (hit && impactSpeed > 220 && now - lastImpactTime > 260) {
+      lastImpactTime = now;
+      onWallImpact(impactSpeed);
+    }
+
+    widget.style.left = `${posLeft}px`;
+    widget.style.top = `${posTop}px`;
+    widget.style.right = 'auto';
+    widget.style.bottom = 'auto';
+
+    // Frenado completo si la velocidad es muy baja y está en el piso
+    const currentSpeed = Math.hypot(flingVx, flingVy);
+    if ((currentSpeed < 45 && posTop >= maxY - 4) || currentSpeed < 18) {
+      endFling();
+      return;
+    }
+
+    flingRaf = requestAnimationFrame(stepFling);
+  }
+
+  function endFling() {
+    cancelFling();
+    saveCurrentPosition();
+
+    if (currentState === 'idle') {
+      currentVisual = 'thinking_6_clueless';
+      updateDOM();
+      showBubble('... qué viaje.', 1800);
+
+      clearTimeout(dazedTimer);
+      dazedTimer = setTimeout(() => {
+        if (currentState === 'idle' && !isDragging && !isFlinging) {
+          currentVisual = 'idle';
+          updateDOM();
+        }
+      }, 2000);
     }
   }
 
@@ -526,6 +747,8 @@
 
   function resetPosition(e) {
     if (e) e.stopPropagation();
+    cancelFling();
+    clearTimeout(dazedTimer);
     const widget = document.getElementById('mascot-widget');
     if (!widget) return;
 
@@ -535,6 +758,8 @@
     widget.style.right = '';
     widget.style.bottom = '';
 
+    currentVisual = 'idle';
+    updateDOM();
     showBubble('Al fin en mi rincón...', 1800);
     triggerPopAnimation();
   }
@@ -572,6 +797,8 @@
   function setState(state, toolName) {
     if (!STATES.includes(state)) return;
 
+    cancelFling();
+    clearTimeout(dazedTimer);
     clearTimeout(tapVisualTimer);
 
     if (state === 'working') {

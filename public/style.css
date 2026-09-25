@@ -925,6 +925,20 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
   filter: drop-shadow(0 12px 24px rgba(0, 0, 0, .55));
   transition: none !important;
 }
+#mascot-widget.flinging {
+  cursor: grabbing;
+  transition: none !important;
+  filter: drop-shadow(0 12px 24px rgba(0, 0, 0, .55));
+}
+#mascot-widget.hit-bounce {
+  animation: mascot-impact .24s cubic-bezier(.17, .89, .32, 1.28);
+}
+@keyframes mascot-impact {
+  0%   { transform: scale(1.35, .65); }
+  45%  { transform: scale(.8, 1.25); }
+  75%  { transform: scale(1.1, .92); }
+  100% { transform: scale(1, 1); }
+}
 #mascot-widget.tapped { animation: mascot-jump .55s ease; }
 #mascot-widget.state-pop { animation: mascot-pop .32s cubic-bezier(.34, 1.56, .64, 1); }
 .mascot-bubble {
@@ -995,7 +1009,7 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  #mascot-widget.tapped, #mascot-widget.state-pop { animation: none; }
+  #mascot-widget.tapped, #mascot-widget.state-pop, #mascot-widget.hit-bounce { animation: none; }
 }
 
 #empty-state {
