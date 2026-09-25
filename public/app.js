@@ -251,81 +251,7 @@ function flashConvRow(convId) {
   row.addEventListener('animationend', () => row.classList.remove('flash'), { once: true });
 }
 
-// ── Swipe hacia la derecha en el chat abierto (mobile): volver a la lista ──
-// Mismo patrón que initPaneSwipe de más abajo (axis-lock para no competir con
-// el scroll vertical de los mensajes, sigue el dedo en vivo, umbral al soltar)
-// pero de un solo sentido: acá no hay "página siguiente", solo cerrar.
-const CHAT_SWIPE_THRESHOLD = 80;
-let chatStartX = 0, chatStartY = 0, chatAxisLocked = null, chatDragging = false, chatCurrentTranslate = 0;
 
-function closeChatAfterSwipe() {
-  saveCurrentDraft();
-  const panel = $('panel-chat');
-  // Se saca la clase y el estilo inline en el mismo tick (no en dos pasos)
-  // para que la transición CSS de .25s arranque desde donde el dedo lo soltó
-  // hacia afuera, en vez de "saltar" primero de vuelta al centro.
-  panel.classList.remove('open');
-  panel.style.transition = '';
-  panel.style.transform = '';
-  flashConvRow(currentConv);
-  // history.back() solo para mantener sincronizado el historial (mismo motivo
-  // que closeChat() de arriba) — chatClosedBySwipe le avisa al popstate que
-  // esto ya lo resolvimos acá (ver su declaración, más abajo).
-  if (isMobile() && history.state && history.state.view === 'chat') {
-    chatClosedBySwipe = true;
-    history.back();
-  }
-}
-
-function initChatSwipe() {
-  const panel = $('panel-chat');
-
-  panel.addEventListener('touchstart', e => {
-    if (!isMobile() || !panel.classList.contains('open')) return;
-    // No competir con el scroll horizontal propio de un bloque de código, ni
-    // con el modo selección múltiple de mensajes (ahí el tap ya hace otra cosa).
-    if (e.target.closest('pre') || selectMode) return;
-    const t = e.touches[0];
-    chatStartX = t.clientX; chatStartY = t.clientY;
-    chatAxisLocked = null;
-    chatDragging = true;
-    chatCurrentTranslate = 0;
-    panel.style.transition = 'none';
-  }, { passive: true });
-
-  panel.addEventListener('touchmove', e => {
-    if (!chatDragging) return;
-    const t = e.touches[0];
-    const dx = t.clientX - chatStartX;
-    const dy = t.clientY - chatStartY;
-    if (chatAxisLocked === null) {
-      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
-      chatAxisLocked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
-    }
-    if (chatAxisLocked !== 'x' || dx < 0) return; // solo se sigue el dedo hacia la derecha
-    chatCurrentTranslate = dx;
-    panel.style.transform = `translateX(${dx}px)`;
-    e.preventDefault();
-  }, { passive: false });
-
-  function chatSwipeEnd() {
-    if (!chatDragging) return;
-    chatDragging = false;
-    if (chatAxisLocked === 'x' && chatCurrentTranslate > CHAT_SWIPE_THRESHOLD) {
-      closeChatAfterSwipe();
-    } else {
-      // No llegó al umbral (o el gesto terminó siendo vertical): vuelve a su
-      // lugar con la misma transición CSS de siempre, no con un salto.
-      panel.style.transition = '';
-      panel.style.transform = '';
-    }
-    chatAxisLocked = null;
-    chatCurrentTranslate = 0;
-  }
-  panel.addEventListener('touchend', chatSwipeEnd);
-  panel.addEventListener('touchcancel', chatSwipeEnd);
-}
-initChatSwipe();
 
 // Estado inicial: 'list' + varias entries de guarda para que popstate
 // nunca dispare en el borde del historial (donde Android cierra el PWA sin dar tiempo a re-armar).
@@ -347,17 +273,8 @@ for (let i = 0; i < 3; i++) history.pushState({ view: 'list-guard' }, '');
 // suelto mucho después de haber hecho otra cosa no debería cerrar de sorpresa.
 let _exitArmed = false;
 let _exiting = false;
-// El swipe hacia la derecha (initChatSwipe, más arriba) ya cierra el panel y
-// dispara el flash por su cuenta antes de llamar a history.back() — solo para
-// mantener sincronizado el conteo del historial (así el botón atrás de
-// Android no queda "un paso atrasado"). Sin esta bandera, el popstate que
-// dispara ese history.back() volvería a entrar al branch de abajo y, como ya
-// no encuentra la clase 'open' (la sacamos nosotros), lo tomaría como si ya
-// estuviéramos en la lista raíz — pisando el estado de "atrás para salir".
-let chatClosedBySwipe = false;
 window.addEventListener('popstate', (e) => {
   if (_exiting) return; // salida en curso — dejamos que el browser cierre
-  if (chatClosedBySwipe) { chatClosedBySwipe = false; return; } // ya lo resolvimos nosotros, solo faltaba este pop
   // Si hay algún menú/dialog abierto, cerrar y consumir el back — antes de
   // tocar el chat: un menú de mensaje (click derecho/long-press en una
   // burbuja) vive DENTRO de un chat abierto, así que tiene que cerrarse

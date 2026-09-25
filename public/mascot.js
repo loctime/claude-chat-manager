@@ -488,7 +488,7 @@
           }
         }, 2000);
       }
-    }, 290);
+    }, 580);
   }
 
   function onPointerDown(e) {
@@ -733,9 +733,9 @@
     widget.style.right = 'auto';
     widget.style.bottom = 'auto';
 
-    // Cuando la velocidad baja (< 75 px/s), se acopla magnéticamente al borde más cercano
+    // Cuando la velocidad baja (< 45 px/s), se acopla sutilmente al borde más cercano
     const currentSpeed = Math.hypot(flingVx, flingVy);
-    if (currentSpeed < 75) {
+    if (currentSpeed < 45) {
       snapToNearestEdge(posLeft, posTop, wasHardFlung);
       return;
     }
