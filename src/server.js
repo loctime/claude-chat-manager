@@ -246,10 +246,14 @@ async function syncSearchIndex(acc, { reason = 'timer' } = {}) {
       id: nb.id, name: nb.name, file: notes.notebookNotesFile(nb.id),
     }));
     const notas = await index.syncNotes(notebooks, NOTES_ACCOUNT);
+    const codex = await index.syncCodex(codexScanner.SESSIONS_DIR, acc);
+    const gemini = await index.syncGemini(geminiScanner.BASE_DIR, acc);
     // Solo logueamos cuando hubo trabajo real — si no, cada tick del timer
     // ensuciaría el log con "0 indexados".
-    if (chats.indexed || chats.removed || notas.indexed || notas.removed) {
-      console.log(`[search] sync ${acc} (${reason}): ${chats.indexed} chats, ${notas.indexed} notas, ${chats.removed + notas.removed} bajas, ${Date.now() - t0}ms`);
+    const totalIndexed = (chats.indexed || 0) + (notas.indexed || 0) + (codex.indexed || 0) + (gemini.indexed || 0);
+    const totalRemoved = (chats.removed || 0) + (notas.removed || 0) + (codex.removed || 0) + (gemini.removed || 0);
+    if (totalIndexed || totalRemoved) {
+      console.log(`[search] sync ${acc} (${reason}): ${chats.indexed} chats, ${codex.indexed} codex, ${gemini.indexed} gemini, ${notas.indexed} notas, ${totalRemoved} bajas, ${Date.now() - t0}ms`);
     }
   } catch (e) {
     console.error('[search] sync falló:', e.message);
@@ -1082,6 +1086,7 @@ codexRunner.on('status', s => {
   if (s.status === 'idle' && s.code === 0 && !s.cancelled) {
     narrateCodexResponse(s.convId);
     maybeGenerateCodexTitle(s.convId).catch(() => {});
+    syncSearchIndex(activeAccount, { reason: 'codex-turn' }).catch(() => {});
   }
   // Mismo criterio de "no leído" que ya usa Claude (ver runner.on('status', ...)
   // más arriba en este archivo): un turno terminó sin nadie mirando esta convId
@@ -1533,40 +1538,95 @@ app.get('/api/search', (req, res) => {
   const q = (req.query.q || '').toString().trim();
   if (!q) return res.json({ results: [] });
   const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
-  // Scope: parado en chats busca chats, parado en libretas busca notas.
-  const kind = req.query.kind === 'note' ? 'note' : 'chat';
+  const rawKind = (req.query.kind || 'all').toString();
+  const kind = (rawKind === 'chat' || rawKind === 'codex' || rawKind === 'gemini' || rawKind === 'note') ? rawKind : 'all';
   const includeTools = req.query.tools === '1';
+  const sortBy = req.query.sort === 'relevance' ? 'relevance' : 'recent';
 
-  if (kind === 'note') {
-    if (!index) return res.json({ results: [], degraded: true });
-    const results = index.search(q, { kind: 'note', account: NOTES_ACCOUNT, limit });
-    return res.json({ results });
+  if (!index) {
+    if (kind === 'note') return res.json({ results: [], degraded: true });
+    const fallbackResults = scanner.searchSessions(q, { limit, projectsDir: accountProjectsDir(acc) });
+    return res.json({ results: fallbackResults, degraded: true });
   }
 
-  // Sin índice (Node sin node:sqlite) el buscador sigue andando con el scan
-  // lineal de siempre: más lento y sin tildes, pero no deja al usuario a pie.
-  const results = index
-    ? index.search(q, { kind: 'chat', account: acc, limit, includeTools })
-    : scanner.searchSessions(q, { limit, projectsDir: accountProjectsDir(acc) });
+  const results = index.search(q, {
+    kind,
+    account: acc,
+    limit,
+    includeTools,
+    sortBy,
+    notesAccount: NOTES_ACCOUNT,
+  });
 
-  // Anotar convId real (si existe conversación con nombre custom) para poder abrirla.
-  const data = meta.load(accountMetaFile(acc));
-  const bySessionId = new Map();
-  for (const [convId, c] of Object.entries(data.conversations)) {
-    bySessionId.set(c.currentSessionId, { convId, name: c.name });
+  const claudeData = meta.load(accountMetaFile(acc));
+  const byClaudeSessionId = new Map();
+  for (const [convId, c] of Object.entries(claudeData.conversations || {})) {
+    if (c.currentSessionId) byClaudeSessionId.set(c.currentSessionId, { convId, name: c.name, project: c.project, model: c.model, lastModel: c.lastModel, cwd: c.projectDir });
   }
+
+  let byCodexSessionId = null;
+  let byGeminiSessionId = null;
+
   const enriched = results.map(r => {
-    const ref = bySessionId.get(r.sessionId);
+    if (r.kind === 'note') {
+      return {
+        ...r,
+        displayName: r.name,
+      };
+    }
+
+    if (r.kind === 'codex') {
+      if (!byCodexSessionId) {
+        byCodexSessionId = new Map();
+        const codexData = meta.load(CODEX_META_FILE);
+        for (const [convId, c] of Object.entries(codexData.conversations || {})) {
+          if (c.currentSessionId) byCodexSessionId.set(c.currentSessionId, { convId, name: c.name, project: c.project, cwd: c.projectDir });
+        }
+      }
+      const ref = byCodexSessionId.get(r.sessionId);
+      const convId = ref ? ref.convId : r.sessionId;
+      return {
+        ...r,
+        convId,
+        displayName: (ref && ref.name) || r.name,
+        project: (ref && ref.project) || undefined,
+        cwd: (ref && ref.cwd) || r.cwd,
+      };
+    }
+
+    if (r.kind === 'gemini') {
+      if (!byGeminiSessionId) {
+        byGeminiSessionId = new Map();
+        const geminiData = meta.load(GEMINI_META_FILE);
+        for (const [convId, c] of Object.entries(geminiData.conversations || {})) {
+          if (c.currentSessionId) byGeminiSessionId.set(c.currentSessionId, { convId, name: c.name, project: c.project, model: c.model, cwd: c.projectDir });
+        }
+      }
+      const ref = byGeminiSessionId.get(r.sessionId);
+      const convId = ref ? ref.convId : r.sessionId;
+      return {
+        ...r,
+        convId,
+        displayName: (ref && ref.name) || r.name,
+        project: (ref && ref.project) || undefined,
+        model: (ref && ref.model) || undefined,
+        cwd: (ref && ref.cwd) || r.cwd,
+      };
+    }
+
+    const ref = byClaudeSessionId.get(r.sessionId);
     const convId = ref ? ref.convId : r.sessionId;
-    const conv = data.conversations[convId];
+    const conv = claudeData.conversations ? claudeData.conversations[convId] : null;
     return {
       ...r,
       convId,
       displayName: (ref && ref.name) || r.name,
       model: conv ? conv.model : null,
       lastModel: conv ? conv.lastModel : r.lastModel,
+      project: conv ? conv.project : undefined,
     };
   });
+
   res.json({ results: enriched, degraded: !index });
 });
 
@@ -1717,6 +1777,7 @@ geminiRunner.on('status', rawStatus => {
   if (status.status === 'idle' && !status.cancelled) {
     narrateGeminiResponse(status.convId);
     maybeGenerateGeminiTitle(status.convId).catch(() => {});
+    syncSearchIndex(activeAccount, { reason: 'gemini-turn' }).catch(() => {});
   }
   // Mismo criterio que Chats (ver comentario ahí): un turno terminó sin nadie
   // mirando esta convId por SSE → marcarla no leída. Faltaba acá — la pestaña

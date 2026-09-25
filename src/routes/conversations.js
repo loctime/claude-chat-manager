@@ -161,7 +161,6 @@ function createConversationsRouter({
     const convId = req.params.id;
     const text = (req.body.text || '').trim();
     if (!text) return res.status(400).json({ error: 'mensaje vacío' });
-    if (runner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación ya está procesando un mensaje' });
     if (compacting.has(convId)) return res.status(409).json({ error: 'esa conversación se está compactando' });
     const acc = req.body.account || getActiveAccount();
     const { data, conv, metaFile } = resolveConv(convId, acc);
@@ -213,7 +212,10 @@ function createConversationsRouter({
     // proyecto y projectDir quedó desactualizado — resolveCwd busca dónde vive
     // realmente la sesión ahora.
     const cwd = (conv.projectDir || '').startsWith('VPS: ') ? accountHomeDir(acc) : scanner.resolveCwd(conv, accountProjectsDir(acc));
-    runner.send({ convId, sessionId: conv.currentSessionId, cwd, text: outgoing, model: conv.model, account: acc });
+    runner.send({
+      convId, sessionId: conv.currentSessionId, cwd, text: outgoing, model: conv.model, account: acc,
+      resolveSessionId: () => meta.load(accountMetaFile(acc)).conversations[convId]?.currentSessionId,
+    });
     res.status(202).json({ queued: true });
   });
 

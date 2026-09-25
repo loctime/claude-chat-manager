@@ -403,3 +403,102 @@ test('un archivo reindexado dos veces no deja filas huérfanas', async () => {
   assert.equal(idx.search('tres', { kind: 'chat', account: 'locti' }).length, 1);
   idx.close();
 });
+
+// ── Codex y Gemini / Antigravity ──
+
+function makeCodexSessions(spec) {
+  const base = tmpDir('ccm-idx-codex-');
+  const dPath = path.join(base, '2026', '08', '01');
+  fs.mkdirSync(dPath, { recursive: true });
+  for (const [id, msgs] of Object.entries(spec)) {
+    const file = path.join(dPath, `rollout-2026-08-01T12-00-00-${id}.jsonl`);
+    const lines = [
+      JSON.stringify({ type: 'session_meta', payload: { session_id: id, cwd: '/home/x/codex' } }),
+      ...msgs.map(m => JSON.stringify({
+        type: 'response_item',
+        payload: { type: 'message', role: m.role, content: [{ type: 'text', text: m.text }] },
+        timestamp: m.ts || '2026-08-01T12:00:00.000Z',
+      })),
+    ];
+    fs.writeFileSync(file, lines.join('\n') + '\n');
+  }
+  return base;
+}
+
+function makeGeminiSessions(spec) {
+  const base = tmpDir('ccm-idx-gemini-');
+  for (const [id, msgs] of Object.entries(spec)) {
+    const logDir = path.join(base, 'brain', id, '.system_generated', 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    const file = path.join(logDir, 'transcript_full.jsonl');
+    const lines = msgs.map(m => JSON.stringify({
+      type: m.role === 'user' ? 'USER_INPUT' : 'PLANNER_RESPONSE',
+      content: m.text,
+      created_at: m.ts || '2026-08-01T14:00:00.000Z',
+    }));
+    fs.writeFileSync(file, lines.join('\n') + '\n');
+  }
+  return base;
+}
+
+test('syncCodex indexa sesiones de codex y las encuentra', async () => {
+  const codexDir = makeCodexSessions({
+    'c1-session': [{ role: 'user', text: 'implementar el cache lru' }],
+  });
+  const idx = openIndex(':memory:');
+  await idx.syncCodex(codexDir, 'locti');
+
+  const hits = idx.search('cache', { kind: 'codex', account: 'locti' });
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].kind, 'codex');
+  assert.equal(hits[0].sessionId, 'c1-session');
+  assert.match(hits[0].snippet, /cache/);
+  idx.close();
+});
+
+test('syncGemini indexa sesiones de antigravity y las encuentra', async () => {
+  const geminiDir = makeGeminiSessions({
+    'g1-session': [{ role: 'user', text: 'analizar el reporte mensual' }],
+  });
+  const idx = openIndex(':memory:');
+  await idx.syncGemini(geminiDir, 'locti');
+
+  const hits = idx.search('reporte', { kind: 'gemini', account: 'locti' });
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].kind, 'gemini');
+  assert.equal(hits[0].sessionId, 'g1-session');
+  assert.match(hits[0].snippet, /reporte/);
+  idx.close();
+});
+
+test('search con kind all encuentra chats, codex, gemini y notas unificados', async () => {
+  const idx = openIndex(':memory:');
+  await idx.syncChats(makeProjects({ p: { 's1.jsonl': [userEntry('proyecto cafeteria en chat')] } }), 'locti');
+  await idx.syncNotes(makeNotebooks({ 'nb-1': { name: 'Libreta', entries: [noteEntry('proyecto cafeteria en nota')] } }), '__local__');
+  await idx.syncCodex(makeCodexSessions({ 'c1': [{ role: 'user', text: 'proyecto cafeteria en codex' }] }), 'locti');
+  await idx.syncGemini(makeGeminiSessions({ 'g1': [{ role: 'user', text: 'proyecto cafeteria en gemini' }] }), 'locti');
+
+  const allHits = idx.search('cafeteria', { kind: 'all', account: 'locti', notesAccount: '__local__' });
+  assert.equal(allHits.length, 4);
+  const kinds = allHits.map(h => h.kind).sort();
+  assert.deepEqual(kinds, ['chat', 'codex', 'gemini', 'note']);
+  idx.close();
+});
+
+test('search con sortBy recent ordena por fecha mas reciente primero', async () => {
+  const idx = openIndex(':memory:');
+  await idx.syncChats(makeProjects({
+    p: {
+      'viejo.jsonl': [userEntry('autenticacion jwt', '2026-01-01T10:00:00.000Z')],
+      'medio.jsonl': [userEntry('autenticacion jwt', '2026-05-01T10:00:00.000Z')],
+      'nuevo.jsonl': [userEntry('autenticacion jwt', '2026-09-01T10:00:00.000Z')],
+    },
+  }), 'locti');
+
+  const hits = idx.search('autenticacion', { kind: 'chat', account: 'locti', sortBy: 'recent' });
+  assert.equal(hits.length, 3);
+  assert.equal(hits[0].sessionId, 'nuevo');
+  assert.equal(hits[1].sessionId, 'medio');
+  assert.equal(hits[2].sessionId, 'viejo');
+  idx.close();
+});

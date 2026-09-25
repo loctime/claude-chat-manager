@@ -264,11 +264,26 @@
   <!-- Modal de búsqueda -->
   <dialog id="search-dialog">
     <form id="search-form" method="dialog">
-      <input id="search-input" type="search" placeholder="Buscar en todas las conversaciones… (Ctrl+K)" autocomplete="off">
-      <label id="search-tools-label">
-        <input type="checkbox" id="search-tools">
-        Incluir herramientas
-      </label>
+      <input id="search-input" type="search" placeholder="Buscar en conversaciones y notas… (Ctrl+K)" autocomplete="off">
+      <div id="search-options-bar">
+        <div id="search-kind-pills" role="radiogroup" aria-label="Filtrar por origen">
+          <button type="button" class="search-pill active" data-kind="all">Todos</button>
+          <button type="button" class="search-pill" data-kind="chat">Claude</button>
+          <button type="button" class="search-pill" data-kind="codex">Codex</button>
+          <button type="button" class="search-pill" data-kind="gemini">AgY</button>
+          <button type="button" class="search-pill" data-kind="note">Notas</button>
+        </div>
+        <div id="search-extra-options">
+          <select id="search-sort" aria-label="Ordenar por">
+            <option value="recent">Más recientes</option>
+            <option value="relevance">Más relevantes</option>
+          </select>
+          <label id="search-tools-label">
+            <input type="checkbox" id="search-tools">
+            Herramientas
+          </label>
+        </div>
+      </div>
       <div id="search-results"></div>
       <div id="search-hint">Enter para abrir el primer resultado · Esc para cerrar</div>
     </form>
@@ -544,7 +559,7 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=112"></script>
+  <script src="app.js?v=113"></script>
   <!-- Split de app.js por dominio (sesión 2026-08-20) — scripts clásicos, no
        ES modules: siguen compartiendo el mismo scope global que app.js, por
        eso cargan DESPUÉS (usan $()/settings/selectConv/etc. definidos ahí).
@@ -556,11 +571,11 @@
   <script src="lightbox.js?v=66"></script>
   <script src="sessions-cleanup.js?v=69"></script>
   <script src="suggest.js?v=1"></script>
-  <script src="gemini.js?v=5"></script>
-  <script src="codex.js?v=5"></script>
+  <script src="gemini.js?v=6"></script>
+  <script src="codex.js?v=6"></script>
   <script src="notes.js?v=1"></script>
   <script src="agenda.js?v=1"></script>
-  <script src="sala.js?v=1"></script>
+  <script src="sala.js?v=2"></script>
   <script src="settings-dialog.js?v=2"></script>
 </body>
 </html>

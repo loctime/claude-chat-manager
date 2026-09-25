@@ -74,6 +74,14 @@ test('con selfPort, el prompt final incluye el aviso de infraestructura y el con
   assert.match(prompt, /CONTRATO DE RUTAS/);
 });
 
+test('comando interno crudo no agrega avisos al /compact', () => {
+  const spawned = [];
+  const r = makeRunner(spawned, { selfPort: 3777 });
+  r.send({ convId: 'c1', sessionId: 's1', cwd: 'C:\\p', text: '/compact', rawPrompt: true });
+  const prompt = spawned[0].args[spawned[0].args.length - 1];
+  assert.equal(prompt, '/compact');
+});
+
 test('command siempre incluye --dangerously-bypass-approvals-and-sandbox y --json', () => {
   const spawned = [];
   const r = makeRunner(spawned);
@@ -223,4 +231,22 @@ test('por defecto no limita los turnos de conversaciones Codex distintas', () =>
   r.send({ convId: 'c2', cwd: 'C:\\p', text: 'b' });
   r.send({ convId: 'c3', cwd: 'C:\\p', text: 'c' });
   assert.equal(spawned.length, 3);
+});
+
+test('serializa dos mensajes del mismo thread aunque haya cupo global', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  r.send({ convId: 'c1', sessionId: 's1', cwd: 'C:\\p', text: 'uno' });
+  r.send({ convId: 'c1', sessionId: 's1', cwd: 'C:\\p', text: 'dos' });
+  assert.equal(spawned.length, 1);
+  spawned[0].child.emit('close', 0);
+  assert.equal(spawned.length, 2);
+});
+
+test('queueFollowup usa el comando nativo queue de Codex', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  assert.equal(r.queueFollowup({ sessionId: 'thread-1', cwd: 'C:\\p', text: 'seguí con esto' }), true);
+  assert.deepEqual(spawned[0].args.slice(0, 5), ['queue', '--thread', 'thread-1', '--message', 'seguí con esto']);
+  assert.ok(spawned[0].args.includes('-C'));
 });

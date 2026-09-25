@@ -220,7 +220,17 @@ function roomMessageBubble(m) {
   const match = m.text.match(/^([^:\n]{1,40}): ([\s\S]*)$/);
   const author = match ? match[1] : m.author;
   const text = match ? match[2] : m.text;
-  const mine = author === USER_NAME || author === APP_NAME;
+  // `author` identifica la instancia (Jarvis/FerStark), no necesariamente a
+  // la persona. El servicio ya marca quién habló realmente con kind: un
+  // agente local puede llamarse Jarvis pero su burbuja nunca debe aparecer
+  // como mensaje del usuario.
+  const mine = m.kind === 'human'
+    ? true
+    : m.kind === 'agent'
+      ? false
+      // Compatibilidad con mensajes viejos, previos al campo kind: el nombre
+      // de la instancia propia es un agente; USER_NAME sí es el humano local.
+      : author === USER_NAME;
   return { author, text, role: mine ? 'user' : 'assistant' };
 }
 
@@ -313,7 +323,14 @@ function openSalaStream(convId) {
       if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
         const wrap = $('sala-messages');
         for (const b of ev.message.content) {
-          if (b.type === 'text' && b.text.trim()) addMsg('assistant', b.text, { container: wrap, composerId: 'sala-input' });
+          if (b.type === 'text' && b.text.trim()) {
+            addMsg('assistant', b.text, {
+              container: wrap,
+              composerId: 'sala-input',
+              author: APP_NAME,
+              authorColor: ROOM_AUTHOR_COLORS[0],
+            });
+          }
           else if (b.type === 'tool_use') addTool(b.name, b.input, '', { container: wrap });
         }
       }

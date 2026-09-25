@@ -3498,10 +3498,10 @@ function renderQueuedBar() {
 }
 
 function updateComposerLock() {
-  // Solo se bloquea si no hay conversación abierta, o si ya hay un mensaje
-  // en cola (tope de uno) — con el turno corriendo pero la cola vacía, se
-  // puede seguir escribiendo/adjuntando normalmente.
-  const locked = !currentConv || (busy && queuedMessages.has(currentConv));
+  // La cola ahora vive en el servidor: puede recibir varios mensajes aunque
+  // esta pestaña se cierre o cambie de conversación. El composer se mantiene
+  // disponible mientras Claude trabaja; solo se bloquea sin charla abierta.
+  const locked = !currentConv;
   $('input').disabled = locked;
   $('send').disabled = locked;
   $('attach-btn').disabled = locked;
@@ -4312,7 +4312,7 @@ $('composer').onsubmit = async e => {
   const rawText = $('input').value.trim();
   if (currentGeminiConv) {
     const attachments = [...pendingAttachments];
-    if ((!rawText && attachments.length === 0) || geminiMainBusy) return;
+    if (!rawText && attachments.length === 0) return;
     let id = currentGeminiConv.id; const draft = currentGeminiConv;
     const attachmentText = attachments.map(a => `[Archivo adjunto disponible localmente: ${a.path}]`).join('\n');
     const text = attachmentText + (rawText ? (attachmentText ? '\n\n' : '') + rawText : '');
@@ -4344,7 +4344,7 @@ $('composer').onsubmit = async e => {
   }
   if (currentCodexConv) {
     const attachments = [...pendingAttachments];
-    if ((!rawText && attachments.length === 0) || codexMainBusy) return;
+    if (!rawText && attachments.length === 0) return;
     let convId = currentCodexConv.id;
     const draft = currentCodexConv;
     // El runner de Codex acepta una imagen por -i. Todos los adjuntos se
@@ -4394,14 +4394,8 @@ $('composer').onsubmit = async e => {
   drafts.delete(convId);
   clearAttachments();
 
-  if (busy) {
-    // Ya hay un turno corriendo: no pega al server, lo deja en cola (tope 1)
-    // y se dispara solo cuando ese turno termine (ver el handler de 'idle').
-    queueMessage(convId, rawText, attachments);
-    renderQueuedBar();
-    updateComposerLock();
-    return;
-  }
+  // El servidor serializa los turnos de esta conversación. Mandarlo ahora
+  // hace que la cola sobreviva a un cambio de dispositivo o de pestaña.
   await performSend(convId, rawText, attachments);
 };
 
@@ -4536,6 +4530,17 @@ document.addEventListener('keydown', e => {
 // una fila (ver Finding 2 del review final: con la lista llena de filas,
 // casi no queda fondo tocable para iniciar el swipe de pantalla).
 const PANE_SWIPE_THRESHOLD = 60;
+// Los ids de los panes son históricos (AgY=6, Codex=2), pero el carrusel se
+// navega en el orden que Diego ve en las pestañas. Reordenamos los nodos una
+// sola vez para que el arrastre también muestre el panel correcto durante la
+// animación, no solo al soltar el dedo. Archivado queda al final: se abre de
+// forma explícita, no forma parte del recorrido habitual.
+const PANE_DOM_ORDER = [0, 6, 3, 4, 5, 2, 1];
+const PANE_ELEMENT_IDS = { 0: 'tree', 1: 'tree-archived', 2: 'codex-pane', 3: 'tree-notes', 4: 'tree-agenda', 5: 'tree-sala', 6: 'gemini-pane' };
+const PANE_SWIPE_ORDER = [0, 6, 3, 4, 5, 2];
+const PANE_POSITION = Object.fromEntries(PANE_DOM_ORDER.map((pane, position) => [pane, position]));
+const paneInnerForOrder = $('tree-viewport-inner');
+PANE_DOM_ORDER.forEach(pane => paneInnerForOrder.appendChild($(PANE_ELEMENT_IDS[pane])));
 let paneStartX = 0, paneStartY = 0, paneAxisLocked = null, paneDragging = false, paneCurrentTranslate = 0, paneNavigating = false;
 
 function paneViewportWidth() {
@@ -4544,6 +4549,8 @@ function paneViewportWidth() {
 
 function paneSwipeStart(clientX, clientY) {
   if (paneNavigating) return false; // no arrancar un gesto nuevo con una navegación en curso
+  // Archivado no participa del recorrido normal de tabs.
+  if (!PANE_SWIPE_ORDER.includes(activePane)) return false;
   paneStartX = clientX; paneStartY = clientY;
   paneAxisLocked = null;
   paneDragging = true;
@@ -4551,7 +4558,13 @@ function paneSwipeStart(clientX, clientY) {
   return true;
 }
 
-const PANE_COUNT = 7; // Chats/Archivado/Codex/Notas/Agenda/Sala/Gemini.
+function visiblePaneSwipeOrder() {
+  return PANE_SWIPE_ORDER.filter(isPaneVisible);
+}
+
+function paneTranslateFor(pane) {
+  return -PANE_POSITION[pane] * paneViewportWidth();
+}
 
 function paneSwipeMove(clientX, clientY) {
   if (!paneDragging) return false;
@@ -4562,8 +4575,9 @@ function paneSwipeMove(clientX, clientY) {
     paneAxisLocked = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
   }
   if (paneAxisLocked !== 'x') return false;
-  const base = -activePane * paneViewportWidth();
-  const min = -(PANE_COUNT - 1) * paneViewportWidth();
+  const order = visiblePaneSwipeOrder();
+  const base = paneTranslateFor(activePane);
+  const min = paneTranslateFor(order[order.length - 1]);
   paneCurrentTranslate = Math.min(0, Math.max(min, base + dx));
   $('tree-viewport-inner').style.transform = `translateX(${paneCurrentTranslate}px)`;
   return true;
@@ -4576,15 +4590,17 @@ async function paneSwipeEnd() {
 
   try {
     if (paneAxisLocked === 'x') {
-      const base = -activePane * paneViewportWidth();
+      const order = visiblePaneSwipeOrder();
+      const currentIndex = order.indexOf(activePane);
+      const base = paneTranslateFor(activePane);
       const delta = paneCurrentTranslate - base;
       // Navigate first (await if async), THEN clear inline styles so CSS attribute transform can take over
-      if (delta < -PANE_SWIPE_THRESHOLD && activePane < PANE_COUNT - 1) {
+      if (delta < -PANE_SWIPE_THRESHOLD && currentIndex >= 0 && currentIndex < order.length - 1) {
         paneNavigating = true;
-        await goToPane(activePane + 1);
-      } else if (delta > PANE_SWIPE_THRESHOLD && activePane > 0) {
+        await goToPane(order[currentIndex + 1]);
+      } else if (delta > PANE_SWIPE_THRESHOLD && currentIndex > 0) {
         paneNavigating = true;
-        await goToPane(activePane - 1);
+        await goToPane(order[currentIndex - 1]);
       }
     }
   } finally {

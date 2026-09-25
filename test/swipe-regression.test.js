@@ -28,3 +28,10 @@ test('las pestañas conservan el orden visual elegido', () => {
   const css = fs.readFileSync(path.join(root, 'public', 'style.css'), 'utf8');
   assert.doesNotMatch(css, /\.pane-tab\[data-pane="2"\]\s*\{\s*order:/);
 });
+
+test('el swipe usa el mismo orden que las pestañas visibles y deja Archivado afuera', () => {
+  const app = fs.readFileSync(path.join(root, 'public', 'app.js'), 'utf8');
+  assert.match(app, /const PANE_SWIPE_ORDER = \[0, 6, 3, 4, 5, 2\]/);
+  assert.match(app, /await goToPane\(order\[currentIndex \+ 1\]\)/);
+  assert.match(app, /await goToPane\(order\[currentIndex - 1\]\)/);
+});

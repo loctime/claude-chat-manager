@@ -340,11 +340,9 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
 }
 
 #tree-viewport { flex: 1; overflow: hidden; position: relative; }
-/* Carrusel móvil: Chats → Archivado → Codex → Notas → Agenda → Sala (6 paneles —
-   Escáner se sacó de la navegación por swipe, ver commit de Diego
-   "simplificar navegación móvil"; Agenda sumada 07/09/2026, Sala sumada
-   08/09/2026 — cada pane nuevo agranda el ancho del contenedor un 100%
-   más y recalcula los translateX a k/N, N = cantidad total de paneles). */
+/* Carrusel móvil: Chats → AgY → Notas → Task → Sala → Codex. Archivado queda
+   al final y se abre explícitamente; no forma parte del swipe normal. Los ids
+   de pane son históricos, por eso los translateX no siguen el valor numérico. */
 #tree-viewport-inner {
   display: flex;
   width: 700%;
@@ -352,12 +350,12 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
   transition: transform .25s ease;
   touch-action: pan-y;
 }
-#tree-viewport-inner[data-pane="1"] { transform: translateX(calc(-100% / 7)); }
-#tree-viewport-inner[data-pane="2"] { transform: translateX(calc(-200% / 7)); }
-#tree-viewport-inner[data-pane="3"] { transform: translateX(calc(-300% / 7)); }
-#tree-viewport-inner[data-pane="4"] { transform: translateX(calc(-400% / 7)); }
-#tree-viewport-inner[data-pane="5"] { transform: translateX(calc(-500% / 7)); }
-#tree-viewport-inner[data-pane="6"] { transform: translateX(calc(-600% / 7)); }
+#tree-viewport-inner[data-pane="6"] { transform: translateX(calc(-100% / 7)); }
+#tree-viewport-inner[data-pane="3"] { transform: translateX(calc(-200% / 7)); }
+#tree-viewport-inner[data-pane="4"] { transform: translateX(calc(-300% / 7)); }
+#tree-viewport-inner[data-pane="5"] { transform: translateX(calc(-400% / 7)); }
+#tree-viewport-inner[data-pane="2"] { transform: translateX(calc(-500% / 7)); }
+#tree-viewport-inner[data-pane="1"] { transform: translateX(calc(-600% / 7)); }
 .tree-pane { width: calc(100% / 7); flex: none; height: 100%; overflow-y: auto; }
 .tree-pane::-webkit-scrollbar { width: 4px; }
 .tree-pane::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
@@ -2150,15 +2148,68 @@ body.hide-tools details.tool { display: none !important; }
   font-size: 16px;
   outline: none;
 }
+#search-options-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+#search-kind-pills {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.search-pill {
+  background: var(--input-bg);
+  color: var(--text2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.search-pill:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.search-pill.active {
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+#search-extra-options {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+#search-sort {
+  background: var(--input-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 3px 8px;
+  font-size: 12px;
+  outline: none;
+  cursor: pointer;
+}
+#search-sort:focus {
+  border-color: var(--accent);
+}
 #search-tools-label {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 14px;
-  font-size: 13px;
+  gap: 6px;
+  font-size: 12px;
   color: var(--text2);
-  border-bottom: 1px solid var(--border);
   cursor: pointer;
+  user-select: none;
 }
 #search-tools-label[hidden] { display: none; }
 #search-tools { accent-color: var(--accent); margin: 0; }
@@ -2184,7 +2235,46 @@ body.hide-tools details.tool { display: none !important; }
   cursor: pointer;
 }
 .search-result:hover, .search-result:focus { background: var(--input-bg); outline: none; }
-.search-name { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+.search-name {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+.search-name-text { flex: 1; min-width: 0; }
+.search-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  line-height: 1.4;
+}
+.search-badge-chat {
+  background: rgba(37, 211, 102, 0.18);
+  color: var(--claude-accent, #25d366);
+  border: 1px solid rgba(37, 211, 102, 0.35);
+}
+.search-badge-codex {
+  background: rgba(16, 163, 127, 0.18);
+  color: var(--codex-accent, #10a37f);
+  border: 1px solid rgba(16, 163, 127, 0.35);
+}
+.search-badge-gemini {
+  background: rgba(124, 92, 255, 0.18);
+  color: var(--antigravity-accent, #7c5cff);
+  border: 1px solid rgba(124, 92, 255, 0.35);
+}
+.search-badge-note {
+  background: rgba(245, 158, 11, 0.18);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
 .search-snippet { font-size: 13px; color: var(--text2); line-height: 1.4; margin-bottom: 4px; word-wrap: break-word; }
 .search-snippet mark { background: rgba(37,211,102,.25); color: var(--text); padding: 0 2px; border-radius: 2px; }
 .search-meta { font-size: 11px; color: var(--text2); opacity: .7; }

@@ -53,26 +53,56 @@ class CodexRunner extends EventEmitter {
 
   _drain() {
     while (this.running.size < this.max && this.queue.length > 0) {
-      this._start(this.queue.shift());
+      // `codex exec resume` no admite dos turnos simultáneos para el mismo
+      // thread. El límite por defecto sigue siendo infinito ENTRE charlas.
+      const next = this.queue.findIndex(job => !this.running.has(job.convId));
+      if (next < 0) break;
+      this._start(this.queue.splice(next, 1)[0]);
+    }
+  }
+
+  // Codex CLI tiene una cola propia, persistida sobre el thread activo. Es
+  // preferible a relanzar `exec resume`: el agente termina lo que estaba
+  // haciendo y lee el follow-up sin cancelar ni competir por la sesión.
+  queueFollowup({ sessionId, text, cwd, imagePath }) {
+    if (!sessionId || !text) return false;
+    const args = ['queue', '--thread', sessionId, '--message', text];
+    if (cwd) args.push('-C', cwd);
+    if (imagePath) args.push('-i', imagePath);
+    const isNodeScript = /\.[cm]?js$/i.test(this.command);
+    const spawnCmd = isNodeScript ? process.execPath : this.command;
+    const spawnArgs = isNodeScript ? [this.command, ...args] : args;
+    try {
+      const child = this.spawnFn(spawnCmd, spawnArgs, { cwd, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+      // No es el proceso del turno: solo registra el mensaje en Codex. Evitar
+      // un EventEmitter error sin listener si el binario no puede arrancar.
+      child.on?.('error', () => {});
+      return true;
+    } catch {
+      return false;
     }
   }
 
   _start(job) {
     const promptParts = [job.text];
-    if (this.selfPort) {
+    // Los slash commands internos (por ahora /compact) deben viajar solos.
+    // Si les agregamos el aviso de infraestructura después, Codex los toma
+    // como un prompt normal y no como comando nativo.
+    if (this.selfPort && !job.rawPrompt) {
       const host = this.selfHost || '127.0.0.1';
       promptParts.push(infraNotice(host, this.selfPort));
       promptParts.push(pathContract());
     }
     const prompt = promptParts.join('\n\n');
 
+    const sessionId = job.sessionId || job.resolveSessionId?.();
     const sub = ['exec'];
-    if (job.sessionId) sub.push('resume', job.sessionId);
+    if (sessionId) sub.push('resume', sessionId);
     const args = [...sub, '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox'];
     // `codex exec` accepts -C, but `codex exec resume <session>` does not.
     // spawn() already uses job.cwd, so resumed turns keep the same directory
     // without passing an unsupported CLI flag.
-    if (job.cwd && !job.sessionId) args.push('-C', job.cwd);
+    if (job.cwd && !sessionId) args.push('-C', job.cwd);
     if (job.imagePath) args.push('-i', job.imagePath);
     // En Codex CLI para Windows, un prompt posicional después de flags como
     // `-i` puede terminar interpretándose como stdin. Como este runner cierra

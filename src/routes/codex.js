@@ -155,10 +155,10 @@ function createCodexRouter({
     const convId = req.params.id;
     const text = (req.body.text || '').trim();
     if (!text) return res.status(400).json({ error: 'mensaje vacío' });
-    if (codexRunner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación ya está procesando un mensaje' });
     const data = meta.load(codexMetaFile);
     const conv = data.conversations[convId];
     if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+    const wasRunning = codexRunner.running.has(convId);
     if (!conv.gitRepo) {
       const inferredRepo = await inferRepoFromMessage(text);
       if (inferredRepo) {
@@ -178,7 +178,30 @@ function createCodexRouter({
       meta.save(data, codexMetaFile);
     }
     const cwd = conv.projectDir || os.homedir();
-    codexRunner.send({ convId, sessionId: conv.currentSessionId, cwd, text: outgoing, imagePath: req.body.imagePath || undefined });
+    const imagePath = req.body.imagePath || undefined;
+    // Cuando el thread ya existe, usar la cola nativa de Codex: lo recibe el
+    // proceso que está trabajando, sin interrumpirlo. En el primer turno aún
+    // no hay thread_id; el runner lo retiene y lo ejecuta serialmente.
+    if (wasRunning && conv.currentSessionId && codexRunner.queueFollowup({ sessionId: conv.currentSessionId, cwd, text: outgoing, imagePath })) {
+      return res.status(202).json({ queued: true, nativeQueue: true });
+    }
+    codexRunner.send({
+      convId, sessionId: conv.currentSessionId, cwd, text: outgoing, imagePath,
+      resolveSessionId: () => meta.load(codexMetaFile).conversations[convId]?.currentSessionId,
+    });
+    res.status(202).json({ queued: true, nativeQueue: false });
+  });
+
+  // /compact es un comando nativo de Codex CLI. Conserva la sesión y reduce
+  // el contexto que arrastra, no genera un resumen como respuesta normal.
+  router.post('/conversations/:id/compact', (req, res) => {
+    const convId = req.params.id;
+    if (codexRunner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación está procesando una tarea' });
+    const data = meta.load(codexMetaFile);
+    const conv = data.conversations[convId];
+    if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
+    if (!conv.currentSessionId) return res.status(400).json({ error: 'todavía no hay contexto para compactar' });
+    codexRunner.send({ convId, sessionId: conv.currentSessionId, cwd: conv.projectDir || os.homedir(), text: '/compact', rawPrompt: true });
     res.status(202).json({ queued: true });
   });
 

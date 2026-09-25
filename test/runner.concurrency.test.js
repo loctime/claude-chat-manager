@@ -104,6 +104,26 @@ test('cerrar múltiples jobs seguidos drena la cola sin quedar atascada', () => 
   assert.equal(r.queue.length, 0);
 });
 
+test('dos mensajes de la misma conversación nunca corren en paralelo', () => {
+  const { r, spawned } = makeRunner();
+  r.send({ convId: 'c1', sessionId: 's1', cwd: '/t', text: 'primero' });
+  r.send({ convId: 'c1', sessionId: 's1', cwd: '/t', text: 'segundo' });
+  assert.equal(spawned.length, 1);
+  spawned[0].child.emit('close', 0);
+  assert.equal(spawned.length, 2);
+});
+
+test('un follow-up encolado antes del init retoma la sesión que apareció después', () => {
+  const { r, spawned } = makeRunner();
+  let sessionId = null;
+  r.send({ convId: 'c1', cwd: '/t', text: 'primero' });
+  r.send({ convId: 'c1', cwd: '/t', text: 'segundo', resolveSessionId: () => sessionId });
+  sessionId = 'session-creada-por-el-primer-turno';
+  spawned[0].child.emit('close', 0);
+  assert.ok(spawned[1].args.includes('--resume'));
+  assert.equal(spawned[1].args[spawned[1].args.indexOf('--resume') + 1], sessionId);
+});
+
 test('max=1 serializa completamente los jobs', () => {
   const { r, spawned } = makeRunner({ max: 1 });
   r.send({ convId: 'c1', sessionId: 's1', cwd: '/t', text: 'a' });

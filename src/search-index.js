@@ -12,6 +12,8 @@
 const fs = require('fs');
 const path = require('path');
 const scanner = require('./scanner');
+const codexScanner = require('./codex-scanner');
+const geminiScanner = require('./gemini-scanner');
 
 // Node 22 tiene node:sqlite detrás de un flag de "experimental" y las máquinas
 // donde corre esto no están todas en la misma versión. Si falta, el server cae
@@ -21,15 +23,14 @@ try { ({ DatabaseSync } = require('node:sqlite')); } catch { /* sin sqlite: el c
 
 function sqliteAvailable() { return !!DatabaseSync; }
 
-// Cuánto pesa la antigüedad al ordenar. bm25 devuelve negativo (más negativo =
-// mejor match) y le sumamos una penalidad que crece con el log de los días, así
-// lo reciente sube sin que un match fuerte y viejo quede sepultado.
+// Cuánto pesa la antigüedad al ordenar por relevancia. bm25 devuelve negativo
+// (más negativo = mejor match) y le sumamos una penalidad que crece con el log
+// de los días, así lo reciente sube sin que un match fuerte y viejo quede sepultado.
 const AGE_WEIGHT = 0.35;
 
-// Candidatos que traemos de SQL antes de re-rankear por antigüedad en JS.
-// Sin este colchón el ajuste por fecha solo podría reordenar la página pedida.
+// Candidatos que traemos de SQL antes de re-rankear por fecha o relevancia en JS.
 const CANDIDATE_FACTOR = 6;
-const MAX_CANDIDATES = 500;
+const MAX_CANDIDATES = 1000;
 
 // Delimitadores del término encontrado dentro del snippet. Los pone FTS5, que
 // es el único que sabe qué matcheó realmente: el cliente no puede deducirlo
@@ -46,7 +47,7 @@ const YIELD_EVERY = 20;
 
 // Subir esto descarta el índice y lo reconstruye: es un cache derivado de los
 // .jsonl, así que regenerarlo siempre es más barato que migrarlo.
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sources (
@@ -172,6 +173,92 @@ function noteDocs(notebook) {
   };
 }
 
+function codexDocs(filePath) {
+  const entries = codexScanner.parseJsonl(filePath);
+  if (!entries.length) return null;
+  const meta = entries.find(e => e.type === 'session_meta' && e.payload);
+  const msgs = codexScanner.toChatMessages(entries);
+  if (!meta && msgs.length === 0) return null;
+  const sessionId = meta ? (meta.payload.session_id || meta.payload.id) : path.basename(filePath, '.jsonl').split('-').slice(-5).join('-');
+  const firstUser = msgs.find(m => m.role === 'user');
+  const snippet = firstUser ? firstUser.text.trim().slice(0, 60) : '(sin mensajes)';
+  const last = entries[entries.length - 1];
+  const lastActivity = (last && last.timestamp) || null;
+  const cwd = meta ? meta.payload.cwd : null;
+
+  const docs = [];
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    const ts = m.ts ? Date.parse(m.ts) : NaN;
+    const doc = {
+      msgIndex: i,
+      role: m.role,
+      tsMs: Number.isNaN(ts) ? (lastActivity ? Date.parse(lastActivity) : 0) : ts,
+      body: '',
+      tools: '',
+    };
+    if (m.role === 'tool') {
+      doc.tools = [m.name, stringifyInput(m.input)].filter(Boolean).join(' ');
+    } else {
+      doc.body = m.text || '';
+    }
+    if (doc.body || doc.tools) docs.push(doc);
+  }
+  if (!docs.length) return null;
+  return {
+    source: {
+      kind: 'codex',
+      refId: sessionId,
+      name: snippet,
+      cwd,
+      lastActivity,
+    },
+    docs,
+  };
+}
+
+function geminiDocs(filePath, sessionId, baseDir) {
+  const entries = geminiScanner.parseJsonl(filePath);
+  if (!entries.length) return null;
+  const msgs = geminiScanner.toChatMessages(entries);
+  if (!msgs.length) return null;
+  const firstUser = msgs.find(m => m.role === 'user');
+  const snippet = firstUser ? firstUser.text.trim().slice(0, 60) : '(sin mensajes)';
+  const last = msgs[msgs.length - 1];
+  const lastActivity = (last && last.ts) || null;
+  const workspace = geminiScanner.findSessionWorkspace(sessionId, baseDir);
+
+  const docs = [];
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    const ts = m.ts ? Date.parse(m.ts) : NaN;
+    const doc = {
+      msgIndex: i,
+      role: m.role,
+      tsMs: Number.isNaN(ts) ? (lastActivity ? Date.parse(lastActivity) : 0) : ts,
+      body: '',
+      tools: '',
+    };
+    if (m.role === 'tool') {
+      doc.tools = [m.name, stringifyInput(m.input)].filter(Boolean).join(' ');
+    } else {
+      doc.body = m.text || '';
+    }
+    if (doc.body || doc.tools) docs.push(doc);
+  }
+  if (!docs.length) return null;
+  return {
+    source: {
+      kind: 'gemini',
+      refId: sessionId,
+      name: snippet,
+      cwd: workspace,
+      lastActivity,
+    },
+    docs,
+  };
+}
+
 function openIndex(dbPath) {
   if (!DatabaseSync) throw new Error('node:sqlite no disponible en este Node');
   if (dbPath !== ':memory:') fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -196,6 +283,42 @@ function openIndex(dbPath) {
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
     insDoc: db.prepare('INSERT INTO docs (body, tools, path, kind, account, msg_index, role, ts_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
     getMeta: db.prepare('SELECT ref_id, name, cwd, last_activity FROM sources WHERE path = ?'),
+    searchAllWithAccounts: db.prepare(`
+      SELECT path, msg_index, role, ts_ms, kind,
+             snippet(docs, -1, '${HL_START}', '${HL_END}', '…', 12) AS snippet,
+             bm25(docs) AS rank
+      FROM docs
+      WHERE docs MATCH ? AND (account = ? OR account = ?)
+      ORDER BY rank
+      LIMIT ?
+    `),
+    searchAll: db.prepare(`
+      SELECT path, msg_index, role, ts_ms, kind,
+             snippet(docs, -1, '${HL_START}', '${HL_END}', '…', 12) AS snippet,
+             bm25(docs) AS rank
+      FROM docs
+      WHERE docs MATCH ?
+      ORDER BY rank
+      LIMIT ?
+    `),
+    searchKindWithAccount: db.prepare(`
+      SELECT path, msg_index, role, ts_ms, kind,
+             snippet(docs, -1, '${HL_START}', '${HL_END}', '…', 12) AS snippet,
+             bm25(docs) AS rank
+      FROM docs
+      WHERE docs MATCH ? AND kind = ? AND account = ?
+      ORDER BY rank
+      LIMIT ?
+    `),
+    searchKind: db.prepare(`
+      SELECT path, msg_index, role, ts_ms, kind,
+             snippet(docs, -1, '${HL_START}', '${HL_END}', '…', 12) AS snippet,
+             bm25(docs) AS rank
+      FROM docs
+      WHERE docs MATCH ? AND kind = ?
+      ORDER BY rank
+      LIMIT ?
+    `),
   };
 
   // Las filas de un archivo se insertan todas juntas y sin intercalar (esto es
@@ -292,11 +415,41 @@ function openIndex(dbPath) {
     return items;
   }
 
+  function codexItems(sessionsDir) {
+    const items = [];
+    const files = codexScanner.walkRolloutFiles ? codexScanner.walkRolloutFiles(sessionsDir) : [];
+    for (const file of files) {
+      items.push({ file, build: () => codexDocs(file) });
+    }
+    return items;
+  }
+
+  function geminiItems(baseDir) {
+    const items = [];
+    const brainDir = path.join(baseDir || geminiScanner.BASE_DIR, 'brain');
+    let dirs;
+    try { dirs = fs.readdirSync(brainDir); } catch { return items; }
+    for (const sessionId of dirs) {
+      const file = geminiScanner.findSessionTranscript(sessionId, baseDir || geminiScanner.BASE_DIR);
+      if (!file) continue;
+      items.push({ file, build: () => geminiDocs(file, sessionId, baseDir || geminiScanner.BASE_DIR) });
+    }
+    return items;
+  }
+
   return {
     db,
 
     syncChats(projectsDir, account, { onProgress, excludeSessionIds } = {}) {
       return syncSources('chat', account, chatItems(projectsDir, excludeSessionIds), onProgress);
+    },
+
+    syncCodex(sessionsDir, account, { onProgress } = {}) {
+      return syncSources('codex', account, codexItems(sessionsDir), onProgress);
+    },
+
+    syncGemini(baseDir, account, { onProgress } = {}) {
+      return syncSources('gemini', account, geminiItems(baseDir), onProgress);
     },
 
     // `notebooks` = [{ id, name, file }] — lo arma el caller desde el módulo de
@@ -306,30 +459,40 @@ function openIndex(dbPath) {
       return syncSources('note', account, items, onProgress);
     },
 
-    search(query, { kind = 'chat', account, limit = 50, includeTools = false } = {}) {
+    search(query, { kind = 'all', account, limit = 50, includeTools = false, sortBy = 'recent', notesAccount = '__local__' } = {}) {
       const match = buildMatchExpr(query, includeTools);
       if (!match) return [];
       const pool = Math.min(MAX_CANDIDATES, Math.max(limit, limit * CANDIDATE_FACTOR));
 
       let rows;
       try {
-        rows = db.prepare(`
-          SELECT path, msg_index, role, ts_ms,
-                 snippet(docs, -1, '${HL_START}', '${HL_END}', '…', 12) AS snippet,
-                 bm25(docs) AS rank
-          FROM docs
-          WHERE docs MATCH ? AND kind = ? AND account = ?
-          ORDER BY rank
-          LIMIT ?
-        `).all(match, kind, account, pool);
+        if (!kind || kind === 'all') {
+          rows = account
+            ? stmt.searchAllWithAccounts.all(match, account, notesAccount, pool)
+            : stmt.searchAll.all(match, pool);
+        } else {
+          rows = account
+            ? stmt.searchKindWithAccount.all(match, kind, account, pool)
+            : stmt.searchKind.all(match, kind, pool);
+        }
       } catch (e) {
         console.error('[search-index] consulta inválida:', e.message);
         return [];
       }
 
-      const now = Date.now();
-      // Varios resultados suelen venir del mismo archivo: cacheamos su metadata
-      // para no repetir el lookup.
+      if (sortBy === 'recent') {
+        rows.sort((a, b) => ((b.ts_ms || 0) - (a.ts_ms || 0)) || (a.rank - b.rank));
+      } else {
+        const now = Date.now();
+        rows.sort((a, b) => {
+          const ageDaysA = Math.max(0, (now - (a.ts_ms || 0)) / 86_400_000);
+          const scoreA = a.rank + AGE_WEIGHT * Math.log1p(ageDaysA);
+          const ageDaysB = Math.max(0, (now - (b.ts_ms || 0)) / 86_400_000);
+          const scoreB = b.rank + AGE_WEIGHT * Math.log1p(ageDaysB);
+          return scoreA - scoreB;
+        });
+      }
+
       const metaCache = new Map();
       const metaDe = p => {
         if (!metaCache.has(p)) metaCache.set(p, stmt.getMeta.get(p) || null);
@@ -337,25 +500,22 @@ function openIndex(dbPath) {
       };
 
       return rows
-        .map(r => {
-          const ageDays = Math.max(0, (now - (r.ts_ms || 0)) / 86_400_000);
-          return { row: r, score: r.rank + AGE_WEIGHT * Math.log1p(ageDays) };
-        })
-        .sort((a, b) => a.score - b.score)
         .slice(0, limit)
-        .map(({ row: r }) => {
+        .map(r => {
           const m = metaDe(r.path) || {};
+          const itemKind = r.kind || kind;
           return {
-            kind,
+            kind: itemKind,
             refId: m.ref_id || null,
-            sessionId: kind === 'chat' ? (m.ref_id || null) : null,
-            notebookId: kind === 'note' ? (m.ref_id || null) : null,
+            sessionId: itemKind !== 'note' ? (m.ref_id || null) : null,
+            notebookId: itemKind === 'note' ? (m.ref_id || null) : null,
             name: m.name || null,
             cwd: m.cwd || null,
             lastActivity: m.last_activity || null,
             matchIndex: r.msg_index,
             role: r.role,
             snippet: r.snippet,
+            ts: r.ts_ms ? new Date(r.ts_ms).toISOString() : (m.last_activity || null),
           };
         });
     },

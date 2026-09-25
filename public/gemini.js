@@ -19,9 +19,10 @@ const AGY_MODELS = [
 
 function setGeminiBusy(value) {
   geminiMainBusy = value;
-  $('input').disabled = !currentGeminiConv || value;
-  $('send').disabled = !currentGeminiConv || value;
-  $('attach-btn').disabled = !currentGeminiConv || value;
+  // Se puede seguir escribiendo: el runner conserva el orden de esta charla.
+  $('input').disabled = !currentGeminiConv;
+  $('send').disabled = !currentGeminiConv;
+  $('attach-btn').disabled = !currentGeminiConv;
   $('cancel-btn').hidden = !value;
   $('conv-status').textContent = value ? 'escribiendo…' : '';
 }
@@ -87,7 +88,23 @@ function openGeminiStream(id) {
     if (payload.kind === 'status') {
       setGeminiBusy(payload.status !== 'idle');
       if (payload.status === 'idle') {
-        if (payload.incomplete && !payload.cancelled) toast(payload.stderr || 'Antigravity no entregó una respuesta final.');
+        if (payload.incomplete && !payload.cancelled) {
+          toast(payload.stderr || 'Antigravity no entregó una respuesta final.', 'error', 0, {
+            label: 'Continuar',
+            onClick: async () => {
+              try {
+                await geminiApi(`/conversations/${id}/message`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ text: 'Continuá el trabajo anterior desde donde se cortó y dame la respuesta final.' }),
+                });
+                toast('Antigravity continúa el trabajo…', 'info', 3000);
+              } catch (err) {
+                toast('No se pudo continuar: ' + err.message);
+              }
+            },
+          });
+        }
         loadGeminiMessages(id);
         refreshGeminiCostBadge(id);
       }

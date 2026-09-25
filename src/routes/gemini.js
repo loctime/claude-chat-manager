@@ -369,7 +369,6 @@ function createGeminiRouter({
     const data = meta.load(geminiMetaFile);
     const { convId, conv: c } = resolveGeminiConv(data, req.params.id);
     if (!c) return res.status(404).json({ error: 'conversación no encontrada' });
-    if (geminiRunner.isBusy(convId)) return res.status(409).json({ error: 'esa conversación ya está procesando un mensaje' });
     if (!c.gitRepo) {
       const inferredRepo = await inferRepoFromMessage(text);
       if (inferredRepo) {
@@ -398,6 +397,7 @@ function createGeminiRouter({
       cwd,
       text: outgoing,
       model: c.model || 'gemini-3.8-flash-high',
+      resolveSessionId: () => meta.load(geminiMetaFile).conversations[convId]?.currentSessionId,
     });
     res.status(202).json({ queued: true });
   });

@@ -386,6 +386,9 @@ function showCodexConvMenu(x, y, conv) {
     : '';
   menu.innerHTML = `${newInProjectBtn}<button data-action="copy-conversation">📋 Copiar conversación</button><button data-action="pin">${conv.pinned ? '📌 Desfijar' : '📌 Fijar'}</button><button data-action="project">🏷️ ${conv.project ? 'Cambiar proyecto…' : 'Asignar proyecto…'}</button><button data-action="git-sync">⬆️ Git: commit + pull + push</button><button data-action="hide" class="ctx-danger">🙈 Ocultar</button>`;
   document.body.appendChild(menu);
+  // El menú se comparte visualmente con acciones que sí son propias de Codex;
+  // insertar esto separado evita que la acción nativa quede mezclada con Git.
+  menu.querySelector('[data-action="git-sync"]').insertAdjacentHTML('beforebegin', '<button data-action="compact">🗜️ Compactar contexto</button>');
   const rect = menu.getBoundingClientRect();
   menu.style.left = Math.min(x, window.innerWidth - rect.width - 8) + 'px';
   menu.style.top = Math.min(y, window.innerHeight - rect.height - 8) + 'px';
@@ -431,6 +434,17 @@ function showCodexConvMenu(x, y, conv) {
       showAssignProjectMenu(x, y, conv, 'codex');
       return;
     }
+    if (action === 'compact') {
+      if (!confirm('Compactar el contexto de Codex?\n\nEjecuta el /compact nativo. La conversación y sus archivos se conservan; solo reduce el contexto que Codex arrastra.')) return;
+      try {
+        await codexApi(`/conversations/${conv.convId}/compact`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        toast('Compactando el contexto de Codex…', 'info', 4000);
+        loadCodexSharedTree();
+      } catch (err) {
+        toast('No se pudo compactar: ' + err.message);
+      }
+      return;
+    }
     if (action === 'git-sync') {
       if (!confirm('Sincronizar Git en el repo de esta conversación?\n\nEjecuta directo: commit de cambios pendientes, pull con rebase y push. No hace force push ni descarta cambios.')) return;
       try {
@@ -458,9 +472,10 @@ function showCodexConvMenu(x, y, conv) {
 
 function setCodexMainBusy(value) {
   codexMainBusy = value;
-  $('input').disabled = !currentCodexConv || value;
-  $('send').disabled = !currentCodexConv || value;
-  $('attach-btn').disabled = !currentCodexConv || value;
+  // Codex registra el follow-up en su cola nativa mientras el turno corre.
+  $('input').disabled = !currentCodexConv;
+  $('send').disabled = !currentCodexConv;
+  $('attach-btn').disabled = !currentCodexConv;
   $('cancel-btn').hidden = !value;
   $('conv-status').textContent = value ? 'escribiendo…' : '';
 }

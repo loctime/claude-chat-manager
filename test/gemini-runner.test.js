@@ -173,5 +173,15 @@ test('emite status idle con usage si result o step_update lo incluye', () => {
   assert.deepEqual(final.usage, { input_tokens: 15000, output_tokens: 50, total_tokens: 15050 });
 });
 
+test('serializa mensajes de la misma conversación en la cola del runner', () => {
+  const spawned = [];
+  const r = makeRunner(spawned);
+  r.send({ convId: 'c1', sessionId: 's1', cwd: 'C:\\p', text: 'uno' });
+  r.send({ convId: 'c1', sessionId: 's1', cwd: 'C:\\p', text: 'dos' });
+  assert.equal(spawned.length, 1);
+  spawned[0].child.emit('close', 0);
+  assert.equal(spawned.length, 2);
+});
+
 
 

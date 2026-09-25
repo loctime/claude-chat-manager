@@ -56,12 +56,23 @@ class Runner extends EventEmitter {
 
   _drain() {
     while (this.running.size < this.max && this.queue.length > 0) {
-      this._start(this.queue.shift());
+      // Nunca lanzar dos `--resume` de la misma sesión en paralelo. Además de
+      // mezclar los turnos, Claude Code puede dejar la cadena JSONL en un
+      // estado que después no se puede retomar. Los mensajes posteriores de
+      // esa charla quedan en la cola, pero otras charlas siguen aprovechando
+      // los slots libres.
+      const next = this.queue.findIndex(job => !this.running.has(job.convId));
+      if (next < 0) break;
+      this._start(this.queue.splice(next, 1)[0]);
     }
   }
 
   _start(job) {
     const args = ['-p', job.text, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
+    // Un follow-up puede haberse encolado durante el primer turno, antes de
+    // que el evento init haya guardado la nueva sessionId. Resolverla recién
+    // al salir de la cola evita crear una conversación paralela.
+    const sessionId = job.sessionId || job.resolveSessionId?.();
     const promptFragments = [];
     if (this.selfPort) {
       const host = this.selfHost || '127.0.0.1';
@@ -89,7 +100,7 @@ class Runner extends EventEmitter {
     // propio humano mande un mensaje real (ese turno sí corre sin esta
     // restricción, como cualquier mensaje humano de siempre).
     if (job.restrictedTools) args.push('--disallowedTools', 'Bash,Edit,Write,NotebookEdit');
-    if (job.sessionId) args.push('--resume', job.sessionId);
+    if (sessionId) args.push('--resume', sessionId);
     if (job.model) args.push('--model', job.model);
     const account = job.account || CURRENT_USER;
     // Multi-cuenta via sudo solo existe en Linux/Mac; en Windows siempre corre el usuario actual

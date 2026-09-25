@@ -38,10 +38,19 @@ function Repair-SessionZeroZombies {
             Select-Object -ExpandProperty OwningProcess
     }
 
+    # No se filtra mas por "SessionId -eq 0": el 2026-09-18 se confirmo dos veces
+    # seguidas (mismo dia, menos de 15 min de diferencia) que el zombie real tenia
+    # CommandLine/owner en blanco pero esta condicion no matcheaba -- de ahi que
+    # el watchdog logueara "no se encontraron procesos Session 0 sospechosos"
+    # mientras un zombie real segia vivo y se pudo matar a mano sin chequear su
+    # SessionId. Verificado el mismo dia que TODOS los procesos node.exe/
+    # cloudflared.exe legitimos de esta cuenta devuelven CommandLine no vacio via
+    # CIM (misma sesion que quien consulta) -- CommandLine vacio ya es sospechoso
+    # por si solo, sin necesitar ademas SessionId=0.
     $suspects = @()
     foreach ($name in $ProcessNames) {
         $suspects += Get-CimInstance Win32_Process -Filter "Name='$name'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.SessionId -eq 0 -and [string]::IsNullOrEmpty($_.CommandLine) -and $protectedPids -notcontains $_.ProcessId }
+            Where-Object { [string]::IsNullOrEmpty($_.CommandLine) -and $protectedPids -notcontains $_.ProcessId }
     }
 
     if ($suspects.Count -eq 0) { return @() }
