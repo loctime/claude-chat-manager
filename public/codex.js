@@ -201,6 +201,7 @@ async function codexCancel() {
 async function codexPerformSend(convId, text, imagePath) {
   addMsg('user', text, { container: $('codex-messages'), composerId: 'codex-composer-text' });
   setCodexBusy(true);
+  if (window.Mascot) Mascot.setState('reading');
   try {
     await codexApi(`/conversations/${convId}/message`, {
       method: 'POST',
@@ -480,9 +481,20 @@ function setCodexMainBusy(value) {
   $('conv-status').textContent = value ? 'escribiendo…' : '';
 }
 
+let codexMessagesLoadVersion = 0;
 async function loadCodexSharedMessages(convId) {
+  const loadVersion = ++codexMessagesLoadVersion;
+  let messages;
+  try {
+    messages = await codexApi(`/conversations/${convId}/messages`);
+  } catch (err) {
+    // No limpiar antes del fetch: al volver de background una reconexión puede
+    // fallar una vez y no debe dejar el chat en blanco.
+    if (loadVersion === codexMessagesLoadVersion && currentCodexConv?.id === convId) toast('No se pudo actualizar Codex. Reintentaremos al reconectar.', 'error', 4000);
+    return false;
+  }
+  if (loadVersion !== codexMessagesLoadVersion || currentCodexConv?.id !== convId) return false;
   messagesEl.innerHTML = '';
-  const messages = await codexApi(`/conversations/${convId}/messages`);
   if (!messages.length) {
     messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Codex</p></div>';
   } else {
@@ -507,6 +519,7 @@ async function loadCodexSharedMessages(convId) {
     }
   }
   scrollToBottom();
+  return true;
 }
 
 function openCodexSharedStream(convId) {
@@ -516,7 +529,10 @@ function openCodexSharedStream(convId) {
     const payload = JSON.parse(e.data);
     if (payload.kind === 'status') {
       setCodexMainBusy(payload.status !== 'idle');
-      if (payload.status === 'idle') loadCodexSharedMessages(convId);
+      if (payload.status === 'idle') {
+        if (window.Mascot) Mascot.setState('done');
+        loadCodexSharedMessages(convId);
+      }
       loadCodexSharedTree();
       return;
     }
@@ -532,6 +548,7 @@ function openCodexSharedStream(convId) {
     }
     if (payload.kind !== 'codex') return;
     const item = payload.event && payload.event.item;
+    if (window.Mascot) Mascot.setState('working', item && payload.event.type === 'item.completed' ? item.type : undefined);
     if (!item || payload.event.type !== 'item.completed') return;
     if (item.type === 'agent_message' && item.text) addMsg('assistant', item.text);
     if (item.type === 'command_execution') addTool('command_execution', { command: item.command }, item.aggregated_output || '');
@@ -544,6 +561,7 @@ function openCodexSharedStream(convId) {
 
 async function selectCodexShared(convId, name, projectDir = '', project = undefined) {
   saveCurrentDraft();
+  if (window.Mascot) Mascot.setState('idle'); // ver mismo comentario en selectConv (app.js)
   $('panel-chat').classList.add('codex-chat-theme');
   $('panel-chat').classList.remove('antigravity-chat-theme');
   if (eventSource) { eventSource.close(); eventSource = null; }

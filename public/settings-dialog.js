@@ -126,6 +126,7 @@ function openSettings() {
   $('cfg-app-color').value = APP_COLOR;
   updateNamePreview();
   $('cfg-show-tools').checked = settings.showTools;
+    if ($('cfg-show-mascot')) $('cfg-show-mascot').checked = settings.showMascot !== false;
   $('cfg-show-archived-pane').checked = settings.showArchivedPane;
   $('cfg-show-codex-pane').checked = settings.showCodexPane;
   $('cfg-show-agy-pane').checked = settings.showAgYPane;

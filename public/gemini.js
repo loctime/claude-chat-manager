@@ -27,9 +27,20 @@ function setGeminiBusy(value) {
   $('conv-status').textContent = value ? 'escribiendo…' : '';
 }
 
+let geminiMessagesLoadVersion = 0;
 async function loadGeminiMessages(id) {
+  const loadVersion = ++geminiMessagesLoadVersion;
+  let messages;
+  try {
+    messages = await geminiApi(`/conversations/${id}/messages`);
+  } catch (err) {
+    // Mantener lo que ya se estaba leyendo si el regreso de background pierde
+    // momentáneamente la red o el stream.
+    if (loadVersion === geminiMessagesLoadVersion && currentGeminiConv?.id === id) toast('No se pudo actualizar Antigravity. Reintentaremos al reconectar.', 'error', 4000);
+    return false;
+  }
+  if (loadVersion !== geminiMessagesLoadVersion || currentGeminiConv?.id !== id) return false;
   messagesEl.innerHTML = '';
-  const messages = await geminiApi(`/conversations/${id}/messages`);
   if (!messages.length) {
     messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Antigravity</p></div>';
   } else {
@@ -54,6 +65,7 @@ async function loadGeminiMessages(id) {
     }
   }
   scrollToBottom();
+  return true;
 }
 
 function openGeminiStream(id) {
@@ -75,9 +87,11 @@ function openGeminiStream(id) {
       }
       const tool = step?.tool_info;
       const toolKey = step?.step_index ?? step?.id;
+      const toolName = tool ? (tool.name || step.tool_name || step.step_type) : null;
+      if (window.Mascot) Mascot.setState('working', toolName);
       if (tool && (step?.state === 'DONE' || step?.state === 'ERROR') && !seenTools.has(toolKey)) {
         seenTools.add(toolKey);
-        addTool(tool.name || step.tool_name || step.step_type || 'herramienta', tool.parameters || tool.args || {}, tool.output || tool.error?.message || tool.result || '');
+        addTool(toolName || 'herramienta', tool.parameters || tool.args || {}, tool.output || tool.error?.message || tool.result || '');
         autoScroll();
       }
       if (payload.event?.event === 'result' && payload.event?.result?.usage) {
@@ -88,6 +102,7 @@ function openGeminiStream(id) {
     if (payload.kind === 'status') {
       setGeminiBusy(payload.status !== 'idle');
       if (payload.status === 'idle') {
+        if (window.Mascot) Mascot.setState('done');
         if (payload.incomplete && !payload.cancelled) {
           toast(payload.stderr || 'Antigravity no entregó una respuesta final.', 'error', 0, {
             label: 'Continuar',
@@ -327,6 +342,7 @@ async function refreshGeminiCostBadge(convId) {
 
 async function selectGemini(id, name, projectDir = '', project = undefined) {
   saveCurrentDraft();
+  if (window.Mascot) Mascot.setState('idle'); // ver mismo comentario en selectConv (app.js)
   if (eventSource) { eventSource.close(); eventSource = null; }
   if (codexStream) codexStream.close();
   if (geminiStream) geminiStream.close();

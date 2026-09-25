@@ -1,0 +1,1178 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mascota Studio — J.A.R.V.I.S</title>
+  <link rel="icon" href="icon-192.png">
+  <style>
+    :root {
+      --bg: #0b141a;
+      --card: #111b21;
+      --card-border: #222e35;
+      --text: #e9edef;
+      --text-muted: #8696a0;
+      --accent: #00a884;
+      --accent-hover: #06cf9c;
+      --bubble-bg: #1e293b;
+      --bubble-border: #3b4d61;
+      --font: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      background: var(--card);
+      border-bottom: 1px solid var(--card-border);
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .back-btn {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 13px;
+      padding: 6px 12px;
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s;
+    }
+    .back-btn:hover {
+      color: var(--text);
+      border-color: var(--text-muted);
+      background: rgba(255, 255, 255, 0.04);
+    }
+
+    h1 {
+      font-size: 18px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .header-actions {
+      display: flex;
+      gap: 10px;
+    }
+
+    .btn {
+      background: var(--accent);
+      color: #0b141a;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn:hover { background: var(--accent-hover); transform: translateY(-1px); }
+    .btn-secondary {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--card-border);
+    }
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.05);
+      border-color: var(--text-muted);
+    }
+
+    .layout {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 380px 1fr;
+      max-width: 1340px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 24px;
+      gap: 24px;
+    }
+
+    /* ── Stage de Previsualización ── */
+    .stage-card {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      position: sticky;
+      top: 80px;
+      height: fit-content;
+    }
+
+    .stage-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .stage-display {
+      background: #080e12;
+      border: 1px dashed var(--card-border);
+      border-radius: 12px;
+      height: 250px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      overflow: hidden;
+      background-image: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+      background-size: 20px 20px;
+    }
+
+    .stage-character {
+      position: relative;
+      cursor: pointer;
+      user-select: none;
+      transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    .stage-character:hover {
+      transform: scale(1.06);
+    }
+    .stage-character.tapped {
+      animation: stage-jump 0.5s ease;
+    }
+
+    @keyframes stage-jump {
+      0%, 100% { transform: scale(1) translateY(0); }
+      40% { transform: scale(1.15, 0.85) translateY(-20px); }
+      70% { transform: scale(0.95, 1.05) translateY(3px); }
+    }
+
+    .stage-img {
+      width: 110px;
+      height: 110px;
+      object-fit: contain;
+      display: block;
+      filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.55));
+    }
+
+    /* Bocadillo de diálogo */
+    .stage-bubble {
+      position: absolute;
+      bottom: calc(100% + 10px);
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--bubble-bg);
+      color: #f1f5f9;
+      border: 1px solid var(--bubble-border);
+      border-radius: 12px 12px 12px 2px;
+      padding: 6px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      white-space: nowrap;
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
+      animation: bubble-pop 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+      pointer-events: none;
+      z-index: 10;
+    }
+    .stage-bubble::after {
+      content: '';
+      position: absolute;
+      bottom: -6px;
+      left: 18px;
+      border-width: 6px 6px 0;
+      border-style: solid;
+      border-color: var(--bubble-bg) transparent;
+      display: block;
+      width: 0;
+    }
+
+    .bubble-order-badge {
+      display: inline-block;
+      background: rgba(0, 168, 132, 0.25);
+      color: var(--accent);
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-size: 10.5px;
+      margin-right: 6px;
+      font-weight: 700;
+    }
+
+    @keyframes bubble-pop {
+      0% { transform: translateX(-50%) scale(0.7) translateY(8px); opacity: 0; }
+      100% { transform: translateX(-50%) scale(1) translateY(0); opacity: 1; }
+    }
+
+    .stage-controls {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .control-label {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .state-btn-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+
+    .state-btn {
+      background: #182229;
+      border: 1px solid var(--card-border);
+      color: var(--text);
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s;
+    }
+    .state-btn:hover {
+      background: #202c33;
+      border-color: var(--text-muted);
+    }
+    .state-btn.active {
+      background: rgba(0, 168, 132, 0.15);
+      border-color: var(--accent);
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .sim-btn {
+      width: 100%;
+      background: #202c33;
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      padding: 10px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    .stage-anim-info {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #080e12;
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 7px 12px;
+      font-size: 12px;
+    }
+    .stage-anim-info .anim-label {
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+    .stage-anim-info code {
+      color: var(--accent);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-weight: 600;
+      background: rgba(0, 168, 132, 0.12);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    .anim-chips-container {
+      margin-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .chips-title {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+    .anim-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+    .anim-chip {
+      background: #182229;
+      border: 1px solid var(--card-border);
+      color: #94a3b8;
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .anim-chip:hover {
+      background: rgba(0, 168, 132, 0.15);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    /* ── Editor de Frases ── */
+    .editor-card {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    .editor-header {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .editor-header h2 { font-size: 16px; font-weight: 600; }
+    .editor-header p { font-size: 13px; color: var(--text-muted); }
+
+    .phrases-list {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .phrase-section {
+      background: #0e171d;
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      transition: border-color 0.2s;
+    }
+    .phrase-section:focus-within {
+      border-color: var(--accent);
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .section-title {
+      font-size: 14px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .badge {
+      font-size: 11px;
+      padding: 2px 7px;
+      border-radius: 6px;
+      background: #202c33;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    .section-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Switch Segmentado: Aleatorio vs En orden */
+    .mode-switch {
+      display: inline-flex;
+      background: #111b21;
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 2px;
+      gap: 2px;
+    }
+    .mode-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 11.5px;
+      font-weight: 500;
+      padding: 4px 9px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s;
+      user-select: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .mode-btn:hover {
+      color: var(--text);
+    }
+    .mode-btn.active {
+      background: #202c33;
+      color: var(--accent);
+      font-weight: 600;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+    }
+
+    .preview-phrase-btn {
+      background: none;
+      border: 1px solid rgba(0, 168, 132, 0.35);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 5px 10px;
+      border-radius: 7px;
+      transition: all 0.15s;
+    }
+    .preview-phrase-btn:hover {
+      background: rgba(0, 168, 132, 0.15);
+      border-color: var(--accent);
+    }
+
+    .phrase-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
+    textarea {
+      width: 100%;
+      background: #111b21;
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 13px;
+      line-height: 1.5;
+      padding: 10px 12px;
+      min-height: 80px;
+      resize: vertical;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    textarea:focus {
+      border-color: var(--accent);
+    }
+
+    /* Toast */
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--accent);
+      color: #0b141a;
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+      display: none;
+      z-index: 100;
+      animation: toast-in 0.2s ease;
+    }
+    @keyframes toast-in {
+      from { transform: translateY(12px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+
+    @media (max-width: 900px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+      .stage-card {
+        position: static;
+      }
+      .section-head {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .section-actions {
+        width: 100%;
+        justify-content: space-between;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="header-left">
+      <a href="/" class="back-btn">← Volver al Chat</a>
+      <h1>🤖 Mascota Studio</h1>
+    </div>
+    <div class="header-actions">
+      <button id="reset-btn" class="btn btn-secondary" title="Restaurar frases originales">Restaurar default</button>
+      <button id="save-btn" class="btn">💾 Guardar frases y modos</button>
+    </div>
+  </header>
+
+  <div class="layout">
+
+    <!-- COLUMNA IZQUIERDA: PREVISUALIZADOR EN VIVO -->
+    <div class="stage-card">
+      <div class="stage-title">
+        <span>Previsualización en vivo</span>
+        <span id="current-state-badge" class="badge">idle</span>
+      </div>
+
+      <div class="stage-display">
+        <div id="character" class="stage-character" title="Haceme click para probar!">
+          <div id="bubble" class="stage-bubble" hidden>Dejame dormir, che.</div>
+          <img id="mascot-img" class="stage-img" src="/assets/mascot/idle.webp" alt="Mascota">
+        </div>
+      </div>
+
+      <div class="stage-anim-info">
+        <span class="anim-label">Animación activa:</span>
+        <code id="current-anim-name">idle.webp</code>
+      </div>
+
+      <div class="stage-controls">
+        <div class="control-label">Cambiar estado manual:</div>
+        <div class="state-btn-grid">
+          <button class="state-btn active" data-state="idle">💤 1. Idle (Siesta)</button>
+          <button class="state-btn" data-state="reading">📖 2. Reading (Lectura)</button>
+          <button class="state-btn" data-state="thinking">💡 3. Thinking (Humo)</button>
+          <button class="state-btn" data-state="working">💻 4. Working (Odio)</button>
+          <button class="state-btn" data-state="done">🎉 5. Done (Revoleo)</button>
+          <button class="state-btn" data-state="tap">👆 Tap (Probar click)</button>
+        </div>
+
+        <button id="sim-flow-btn" class="sim-btn" style="margin-top: 10px;">
+          ▶ Simular ciclo completo de pregunta
+        </button>
+      </div>
+    </div>
+
+    <!-- COLUMNA DERECHA: EDITOR DE FRASES -->
+    <div class="editor-card">
+      <div class="editor-header">
+        <h2>Editor de frases por situación</h2>
+        <p>Escribí una frase por línea. Podés asociar una animación al final con <code>[nombre_anim]</code> (hacé click en cualquier chip para probarla). Con el switch podés elegir si las dice al azar o en orden secuencial.</p>
+      </div>
+
+      <div class="phrases-list">
+
+        <!-- TAP -->
+        <div class="phrase-section" data-category="tap">
+          <div class="section-head">
+            <div class="section-title">
+              <span>👆 Al hacer click o tap</span>
+              <span class="badge">Interacción</span>
+            </div>
+            <div class="section-actions">
+              <div class="mode-switch" data-category="tap">
+                <button type="button" class="mode-btn active" data-mode="random">🎲 Aleatorio</button>
+                <button type="button" class="mode-btn" data-mode="sequential">🔢 En orden</button>
+              </div>
+              <button class="preview-phrase-btn" data-target="tap">▶ Probar</button>
+            </div>
+          </div>
+          <p class="phrase-desc">Cuando el usuario le toca la cabeza con el mouse o con el dedo en el celu.</p>
+          <textarea id="phrases-tap"></textarea>
+          <div class="anim-chips-container">
+            <span class="chips-title">Animaciones disponibles (click para previsualizar):</span>
+            <div class="anim-chips">
+              <button type="button" class="anim-chip" data-anim="tap_1_question">❓ tap_1_question</button>
+              <button type="button" class="anim-chip" data-anim="tap_2_dodge">🤾 tap_2_dodge</button>
+              <button type="button" class="anim-chip" data-anim="tap_3_stare">😠 tap_3_stare</button>
+              <button type="button" class="anim-chip" data-anim="tap_4_listen">👂 tap_4_listen</button>
+              <button type="button" class="anim-chip" data-anim="tap_5_bored">🥱 tap_5_bored</button>
+              <button type="button" class="anim-chip" data-anim="tap_6_mock">😜 tap_6_mock</button>
+              <button type="button" class="anim-chip" data-anim="tap_7_stop">✋ tap_7_stop</button>
+              <button type="button" class="anim-chip" data-anim="tap_8_disappointed">🤦 tap_8_disappointed</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- READING -->
+        <div class="phrase-section" data-category="reading">
+          <div class="section-head">
+            <div class="section-title">
+              <span>📖 Al recibir la pregunta</span>
+              <span class="badge">reading</span>
+            </div>
+            <div class="section-actions">
+              <div class="mode-switch" data-category="reading">
+                <button type="button" class="mode-btn active" data-mode="random">🎲 Aleatorio</button>
+                <button type="button" class="mode-btn" data-mode="sequential">🔢 En orden</button>
+              </div>
+              <button class="preview-phrase-btn" data-target="reading">▶ Probar</button>
+            </div>
+          </div>
+          <p class="phrase-desc">Apenas tocás Enviar: lo despertás de golpe y se pone a leer el mensaje con bronca.</p>
+          <textarea id="phrases-reading"></textarea>
+          <div class="anim-chips-container">
+            <span class="chips-title">Animaciones disponibles (click para previsualizar):</span>
+            <div class="anim-chips">
+              <button type="button" class="anim-chip" data-anim="reading_1_groan">😫 reading_1_groan</button>
+              <button type="button" class="anim-chip" data-anim="reading_2_knew_it">😏 reading_2_knew_it</button>
+              <button type="button" class="anim-chip" data-anim="reading_3_look">🧐 reading_3_look</button>
+              <button type="button" class="anim-chip" data-anim="reading_4_facepalm">🤦 reading_4_facepalm</button>
+              <button type="button" class="anim-chip" data-anim="reading_5_fine">🙄 reading_5_fine</button>
+              <button type="button" class="anim-chip" data-anim="reading_6_sarcasm">😏 reading_6_sarcasm</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- THINKING -->
+        <div class="phrase-section" data-category="thinking">
+          <div class="section-head">
+            <div class="section-title">
+              <span>💡 Al pensar qué responder</span>
+              <span class="badge">thinking</span>
+            </div>
+            <div class="section-actions">
+              <div class="mode-switch" data-category="thinking">
+                <button type="button" class="mode-btn active" data-mode="random">🎲 Aleatorio</button>
+                <button type="button" class="mode-btn" data-mode="sequential">🔢 En orden</button>
+              </div>
+              <button class="preview-phrase-btn" data-target="thinking">▶ Probar</button>
+            </div>
+          </div>
+          <p class="phrase-desc">Mientras el modelo procesa la respuesta (le sale humo por las orejas y se le hincha la venita).</p>
+          <textarea id="phrases-thinking"></textarea>
+          <div class="anim-chips-container">
+            <span class="chips-title">Animaciones disponibles (click para previsualizar):</span>
+            <div class="anim-chips">
+              <button type="button" class="anim-chip" data-anim="thinking_1_smoke">💨 thinking_1_smoke</button>
+              <button type="button" class="anim-chip" data-anim="thinking_2_shrug">🤷 thinking_2_shrug</button>
+              <button type="button" class="anim-chip" data-anim="thinking_3_clue">🔍 thinking_3_clue</button>
+              <button type="button" class="anim-chip" data-anim="thinking_4_idea">💡 thinking_4_idea</button>
+              <button type="button" class="anim-chip" data-anim="thinking_5_watch">⏳ thinking_5_watch</button>
+              <button type="button" class="anim-chip" data-anim="thinking_6_clueless">😵 thinking_6_clueless</button>
+              <button type="button" class="anim-chip" data-anim="thinking_7_invent">⚙️ thinking_7_invent</button>
+              <button type="button" class="anim-chip" data-anim="thinking_8_headache">🤕 thinking_8_headache</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- WORKING -->
+        <div class="phrase-section" data-category="working">
+          <div class="section-head">
+            <div class="section-title">
+              <span>💻 Al escribir o ejecutar herramientas</span>
+              <span class="badge">working</span>
+            </div>
+            <div class="section-actions">
+              <div class="mode-switch" data-category="working">
+                <button type="button" class="mode-btn active" data-mode="random">🎲 Aleatorio</button>
+                <button type="button" class="mode-btn" data-mode="sequential">🔢 En orden</button>
+              </div>
+              <button class="preview-phrase-btn" data-target="working">▶ Probar</button>
+            </div>
+          </div>
+          <p class="phrase-desc">Mientras entran los tokens de texto o corre comandos bash (aporreando el teclado con rabia).</p>
+          <textarea id="phrases-working"></textarea>
+          <div class="anim-chips-container">
+            <span class="chips-title">Animaciones disponibles (click para previsualizar):</span>
+            <div class="anim-chips">
+              <button type="button" class="anim-chip" data-anim="working_1_confident">😎 working_1_confident</button>
+              <button type="button" class="anim-chip" data-anim="working_2_sigh">😮‍💨 working_2_sigh</button>
+              <button type="button" class="anim-chip" data-anim="working_3_endless">📜 working_3_endless</button>
+              <button type="button" class="anim-chip" data-anim="working_4_blind">🙈 working_4_blind</button>
+              <button type="button" class="anim-chip" data-anim="working_5_mate">🧉 working_5_mate</button>
+              <button type="button" class="anim-chip" data-anim="working_6_pressure">😰 working_6_pressure</button>
+              <button type="button" class="anim-chip" data-anim="working_7_rage">🤬 working_7_rage</button>
+              <button type="button" class="anim-chip" data-anim="working_8_slam">🔨 working_8_slam</button>
+              <button type="button" class="anim-chip" data-anim="working_9_threat">🛑 working_9_threat</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- DONE -->
+        <div class="phrase-section" data-category="done">
+          <div class="section-head">
+            <div class="section-title">
+              <span>🎉 Al terminar el turno</span>
+              <span class="badge">done</span>
+            </div>
+            <div class="section-actions">
+              <div class="mode-switch" data-category="done">
+                <button type="button" class="mode-btn active" data-mode="random">🎲 Aleatorio</button>
+                <button type="button" class="mode-btn" data-mode="sequential">🔢 En orden</button>
+              </div>
+              <button class="preview-phrase-btn" data-target="done">▶ Probar</button>
+            </div>
+          </div>
+          <p class="phrase-desc">Cuando la respuesta finaliza (revolea el teclado con desprecio y se prepara para volver a dormir).</p>
+          <textarea id="phrases-done"></textarea>
+          <div class="anim-chips-container">
+            <span class="chips-title">Animaciones disponibles (click para previsualizar):</span>
+            <div class="anim-chips">
+              <button type="button" class="anim-chip" data-anim="done_1_bye">👋 done_1_bye</button>
+              <button type="button" class="anim-chip" data-anim="done_2_sleep">💤 done_2_sleep</button>
+              <button type="button" class="anim-chip" data-anim="done_3_throw">💥 done_3_throw</button>
+              <button type="button" class="anim-chip" data-anim="done_4_whatever">🤷 done_4_whatever</button>
+              <button type="button" class="anim-chip" data-anim="done_5_closed">🔒 done_5_closed</button>
+              <button type="button" class="anim-chip" data-anim="done_6_silence">😶 done_6_silence</button>
+              <button type="button" class="anim-chip" data-anim="done_7_leave">🚪 done_7_leave</button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+  <div id="toast">¡Guardado con éxito!</div>
+
+  <script>
+    const DEFAULT_PHRASES = {
+      tap: [
+        '? [tap_1_question]',
+        'No me toques. [tap_2_dodge]',
+        'Qué tocas? [tap_3_stare]',
+        'Si... decime ... [tap_4_listen]',
+        'Que pesado... [tap_5_bored]',
+        'Tocate el culo [tap_6_mock]',
+        'Dejá de joder. [tap_7_stop]',
+        'No tenés amigos? [tap_8_disappointed]'
+      ],
+      reading: [
+        'Otra vez vos? [reading_1_groan]',
+        'Ya sabía que ibas a venir a pedir algo. [reading_2_knew_it]',
+        'Mirá lo que me pide... [reading_3_look]',
+        'Las boludeces que me pide... [reading_4_facepalm]',
+        'Bueno dale [reading_5_fine]',
+        'Mirá qué interesante che [reading_6_sarcasm]'
+      ],
+      thinking: [
+        'Se me quema el chip... [thinking_1_smoke]',
+        'Alguna ayuda? [thinking_2_shrug]',
+        'Dame una pista... [thinking_3_clue]',
+        'Creo que ya sé! [thinking_4_idea]',
+        'A ver dejame pensar media hora más... [thinking_5_watch]',
+        '... la verdad no tengo ni idea pero algo hay que hacer... ya fue [thinking_6_clueless]',
+        'A ver qué invento ahora... [thinking_7_invent]',
+        'Me duele la cabeza. [thinking_8_headache]'
+      ],
+      working: [
+        'Esta me la sé [working_1_confident]',
+        'Todo tengo que hacer... [working_2_sigh]',
+        'No termino más... [working_3_endless]',
+        'Ya fue pongo cualquiera. [working_4_blind]',
+        'Aahh bueno me tomo mi descanso. [working_5_mate]',
+        'Cuanta presión. [working_6_pressure]',
+        '#@$%&!... [working_7_rage]',
+        'Aporreando teclas... [working_8_slam]',
+        'No me apures! [working_9_threat]'
+      ],
+      done: [
+        'Listo bro, no me hables más. [done_1_bye]',
+        'Chau. Vuelvo a la siesta. [done_2_sleep]',
+        'Ahí tenés, pesado. [done_3_throw]',
+        'De nada... [done_4_whatever]',
+        'Por hoy ya no vuelvas. [done_5_closed]',
+        '... [done_6_silence]',
+        'Andá. [done_7_leave]'
+      ]
+    };
+
+    const KNOWN_PHRASE_ANIMS = {
+      '?': 'tap_1_question',
+      'no me toques.': 'tap_2_dodge',
+      'no me toques': 'tap_2_dodge',
+      'qué tocas?': 'tap_3_stare',
+      'que tocas?': 'tap_3_stare',
+      'si... decime ...': 'tap_4_listen',
+      'si... decime': 'tap_4_listen',
+      'que pesado...': 'tap_5_bored',
+      'que pesado': 'tap_5_bored',
+      'tocate el culo': 'tap_6_mock',
+      'dejá de joder.': 'tap_7_stop',
+      'deja de joder': 'tap_7_stop',
+      'no tenés amigos?': 'tap_8_disappointed',
+      'no tenes amigos?': 'tap_8_disappointed',
+
+      'otra vez vos?': 'reading_1_groan',
+      'ya sabía que ibas a venir a pedir algo.': 'reading_2_knew_it',
+      'ya sabia que ibas a venir a pedir algo.': 'reading_2_knew_it',
+      'mirá lo que me pide...': 'reading_3_look',
+      'mira lo que me pide...': 'reading_3_look',
+      'las boludeces que me pide...': 'reading_4_facepalm',
+      'bueno dale': 'reading_5_fine',
+      'mirá qué interesante che': 'reading_6_sarcasm',
+      'mira que interesante che': 'reading_6_sarcasm',
+
+      'se me quema el chip...': 'thinking_1_smoke',
+      'alguna ayuda?': 'thinking_2_shrug',
+      'dame una pista...': 'thinking_3_clue',
+      'creo que ya sé!': 'thinking_4_idea',
+      'creo que ya se!': 'thinking_4_idea',
+      'a ver dejame pensar media hora más...': 'thinking_5_watch',
+      'a ver dejame pensar media hora mas...': 'thinking_5_watch',
+      '... la verdad no tengo ni idea pero algo hay que hacer... ya fue': 'thinking_6_clueless',
+      'a ver qué invento ahora...': 'thinking_7_invent',
+      'a ver que invento ahora...': 'thinking_7_invent',
+      'me duele la cabeza.': 'thinking_8_headache',
+
+      'esta me la sé': 'working_1_confident',
+      'esta me la se': 'working_1_confident',
+      'todo tengo que hacer...': 'working_2_sigh',
+      'no termino más...': 'working_3_endless',
+      'no termino mas...': 'working_3_endless',
+      'ya fue pongo cualquiera.': 'working_4_blind',
+      'aahh bueno me tomo mi descanso.': 'working_5_mate',
+      'cuanta presión.': 'working_6_pressure',
+      'cuanta presion.': 'working_6_pressure',
+      '#@$%&!...': 'working_7_rage',
+      'aporreando teclas...': 'working_8_slam',
+      'no me apures!': 'working_9_threat',
+
+      'listo bro, no me hables más.': 'done_1_bye',
+      'listo bro, no me hables mas.': 'done_1_bye',
+      'chau. vuelvo a la siesta.': 'done_2_sleep',
+      'ahí tenés, pesado.': 'done_3_throw',
+      'ahi tenes, pesado.': 'done_3_throw',
+      'de nada...': 'done_4_whatever',
+      'por hoy ya no vuelvas.': 'done_5_closed',
+      '...': 'done_6_silence',
+      'andá.': 'done_7_leave',
+      'anda.': 'done_7_leave'
+    };
+
+    function parsePhraseAnim(rawPhrase, fallbackAnim) {
+      if (!rawPhrase) return { text: '', anim: fallbackAnim };
+      const match = rawPhrase.match(/\[(.*?)\]\s*$/);
+      if (match) {
+        const anim = match[1].trim();
+        const text = rawPhrase.replace(/\[.*?\]\s*$/, '').trim();
+        return { text, anim: anim || fallbackAnim };
+      }
+      const clean = rawPhrase.trim();
+      const known = KNOWN_PHRASE_ANIMS[clean.toLowerCase()];
+      if (known) {
+        return { text: clean, anim: known };
+      }
+      return { text: clean, anim: fallbackAnim };
+    }
+
+    const DEFAULT_MODES = {
+      tap: 'sequential',
+      reading: 'random',
+      thinking: 'sequential',
+      working: 'sequential',
+      done: 'random'
+    };
+
+    const PHRASES_KEY = 'jarvis_mascot_phrases';
+    const MODES_KEY = 'jarvis_mascot_modes';
+
+    let currentPhrases = loadPhrases();
+    let currentModes = loadModes();
+    let currentState = 'idle';
+    let bubbleTimer = null;
+    let simTimer = null;
+
+    // Índices de secuencia para la prueba
+    const previewIndices = {
+      tap: 0,
+      reading: 0,
+      thinking: 0,
+      working: 0,
+      done: 0
+    };
+
+    function loadPhrases() {
+      try {
+        const raw = localStorage.getItem(PHRASES_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          // Si las frases guardadas no tienen tags, enriquecerlas automáticamente
+          for (const cat of ['tap', 'reading', 'thinking', 'working', 'done']) {
+            if (Array.isArray(parsed[cat])) {
+              parsed[cat] = parsed[cat].map(p => {
+                if (p.includes('[')) return p;
+                const { anim } = parsePhraseAnim(p, '');
+                return anim ? `${p} [${anim}]` : p;
+              });
+            }
+          }
+          return { ...DEFAULT_PHRASES, ...parsed };
+        }
+      } catch (_) {}
+      return JSON.parse(JSON.stringify(DEFAULT_PHRASES));
+    }
+
+    function loadModes() {
+      try {
+        const raw = localStorage.getItem(MODES_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          return { ...DEFAULT_MODES, ...parsed };
+        }
+      } catch (_) {}
+      return JSON.parse(JSON.stringify(DEFAULT_MODES));
+    }
+
+    function saveAll() {
+      readTextareas();
+      localStorage.setItem(PHRASES_KEY, JSON.stringify(currentPhrases));
+      localStorage.setItem(MODES_KEY, JSON.stringify(currentModes));
+      showToast('¡Guardado! Se usa en el chat de inmediato.');
+    }
+
+    function populateUI() {
+      // 1. Textareas
+      for (const [key, list] of Object.entries(currentPhrases)) {
+        const textarea = document.getElementById(`phrases-${key}`);
+        if (textarea) {
+          textarea.value = list.join('\n');
+        }
+      }
+
+      // 2. Switches de Modo
+      document.querySelectorAll('.mode-switch').forEach(sw => {
+        const cat = sw.dataset.category;
+        const mode = currentModes[cat] || 'random';
+        sw.querySelectorAll('.mode-btn').forEach(btn => {
+          btn.classList.toggle('active', btn.dataset.mode === mode);
+        });
+      });
+    }
+
+    function readTextareas() {
+      const keys = ['tap', 'reading', 'thinking', 'working', 'done'];
+      keys.forEach(k => {
+        const textarea = document.getElementById(`phrases-${k}`);
+        if (textarea) {
+          currentPhrases[k] = textarea.value
+            .split('\n')
+            .map(s => s.trim())
+            .filter(Boolean);
+        }
+      });
+    }
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.style.display = 'block';
+      setTimeout(() => { t.style.display = 'none'; }, 2600);
+    }
+
+    function updateActiveAnimLabel(animName) {
+      const el = document.getElementById('current-anim-name');
+      if (el) {
+        el.textContent = `${animName}.webp`;
+      }
+    }
+
+    function setPreviewState(state) {
+      currentState = state;
+      const img = document.getElementById('mascot-img');
+      const badge = document.getElementById('current-state-badge');
+
+      document.querySelectorAll('.state-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.state === state);
+      });
+
+      badge.textContent = state;
+
+      if (state === 'idle') {
+        img.src = '/assets/mascot/idle.webp';
+        updateActiveAnimLabel('idle');
+        const bubble = document.getElementById('bubble');
+        if (bubble) bubble.hidden = true;
+        return;
+      }
+
+      if (state === 'tap') {
+        const char = document.getElementById('character');
+        char.classList.remove('tapped');
+        void char.offsetWidth;
+        char.classList.add('tapped');
+        triggerBubbleForCategory('tap');
+        return;
+      }
+
+      triggerBubbleForCategory(state);
+    }
+
+    function triggerBubbleForCategory(category) {
+      readTextareas();
+      const list = currentPhrases[category] || [];
+      if (!list.length) return;
+
+      const mode = currentModes[category] || 'random';
+      let rawText = '';
+      let badgeInfo = '';
+
+      if (mode === 'sequential') {
+        const idx = previewIndices[category] % list.length;
+        previewIndices[category] = (idx + 1) % list.length;
+        rawText = list[idx];
+        badgeInfo = `[${idx + 1}/${list.length}]`;
+      } else {
+        const randIdx = Math.floor(Math.random() * list.length);
+        rawText = list[randIdx];
+      }
+
+      const { text, anim } = parsePhraseAnim(rawText, category);
+      const img = document.getElementById('mascot-img');
+      img.src = `/assets/mascot/${anim}.webp`;
+      updateActiveAnimLabel(anim);
+
+      showPreviewBubble(text, badgeInfo);
+    }
+
+    function showPreviewBubble(text, badgeInfo = '') {
+      const bubble = document.getElementById('bubble');
+      if (badgeInfo) {
+        bubble.innerHTML = `<span class="bubble-order-badge">${badgeInfo}</span>${escapeHTML(text)}`;
+      } else {
+        bubble.textContent = text;
+      }
+      bubble.hidden = false;
+
+      clearTimeout(bubbleTimer);
+      bubbleTimer = setTimeout(() => {
+        bubble.hidden = true;
+      }, 2600);
+    }
+
+    function escapeHTML(str) {
+      return str.replace(/[&<>'"]/g, tag => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+      }[tag] || tag));
+    }
+
+    // ── Simulación de flujo ──
+    function simulateFullFlow() {
+      clearTimeout(simTimer);
+      const steps = [
+        { state: 'reading', wait: 1600 },
+        { state: 'thinking', wait: 1600 },
+        { state: 'working', wait: 2800 },
+        { state: 'done', wait: 2600 },
+        { state: 'idle', wait: 0 }
+      ];
+
+      let idx = 0;
+      function runNext() {
+        if (idx >= steps.length) return;
+        const current = steps[idx++];
+        setPreviewState(current.state);
+        if (current.wait > 0) {
+          simTimer = setTimeout(runNext, current.wait);
+        }
+      }
+      runNext();
+    }
+
+    // ── Eventos ──
+    document.querySelectorAll('.state-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        clearTimeout(simTimer);
+        setPreviewState(btn.dataset.state);
+      });
+    });
+
+    document.querySelectorAll('.preview-phrase-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        clearTimeout(simTimer);
+        const cat = btn.dataset.target;
+        if (cat === 'tap') setPreviewState('tap');
+        else setPreviewState(cat);
+      });
+    });
+
+    // Chips de animación directa
+    document.querySelectorAll('.anim-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        clearTimeout(simTimer);
+        const anim = chip.dataset.anim;
+        const img = document.getElementById('mascot-img');
+        img.src = `/assets/mascot/${anim}.webp`;
+        updateActiveAnimLabel(anim);
+        showPreviewBubble(`Probando: ${anim}`);
+
+        document.querySelectorAll('.anim-chip').forEach(c => c.classList.remove('active-chip'));
+        chip.classList.add('active-chip');
+        setTimeout(() => chip.classList.remove('active-chip'), 1200);
+      });
+    });
+
+    // Switches de modo
+    document.querySelectorAll('.mode-switch').forEach(sw => {
+      const cat = sw.dataset.category;
+      sw.querySelectorAll('.mode-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const mode = btn.dataset.mode;
+          currentModes[cat] = mode;
+          sw.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+
+          // Resetear índice de secuencia
+          previewIndices[cat] = 0;
+          showToast(`Modo para ${cat}: ${mode === 'sequential' ? 'En orden secuencial' : 'Aleatorio'}`);
+        });
+      });
+    });
+
+    document.getElementById('character').addEventListener('click', () => {
+      setPreviewState('tap');
+    });
+
+    document.getElementById('sim-flow-btn').addEventListener('click', simulateFullFlow);
+
+    document.getElementById('save-btn').addEventListener('click', saveAll);
+
+    document.getElementById('reset-btn').addEventListener('click', () => {
+      if (confirm('¿Restaurar todas las frases y modos originales?')) {
+        currentPhrases = JSON.parse(JSON.stringify(DEFAULT_PHRASES));
+        currentModes = JSON.parse(JSON.stringify(DEFAULT_MODES));
+        localStorage.removeItem(PHRASES_KEY);
+        localStorage.removeItem(MODES_KEY);
+        populateUI();
+        showToast('Restaurado por defecto.');
+      }
+    });
+
+    // Iniciar
+    populateUI();
+    setPreviewState('idle');
+  </script>
+</body>
+</html>

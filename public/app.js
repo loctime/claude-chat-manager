@@ -3055,6 +3055,25 @@ function renderAssistantText(container, text) {
 const STICK_THRESHOLD = 120; // px de tolerancia para considerar "al fondo"
 let stickToBottom = true;
 let suppressAutoScroll = false; // activo mientras loadMessages() reconstruye la lista
+let messageLoadVersion = 0;
+
+function captureMessageScroll() {
+  return { top: messagesEl.scrollTop, stuck: stickToBottom };
+}
+
+// Al volver de una PWA en background, Chrome/Android puede recalcular la
+// altura del viewport DESPUÉS de visibilitychange. Restaurar en dos frames
+// evita que el navegador limite el scroll a 0 con la altura vieja.
+function restoreMessageScroll(state) {
+  if (!state) return;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (state.stuck) scrollToBottom();
+    else messagesEl.scrollTop = state.top;
+    stickToBottom = isNearBottom();
+    syncJumpBtn();
+    updateLastUserPin();
+  }));
+}
 
 function isNearBottom() {
   return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight <= STICK_THRESHOLD;
@@ -3390,19 +3409,26 @@ function addCompactDivider() {
   messagesEl.appendChild(div);
 }
 
-async function loadMessages(convId) {
+async function loadMessages(convId, { scrollState } = {}) {
   // Esta función vacía y reconstruye toda la lista (la llama el evento `idle`
   // del stream). Sin esto, el rebuild resetea el scroll y te tira al fondo
   // aunque estuvieras leyendo más arriba.
-  const wasStuck = stickToBottom;
-  const prevTop = messagesEl.scrollTop;
+  const loadVersion = ++messageLoadVersion;
+  const savedScroll = scrollState || captureMessageScroll();
+  const wasStuck = savedScroll.stuck;
+  const prevTop = savedScroll.top;
   suppressAutoScroll = true;
   try {
-    messagesEl.innerHTML = '';
     const msgs = await api(withAccount(`/conversations/${convId}/messages`));
+    // Otra recarga más nueva (SSE, volver del background, cambio de chat) ya
+    // tomó el control. Esta respuesta vieja no puede vaciar ni pisar la vista.
+    if (loadVersion !== messageLoadVersion || convId !== currentConv) return false;
+    // Solo vaciamos cuando ya tenemos una respuesta válida. Si el fetch falla,
+    // el historial que el usuario estaba leyendo queda intacto.
+    messagesEl.innerHTML = '';
     if (msgs.length === 0) {
       messagesEl.innerHTML = '<div id="empty-state"><p>Sin mensajes aún</p></div>';
-      return;
+      return true;
     }
     let inCompacted = false;
     let dividerPlaced = false;
@@ -3433,13 +3459,21 @@ async function loadMessages(convId) {
     if (lastAssistantDiv && !busy) {
       maybeShowReplySuggestions(convId, lastAssistantDiv, lastAssistantMsg.text, lastAssistantMsg.uuid);
     }
+    return true;
+  } catch (err) {
+    // El caller de background no siempre espera esta promesa; absorber el
+    // error evita un rechazo silencioso y, sobre todo, no borra el historial.
+    if (loadVersion === messageLoadVersion && convId === currentConv) {
+      toast('No se pudo actualizar la conversación. Reintentaremos al reconectar.', 'error', 4000);
+    }
+    return false;
   } finally {
+    if (loadVersion !== messageLoadVersion || convId !== currentConv) return;
     suppressAutoScroll = false;
     if (pendingScrollToLastStart) {
       pendingScrollToLastStart = false;
       scrollToLastMessageStart();
-    } else if (wasStuck) scrollToBottom();
-    else messagesEl.scrollTop = prevTop;
+    } else restoreMessageScroll({ top: prevTop, stuck: wasStuck });
     updateLastUserPin();
   }
 }
@@ -3541,9 +3575,11 @@ function openStream(convId) {
       const ev = payload.event;
       if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
         for (const b of ev.message.content) {
-          if (b.type === 'text' && b.text.trim()) addMsg('assistant', b.text);
-          else if (b.type === 'tool_use') addTool(b.name, b.input, '');
+          if (b.type === 'text' && b.text.trim()) { if (window.Mascot) Mascot.setState('working'); addMsg('assistant', b.text); }
+          else if (b.type === 'tool_use') { if (window.Mascot) Mascot.setState('working', b.name); addTool(b.name, b.input, ''); }
         }
+      } else if (window.Mascot) {
+        Mascot.setState('working');
       }
     } else if (payload.kind === 'status') {
       if (payload.status === 'idle') {
@@ -3630,34 +3666,59 @@ let hiddenSince = 0;
 // mal. Guardamos el scroll real al ocultarnos (todavía no se corrompió) y lo
 // reponemos al volver, justo antes de que loadMessages() lea su propio
 // prevTop — así lee el valor bueno en vez del que el navegador haya dejado.
-let hiddenScrollTop = null;
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') {
-    hiddenSince = Date.now();
-    hiddenScrollTop = currentConv ? messagesEl.scrollTop : null;
-    return;
-  }
+let hiddenScrollState = null;
+async function recoverVisibleConversation({ force = false } = {}) {
   const wasHiddenFor = hiddenSince ? Date.now() - hiddenSince : 0;
   hiddenSince = 0;
-  if (wasHiddenFor < 3000) { hiddenScrollTop = null; return; }
-  if (currentConv) {
-    if (hiddenScrollTop != null) messagesEl.scrollTop = hiddenScrollTop;
-    openStream(currentConv);
-    loadMessages(currentConv);
+  const savedScroll = hiddenScrollState;
+  hiddenScrollState = null;
+
+  // Incluso un cambio muy breve de ventana puede resetear el scroll en
+  // escritorio. No recargamos datos por menos de 3s, pero sí reponemos la
+  // posición después de que el viewport termine de pintarse.
+  if (wasHiddenFor < 3000 && !force) {
+    restoreMessageScroll(savedScroll);
+    return;
+  }
+  const claudeConvId = currentConv;
+  if (claudeConvId) {
+    // Cargar antes de reabrir SSE evita que el status inicial del stream lance
+    // una segunda carga en paralelo. Lo que haya ocurrido mientras tanto viene
+    // incluido en el historial recién pedido.
+    await loadMessages(claudeConvId, { scrollState: savedScroll });
+    if (currentConv === claudeConvId) openStream(claudeConvId);
     refreshVisibleTrees();
   }
-  hiddenScrollTop = null;
-  // Mismo mecanismo que arriba pero para la pestaña Codex — mismo problema de
+  // Codex y AgY no tienen todavía scroll-preserving por mensaje, pero sus
+  // loaders son atómicos: una falla de red ya no vacía el chat visible.
   if (currentCodexConv && currentCodexConv.id) {
     if (codexStream) codexStream.close();
-    codexStream = openCodexSharedStream(currentCodexConv.id);
-    loadCodexSharedMessages(currentCodexConv.id);
+    const codexConvId = currentCodexConv.id;
+    codexStream = openCodexSharedStream(codexConvId);
+    await loadCodexSharedMessages(codexConvId);
+    if (currentCodexConv?.id === codexConvId) restoreMessageScroll(savedScroll);
   }
   if (currentGeminiConv && currentGeminiConv.id) {
     if (geminiStream) geminiStream.close();
-    geminiStream = openGeminiStream(currentGeminiConv.id);
-    loadGeminiMessages(currentGeminiConv.id);
+    const geminiConvId = currentGeminiConv.id;
+    geminiStream = openGeminiStream(geminiConvId);
+    await loadGeminiMessages(geminiConvId);
+    if (currentGeminiConv?.id === geminiConvId) restoreMessageScroll(savedScroll);
   }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    hiddenSince = Date.now();
+    hiddenScrollState = (currentConv || currentCodexConv || currentGeminiConv) ? captureMessageScroll() : null;
+    return;
+  }
+  recoverVisibleConversation().catch(() => {});
+});
+
+// BFCache no siempre emite una nueva transición visible (sobre todo Safari
+// instalado). pageshow cubre ese regreso sin tocar un documento recién creado.
+window.addEventListener('pageshow', e => {
+  if (e.persisted && document.visibilityState === 'visible') recoverVisibleConversation({ force: true }).catch(() => {});
 });
 
 // ── Cost badge ──
@@ -3714,6 +3775,11 @@ function setConversationRepoChip(repoPath) {
 
 async function selectConv(convId, name, model, lastModel, projectDir) {
   saveCurrentDraft();
+  // Resetear la mascota al cambiar de charla: si no, se queda mostrando el
+  // último estado de la charla anterior hasta que escribís en la nueva. Si
+  // esta charla nueva sigue corriendo, el próximo evento real del stream la
+  // pone en 'working'/'thinking' de nuevo enseguida.
+  if (window.Mascot) Mascot.setState('idle');
   $('panel-chat').classList.remove('codex-chat-theme');
   $('panel-chat').classList.remove('antigravity-chat-theme');
   if (codexStream) { codexStream.close(); codexStream = null; }
@@ -3816,6 +3882,7 @@ $('input').addEventListener('keydown', e => {
 
 // ── Cancel ──
 $('cancel-btn').onclick = async () => {
+    if (window.Mascot) Mascot.setState('idle');
   if (currentGeminiConv) {
     try { await geminiApi(`/conversations/${currentGeminiConv.id}/message`, { method: 'DELETE' }); }
     catch (err) { addMsg('error', 'No se pudo cancelar: ' + err.message); }
@@ -4290,6 +4357,7 @@ async function performSend(convId, rawText, attachments) {
   }
   const bubble = addUserMsgWithFiles(rawText, attachments);
   setBusy(true);
+  if (window.Mascot) Mascot.setState('reading');
   try {
     await sendMessage(convId, text);
   } catch (err) {
@@ -4316,7 +4384,7 @@ $('composer').onsubmit = async e => {
     let id = currentGeminiConv.id; const draft = currentGeminiConv;
     const attachmentText = attachments.map(a => `[Archivo adjunto disponible localmente: ${a.path}]`).join('\n');
     const text = attachmentText + (rawText ? (attachmentText ? '\n\n' : '') + rawText : '');
-    $('input').value = ''; autoResize($('input')); clearAttachments(); setGeminiBusy(true);
+    $('input').value = ''; autoResize($('input')); clearAttachments(); setGeminiBusy(true); if (window.Mascot) Mascot.setState('reading');
     try {
       if (!id) {
         const p = activeProjectFilter && activeProjectFilter !== '__none__'
@@ -4696,6 +4764,7 @@ setInterval(loadUsage, 10 * 60 * 1000);
 // ── Configuración ──
 const SETTINGS_KEY = 'ccm.settings';
 const DEFAULT_SETTINGS = {
+  showMascot: true,
   showTools: true,
   // Visibilidad por dispositivo: permite que cada persona deje solo las
   // pestañas que usa. Chats no figura porque siempre debe estar disponible.
@@ -4787,6 +4856,7 @@ function applyPaneVisibility() {
 }
 
 function applySettings() {
+  if (window.Mascot) Mascot.setEnabled(settings.showMascot !== false);
   document.body.classList.toggle('hide-tools', !settings.showTools);
   const root = document.documentElement;
   const vars = {
