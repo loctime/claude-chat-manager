@@ -9,27 +9,74 @@
     body { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: #111; color: #ddd; font-family: system-ui, sans-serif; }
     .card { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 32px; width: 320px; display: flex; flex-direction: column; gap: 16px; }
     h1 { font-size: 20px; }
+    p.hint { font-size: 13px; color: #999; text-align: center; }
     input { width: 100%; background: #111; color: #ddd; border: 1px solid #333; border-radius: 8px; padding: 10px; font-size: 18px; letter-spacing: 4px; text-align: center; }
     button { background: #2a6; color: #fff; border: 0; border-radius: 8px; padding: 10px; font-size: 15px; cursor: pointer; width: 100%; }
     .error { color: #fbb; font-size: 13px; text-align: center; display: none; }
+    .hidden { display: none; }
   </style>
 </head>
 <body>
   <div class="card">
     <h1>Claude Chat</h1>
-    <input id="pin" type="password" placeholder="PIN" autocomplete="current-password" autofocus>
-    <button id="btn">Entrar</button>
-    <div class="error" id="err">PIN incorrecto</div>
+    <div id="step-pin">
+      <input id="pin" type="password" placeholder="PIN" autocomplete="current-password" autofocus>
+      <button id="btn-pin" style="margin-top:16px">Entrar</button>
+    </div>
+    <div id="step-otp" class="hidden">
+      <p class="hint">Te mandamos un código por Telegram. Vence en 5 minutos.</p>
+      <input id="otp" type="text" inputmode="numeric" placeholder="Código" autocomplete="one-time-code" style="margin-top:16px">
+      <button id="btn-otp" style="margin-top:16px">Confirmar</button>
+    </div>
+    <div class="error" id="err"></div>
   </div>
   <script>
-    async function tryLogin() {
+    const stepPin = document.getElementById('step-pin');
+    const stepOtp = document.getElementById('step-otp');
+    const err = document.getElementById('err');
+
+    function showError(msg) { err.textContent = msg; err.style.display = 'block'; }
+    function hideError() { err.style.display = 'none'; }
+
+    async function tryPin() {
+      hideError();
       const pin = document.getElementById('pin').value;
       const res = await fetch('/__auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }) });
-      if (res.ok) { location.href = '/'; }
-      else { document.getElementById('err').style.display = 'block'; document.getElementById('pin').select(); }
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.step === 'otp') {
+        stepPin.classList.add('hidden');
+        stepOtp.classList.remove('hidden');
+        document.getElementById('otp').focus();
+      } else {
+        showError(data.error || 'PIN incorrecto');
+        document.getElementById('pin').select();
+      }
     }
-    document.getElementById('btn').onclick = tryLogin;
-    document.getElementById('pin').onkeydown = e => { if (e.key === 'Enter') tryLogin(); };
+
+    async function tryOtp() {
+      hideError();
+      const code = document.getElementById('otp').value;
+      const res = await fetch('/__auth/otp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        location.href = '/';
+      } else {
+        showError(data.error || 'Código incorrecto');
+        if (data.restart) {
+          stepOtp.classList.add('hidden');
+          stepPin.classList.remove('hidden');
+          document.getElementById('pin').value = '';
+          document.getElementById('pin').focus();
+        } else {
+          document.getElementById('otp').select();
+        }
+      }
+    }
+
+    document.getElementById('btn-pin').onclick = tryPin;
+    document.getElementById('pin').onkeydown = e => { if (e.key === 'Enter') tryPin(); };
+    document.getElementById('btn-otp').onclick = tryOtp;
+    document.getElementById('otp').onkeydown = e => { if (e.key === 'Enter') tryOtp(); };
   </script>
 </body>
 </html>

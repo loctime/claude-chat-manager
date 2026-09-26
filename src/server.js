@@ -59,6 +59,8 @@ function magickArgs(args) {
 const HOST = process.env.HOST || '127.0.0.1';
 const PORT = Number(process.env.PORT || 3777);
 const ACCESS_PIN = process.env.ACCESS_PIN || '';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
 // Nombre mostrado en título/manifest/PWA/toasts. Prioridad: lo guardado desde
 // la pantalla de Configuración (~/.ccm-config.json) > env var CCM_APP_NAME >
 // default genérico. Se lee del archivo en cada request (no una constante al boot) para
@@ -281,17 +283,83 @@ app.use(compression({
 app.use(express.json());
 
 // Auth por cookie — solo si ACCESS_PIN está seteado
+// Dos factores: PIN fijo + código de 6 dígitos enviado por Telegram, y
+// bloqueo de IP a los 3 intentos fallidos (cuenta tanto PIN como código
+// mal puestos). La IP real viene de CF-Connecting-IP (Cloudflare Tunnel)
+// porque req.ip siempre da 127.0.0.1 (el túnel conecta local).
 if (ACCESS_PIN) {
-  app.post('/__auth', (req, res) => {
-    if ((req.body.pin || '') === ACCESS_PIN) {
-      res.cookie('ccm_auth', ACCESS_PIN, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 24 * 3600 * 1000 });
-      res.json({ ok: true });
-    } else {
-      res.status(401).json({ error: 'PIN incorrecto' });
+  const MAX_AUTH_ATTEMPTS = 3;
+  const LOCKOUT_MS = 15 * 60 * 1000;
+  const OTP_TTL_MS = 5 * 60 * 1000;
+  const authAttempts = new Map(); // ip -> { count, lockedUntil }
+  const pendingOtp = new Map();   // ip -> { code, expiresAt }
+
+  const clientIp = (req) => req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+  const lockInfo = (ip) => {
+    const a = authAttempts.get(ip);
+    return a && a.lockedUntil > Date.now() ? a : null;
+  };
+  const registerFailure = (ip) => {
+    const a = authAttempts.get(ip) || { count: 0, lockedUntil: 0 };
+    a.count += 1;
+    if (a.count >= MAX_AUTH_ATTEMPTS) {
+      a.lockedUntil = Date.now() + LOCKOUT_MS;
+      a.count = 0;
+    }
+    authAttempts.set(ip, a);
+  };
+  const registerSuccess = (ip) => { authAttempts.delete(ip); pendingOtp.delete(ip); };
+
+  async function sendTelegramCode(code) {
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) throw new Error('Telegram no configurado (falta TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID)');
+    const r = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: `🔐 Código de acceso a ${getAppName()}: ${code}\nVence en 5 minutos. Si no fuiste vos, ignorá este mensaje.` }),
+    });
+    if (!r.ok) throw new Error(`Telegram respondió ${r.status}`);
+  }
+
+  app.post('/__auth', async (req, res) => {
+    const ip = clientIp(req);
+    const locked = lockInfo(ip);
+    if (locked) return res.status(429).json({ error: `Demasiados intentos. Esperá ${Math.ceil((locked.lockedUntil - Date.now()) / 60000)} min.` });
+    if ((req.body.pin || '') !== ACCESS_PIN) {
+      registerFailure(ip);
+      const nowLocked = lockInfo(ip);
+      return res.status(401).json({ error: nowLocked ? `Demasiados intentos. Esperá ${Math.ceil((nowLocked.lockedUntil - Date.now()) / 60000)} min.` : 'PIN incorrecto' });
+    }
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    pendingOtp.set(ip, { code, expiresAt: Date.now() + OTP_TTL_MS });
+    try {
+      await sendTelegramCode(code);
+      res.json({ ok: true, step: 'otp' });
+    } catch (e) {
+      res.status(500).json({ error: 'No se pudo enviar el código por Telegram: ' + e.message });
     }
   });
+
+  app.post('/__auth/otp', (req, res) => {
+    const ip = clientIp(req);
+    const locked = lockInfo(ip);
+    if (locked) return res.status(429).json({ error: `Demasiados intentos. Esperá ${Math.ceil((locked.lockedUntil - Date.now()) / 60000)} min.` });
+    const pending = pendingOtp.get(ip);
+    if (!pending || pending.expiresAt < Date.now()) {
+      pendingOtp.delete(ip);
+      return res.status(401).json({ error: 'Código vencido. Volvé a poner el PIN.', restart: true });
+    }
+    if ((req.body.code || '') !== pending.code) {
+      registerFailure(ip);
+      const nowLocked = lockInfo(ip);
+      return res.status(401).json({ error: nowLocked ? `Demasiados intentos. Esperá ${Math.ceil((nowLocked.lockedUntil - Date.now()) / 60000)} min.` : 'Código incorrecto' });
+    }
+    registerSuccess(ip);
+    res.cookie('ccm_auth', ACCESS_PIN, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 24 * 3600 * 1000 });
+    res.json({ ok: true });
+  });
+
   app.use((req, res, next) => {
-    const PUBLIC = ['/login.html', '/__auth', '/sw.js', '/manifest.json', '/icon-192.png', '/icon-512.png'];
+    const PUBLIC = ['/login.html', '/__auth', '/__auth/otp', '/sw.js', '/manifest.json', '/icon-192.png', '/icon-512.png'];
     if (PUBLIC.includes(req.path)) return next();
     const cookies = Object.fromEntries((req.headers.cookie || '').split(';').map(c => c.trim().split('=')));
     if (cookies.ccm_auth === ACCESS_PIN) return next();
