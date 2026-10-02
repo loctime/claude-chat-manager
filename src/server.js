@@ -331,6 +331,14 @@ if (ACCESS_PIN) {
       const nowLocked = lockInfo(ip);
       return res.status(401).json({ error: nowLocked ? `Demasiados intentos. Esperá ${Math.ceil((nowLocked.lockedUntil - Date.now()) / 60000)} min.` : 'PIN incorrecto' });
     }
+    // Sin bot de Telegram configurado no hay forma de mandar el segundo
+    // factor -- en vez de romper el login entero, alcanza con el PIN solo
+    // (instancias sin Telegram, p.ej. las de colaboradores).
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+      registerSuccess(ip);
+      res.cookie('ccm_auth', ACCESS_PIN, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 24 * 3600 * 1000 });
+      return res.json({ ok: true });
+    }
     const code = String(Math.floor(100000 + Math.random() * 900000));
     pendingOtp.set(ip, { code, expiresAt: Date.now() + OTP_TTL_MS });
     try {
