@@ -38,8 +38,6 @@ const { getReplySuggestions } = require('./groq-suggest');
 const gitSync = require('./git-sync');
 const salaClient = require('./sala-client');
 const { buildContextBlock, isMentioned, mentionNotice } = require('./sala-context');
-const { resolveIdentity, isSlotAllowedPath } = require('./identity');
-const slotsLib = require('./slots');
 
 const IS_WIN = process.platform === 'win32';
 // WSL: Linux corriendo dentro de Windows (kernel expone "microsoft" en
@@ -362,41 +360,12 @@ if (ACCESS_PIN) {
     res.json({ ok: true });
   });
 
-  app.post('/__auth/slot', (req, res) => {
-    const ip = clientIp(req);
-    const locked = lockInfo(ip);
-    if (locked) return res.status(429).json({ error: `Demasiados intentos. Esperá ${Math.ceil((locked.lockedUntil - Date.now()) / 60000)} min.` });
-    const identity = resolveIdentity(req.body.pin || '', ACCESS_PIN);
-    if (identity.kind !== 'slot') {
-      registerFailure(ip);
-      const nowLocked = lockInfo(ip);
-      return res.status(401).json({ error: nowLocked ? `Demasiados intentos. Esperá ${Math.ceil((nowLocked.lockedUntil - Date.now()) / 60000)} min.` : 'PIN incorrecto' });
-    }
-    registerSuccess(ip);
-    res.cookie('ccm_auth', identity.slot.pin, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 24 * 3600 * 1000 });
-    res.json({ ok: true });
-  });
-
   app.use((req, res, next) => {
-    const PUBLIC = ['/login.html', '/slot.html', '/__auth', '/__auth/otp', '/__auth/slot', '/sw.js', '/manifest.json', '/icon-192.png', '/icon-512.png'];
+    const PUBLIC = ['/login.html', '/__auth', '/__auth/otp', '/sw.js', '/manifest.json', '/icon-192.png', '/icon-512.png'];
     if (PUBLIC.includes(req.path)) return next();
     const cookies = Object.fromEntries((req.headers.cookie || '').split(';').map(c => c.trim().split('=')));
-    const identity = resolveIdentity(cookies.ccm_auth, ACCESS_PIN);
-    if (identity.kind === 'none') return res.redirect('/login.html');
-    req.identity = identity;
-    // Un slot NUNCA debe llegar a ninguna ruta preexistente de admin (ni a
-    // los assets estaticos del chat completo) — sin este chequeo, el PIN de
-    // un colaborador (un solo factor, sin OTP) desbloqueaba literalmente todo
-    // Jarvis: cambiar de cuenta, leer cualquier conversacion, /api/restart,
-    // /api/cleanup, etc. Lista de permitidos explicita (deny-by-default), NO
-    // una lista de bloqueados: una ruta nueva que alguien agregue mas adelante
-    // queda afuera de un slot por default, no al revez.
-    if (identity.kind === 'slot') {
-      if (isSlotAllowedPath(req.path)) return next();
-      if (req.path === '/') return res.redirect('/slot.html');
-      return res.status(403).json({ error: 'no autorizado' });
-    }
-    next();
+    if (cookies.ccm_auth === ACCESS_PIN) return next();
+    res.redirect('/login.html');
   });
 }
 
@@ -404,41 +373,6 @@ if (ACCESS_PIN) {
 const OTHER_LOCAL_URL = process.env.OTHER_LOCAL_URL || '';
 const OTHER_PUBLIC_URL = process.env.OTHER_PUBLIC_URL || '';
 const OTHER_LABEL = process.env.OTHER_LABEL || '';
-
-function requireAdmin(req, res, next) {
-  if (!ACCESS_PIN) return next(); // sin ACCESS_PIN configurado, no hay auth en absoluto (mismo comportamiento que hoy)
-  if (req.identity?.kind !== 'admin') return res.status(403).json({ error: 'solo admin' });
-  next();
-}
-
-app.get('/api/slots', requireAdmin, (req, res) => {
-  const list = slotsLib.listSlots().map(({ pin, ...rest }) => rest); // nunca se manda el pin de vuelta en el listado
-  res.json({ slots: list });
-});
-
-app.post('/api/slots', requireAdmin, (req, res) => {
-  const { label, osUser, projectPath, engine } = req.body;
-  if (!label || !osUser || !projectPath || !engine) {
-    return res.status(400).json({ error: 'faltan campos: label, osUser, projectPath, engine' });
-  }
-  try {
-    const slot = slotsLib.createSlot({ label, osUser, projectPath, engine });
-    res.json({ slot }); // el pin SI va en la respuesta de creacion — es el unico momento en que Diego lo necesita para compartirlo
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-app.post('/api/slots/:id/engine', requireAdmin, (req, res) => {
-  const { engine } = req.body;
-  try {
-    const slot = slotsLib.switchEngine(req.params.id, engine);
-    const { pin, ...rest } = slot;
-    res.json({ slot: rest });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
 
 app.get('/api/accounts', (req, res) => {
   res.json({
@@ -2023,183 +1957,6 @@ app.use('/api/sala', createSalaRouter({
   getActiveAccount: () => activeAccount,
   accountHomeDir,
 }));
-
-// ── Endpoints de colaborador (slot) — Task 4: mensajeria y streaming ──
-// Mismo patron que ya usan Chats/Codex/Gemini (ver GET /:id/stream en
-// src/routes/conversations.js, codex.js y gemini.js): UN listener global por
-// motor (runner.on('event'/'status', ...), codexRunner.on(...), geminiRunner.on(...),
-// ya registrados mas arriba en este archivo) hace el broadcast real a quien
-// esté conectado por SSE para ese convId — el GET /api/slot/stream de acá
-// abajo solo se registra en el mismo Map compartido
-// (sseClients/codexSseClients/geminiSseClients), no abre un listener propio
-// por conexión (evitaría que se acumulen listeners en el runner en cada
-// reconexión del colaborador).
-//
-// La conversación activa de un slot se guarda en el MISMO meta store que ya
-// usa cada motor para una conversación normal — accountMetaFile(slot.osUser)
-// para claude, CODEX_META_FILE para codex, GEMINI_META_FILE para gemini —
-// así el listener global de arriba, SIN tocarlo, ya persiste el
-// currentSessionId real de cada turno (igual que ya hace para Sala) y
-// /api/slot/archived/:convId puede leer el historial real con el mismo
-// scanner que ya usa cada motor. Sin esto, cada mensaje arrancaría una
-// sesión nueva del CLI (sin --resume) y la "conversación activa" nunca
-// tendría memoria entre turnos.
-function requireSlot(req, res, next) {
-  if (req.identity?.kind !== 'slot') return res.status(403).json({ error: 'solo colaborador' });
-  next();
-}
-
-const slotRunners = { claude: runner, codex: codexRunner, gemini: geminiRunner };
-
-function slotMetaFileFor(slot) {
-  if (slot.engine === 'codex') return CODEX_META_FILE;
-  if (slot.engine === 'gemini') return GEMINI_META_FILE;
-  return accountMetaFile(slot.osUser);
-}
-
-function slotConvStatus(slot, convId) {
-  if (slot.engine === 'codex') return codexRunner.running.has(convId) ? 'running' : codexRunner.isBusy(convId) ? 'queued' : 'idle';
-  if (slot.engine === 'gemini') return geminiRunner.isBusy(convId) ? 'running' : 'idle';
-  return convStatus(convId);
-}
-
-function slotSseClientsFor(slot) {
-  if (slot.engine === 'codex') return codexSseClients;
-  if (slot.engine === 'gemini') return geminiSseClients;
-  return sseClients;
-}
-
-app.get('/api/slot/conversation', requireSlot, (req, res) => {
-  const { slot } = req.identity;
-  res.json({
-    activeConversationId: slot.activeConversationId,
-    archivedConversationIds: slot.archivedConversationIds,
-    engine: slot.engine,
-    label: slot.label,
-  });
-});
-
-app.post('/api/slot/message', requireSlot, (req, res) => {
-  const { slot } = req.identity;
-  const text = (req.body.text || '').trim();
-  if (!text) return res.status(400).json({ error: 'mensaje vacío' });
-  const engineRunner = slotRunners[slot.engine];
-  const metaFile = slotMetaFileFor(slot);
-  const data = meta.load(metaFile);
-  let convId = slot.activeConversationId;
-  if (!convId) {
-    convId = `slot-${slot.id}-${Date.now()}`;
-    slotsLib.setActiveConversation(slot.id, convId);
-  }
-  if (!data.conversations[convId]) {
-    // Primer mensaje de esta conversación (o red de seguridad si el meta
-    // store se perdió por algún motivo) — misma forma que usan las rutas
-    // normales de creación de conversación de cada motor.
-    data.conversations[convId] = slot.engine === 'gemini'
-      ? { currentSessionId: null, projectDir: slot.projectPath, messages: [], lastActivity: null }
-      : { currentSessionId: null, projectDir: slot.projectPath };
-  }
-  const conv = data.conversations[convId];
-  // Gemini no tiene un archivo de sesión en disco separado — gemini-runner.js
-  // persiste la charla directamente en este meta store (ver GET
-  // /api/gemini/conversations/:id/messages) — hay que empujar el mensaje del
-  // humano a mano, los otros dos motores lo leen del jsonl/rollout real.
-  if (slot.engine === 'gemini') conv.messages.push({ role: 'user', text, ts: new Date().toISOString() });
-  meta.save(data, metaFile);
-
-  engineRunner.send({
-    convId,
-    sessionId: conv.currentSessionId,
-    text,
-    account: slot.osUser,
-    cwd: slot.projectPath,
-    resolveSessionId: () => meta.load(metaFile).conversations[convId]?.currentSessionId,
-  });
-  res.json({ ok: true, convId });
-});
-
-app.get('/api/slot/stream', requireSlot, (req, res) => {
-  const { slot } = req.identity;
-  const convId = slot.activeConversationId;
-  if (!convId) return res.status(409).json({ error: 'no hay conversacion activa todavia' });
-  const clients = slotSseClientsFor(slot);
-  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-  res.write('\n');
-  if (!clients.has(convId)) clients.set(convId, new Set());
-  clients.get(convId).add(res);
-  // Snapshot inicial, igual que /api/conversations/:id/stream — cubre
-  // reconexiones donde el cliente se perdió el último evento del turno.
-  res.write(`data: ${JSON.stringify({ kind: 'status', status: slotConvStatus(slot, convId) })}\n\n`);
-  // Mismo patrón de 20s contra el idle-timeout (~100s) del túnel de
-  // Cloudflare que ya usan /api/conversations/:id/stream,
-  // /api/codex/conversations/:id/stream y /api/gemini/conversations/:id/stream.
-  const heartbeat = setInterval(() => res.write(':heartbeat\n\n'), 20000);
-  req.on('close', () => {
-    clearInterval(heartbeat);
-    const set = clients.get(convId);
-    if (!set) return;
-    set.delete(res);
-    if (set.size === 0) clients.delete(convId);
-  });
-});
-
-app.get('/api/slot/archived/:convId', requireSlot, (req, res) => {
-  const { slot } = req.identity;
-  const convId = req.params.convId;
-  const isActive = convId === slot.activeConversationId;
-  if (!isActive && !slot.archivedConversationIds.includes(convId)) {
-    return res.status(404).json({ error: 'esa conversacion no es de este slot' });
-  }
-  // Solo lectura, para la activa Y para las archivadas (Task 5 lo reusa como
-  // el equivalente de loadMessages() del chat principal: refrescar el
-  // historial real al terminar un turno, en vez de intentar reensamblar el
-  // texto a mano desde los eventos SSE de 3 motores distintos). El convId
-  // pudo haber quedado archivado bajo un motor anterior (si el admin cambió
-  // el motor del slot más de una vez) — no necesariamente el motor ACTUAL
-  // del slot (slot.engine describe solo la activa) — por eso se busca en los
-  // tres meta stores en vez de confiar en slot.engine.
-  const claudeData = meta.load(accountMetaFile(slot.osUser));
-  if (claudeData.conversations[convId]) {
-    const conv = claudeData.conversations[convId];
-    if (!conv.currentSessionId) return res.json([]);
-    // NO se lee via scanner.findSessionFile/getMessagesIncremental (fs
-    // directo como `claude`) — el CLI crea sus .jsonl en 0600, y eso anula
-    // cualquier ACL que claude tenga sobre el home del slot (la mascara de
-    // un ACL default se recalcula en cada archivo nuevo segun el modo
-    // pedido al crearlo). Se lee impersonando al dueno real via sudo
-    // (scripts/read-session.sh) en su lugar: el dueno de un archivo
-    // siempre puede leer lo suyo, sin importar el modo.
-    let raw = '';
-    try {
-      raw = execFileSync('sudo', ['-u', slot.osUser, '/opt/claude-chat-manager/scripts/read-session.sh', accountProjectsDir(slot.osUser), conv.currentSessionId], { encoding: 'utf8' });
-    } catch {
-      return res.json([]);
-    }
-    const entries = [];
-    for (const line of raw.split('\n')) {
-      if (!line.trim()) continue;
-      try { entries.push(JSON.parse(line)); } catch { /* saltear linea corrupta */ }
-    }
-    return res.json(scanner.toChatMessages(entries));
-  }
-  const codexData = meta.load(CODEX_META_FILE);
-  if (codexData.conversations[convId]) {
-    const conv = codexData.conversations[convId];
-    if (!conv.currentSessionId) return res.json([]);
-    const file = codexScanner.findSessionFile(conv.currentSessionId);
-    return res.json(file ? codexScanner.getMessages(file) : []);
-  }
-  const geminiData = meta.load(GEMINI_META_FILE);
-  if (geminiData.conversations[convId]) {
-    const conv = geminiData.conversations[convId];
-    if (conv.currentSessionId) {
-      const realMessages = geminiScanner.getMessages(conv.currentSessionId);
-      if (realMessages && realMessages.length > 0) return res.json(realMessages);
-    }
-    return res.json(conv.messages || []);
-  }
-  res.json([]);
-});
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`Claude Chat Manager en http://${HOST}:${PORT}`);
