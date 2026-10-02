@@ -23,23 +23,34 @@ useradd -m -s /bin/bash "$OS_USER"
 sudo -u "$OS_USER" git clone "$REPO_URL" "/home/$OS_USER/$PROJECT_DIR"
 
 # claude (el usuario que corre el proceso de Jarvis) necesita poder entrar
-# (chdir) y leer el home de este slot para spawnear el CLI ahi y despues
-# leer el historial real (scanner.js lee accountProjectsDir(osUser) de forma
-# directa, sin sudo) — el 0750 por default de useradd -m NO le da nada a
-# claude, que no esta en el grupo de este usuario nuevo. ACL en vez de
-# agregarlo al grupo porque un cambio de grupo no aplica al proceso de
-# Jarvis ya corriendo (necesitaria reiniciarlo en cada alta de slot); el ACL
-# aplica al toque. El -d (default) hace que TODO lo que el CLI cree despues
-# bajo este home (ej. ~/.claude/projects/...) herede el mismo permiso.
+# (chdir) al home de este slot para spawnear el CLI ahi (Node hace el chdir
+# ANTES de exec-utar sudo, como claude) — el 0750 por default de useradd -m
+# no le da nada a claude, que no esta en el grupo de este usuario nuevo. ACL
+# en vez de agregarlo al grupo porque un cambio de grupo no aplica al
+# proceso de Jarvis ya corriendo (necesitaria reiniciarlo en cada alta de
+# slot); el ACL aplica al toque. Esto alcanza para el proyecto clonado (git
+# lo crea con permisos normales), pero NO alcanza para leer el historial
+# real despues — ver el bloque de abajo.
 setfacl -R -m u:claude:rx "/home/$OS_USER"
 setfacl -R -d -m u:claude:rx "/home/$OS_USER"
 
 SUDOERS_FILE="/etc/sudoers.d/ccm-slot-$OS_USER"
 cat > "$SUDOERS_FILE" <<EOF
-claude ALL=($OS_USER) NOPASSWD: /usr/bin/claude
+claude ALL=($OS_USER) NOPASSWD: /usr/bin/claude, /opt/claude-chat-manager/scripts/read-session.sh
 EOF
 chmod 440 "$SUDOERS_FILE"
 visudo -c -f "$SUDOERS_FILE" || { rm -f "$SUDOERS_FILE"; echo "sudoers invalido, se elimino el archivo (no se deja un sudoers roto en el VPS). Revisar a mano por que fallo." >&2; exit 1; }
+
+# scripts/read-session.sh (ver ese archivo) deja a `claude` leer el
+# historial real de este slot corriendo como su propio dueno via sudo, en
+# vez de via ACL — hallazgo de la revision final: el CLI de Claude crea sus
+# .jsonl de sesion en modo 0600 (confirmado en este mismo VPS, cuenta
+# claude: /home/claude/.claude/projects/*/*.jsonl son -rw-------), y la
+# mascara de un ACL default se recalcula en cada archivo nuevo segun el
+# modo pedido al crearlo — eso anula cualquier entrada de usuario nombrado
+# del ACL (incluida la de arriba) apenas el CLI escribe algo. El dueno de
+# un archivo siempre puede leer lo suyo sin importar el modo, por eso la
+# lectura corre impersonando a ese usuario en vez de depender del ACL.
 
 echo "Listo. projectPath para el panel de admin: /home/$OS_USER/$PROJECT_DIR"
 echo "Antes de avisarle a la persona: logueate una vez como ese usuario para que el motor tenga credenciales -- sudo -u $OS_USER claude (seguir el login interactivo una sola vez)."

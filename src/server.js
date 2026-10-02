@@ -2162,8 +2162,25 @@ app.get('/api/slot/archived/:convId', requireSlot, (req, res) => {
   if (claudeData.conversations[convId]) {
     const conv = claudeData.conversations[convId];
     if (!conv.currentSessionId) return res.json([]);
-    const file = scanner.findSessionFile(conv.currentSessionId, accountProjectsDir(slot.osUser));
-    return res.json(file ? scanner.getMessagesIncremental(file) : []);
+    // NO se lee via scanner.findSessionFile/getMessagesIncremental (fs
+    // directo como `claude`) — el CLI crea sus .jsonl en 0600, y eso anula
+    // cualquier ACL que claude tenga sobre el home del slot (la mascara de
+    // un ACL default se recalcula en cada archivo nuevo segun el modo
+    // pedido al crearlo). Se lee impersonando al dueno real via sudo
+    // (scripts/read-session.sh) en su lugar: el dueno de un archivo
+    // siempre puede leer lo suyo, sin importar el modo.
+    let raw = '';
+    try {
+      raw = execFileSync('sudo', ['-u', slot.osUser, '/opt/claude-chat-manager/scripts/read-session.sh', accountProjectsDir(slot.osUser), conv.currentSessionId], { encoding: 'utf8' });
+    } catch {
+      return res.json([]);
+    }
+    const entries = [];
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      try { entries.push(JSON.parse(line)); } catch { /* saltear linea corrupta */ }
+    }
+    return res.json(scanner.toChatMessages(entries));
   }
   const codexData = meta.load(CODEX_META_FILE);
   if (codexData.conversations[convId]) {
