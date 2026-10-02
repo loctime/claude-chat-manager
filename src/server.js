@@ -38,6 +38,7 @@ const { getReplySuggestions } = require('./groq-suggest');
 const gitSync = require('./git-sync');
 const salaClient = require('./sala-client');
 const { buildContextBlock, isMentioned, mentionNotice } = require('./sala-context');
+const { resolveIdentity } = require('./identity');
 
 const IS_WIN = process.platform === 'win32';
 // WSL: Linux corriendo dentro de Windows (kernel expone "microsoft" en
@@ -360,12 +361,29 @@ if (ACCESS_PIN) {
     res.json({ ok: true });
   });
 
+  app.post('/__auth/slot', (req, res) => {
+    const ip = clientIp(req);
+    const locked = lockInfo(ip);
+    if (locked) return res.status(429).json({ error: `Demasiados intentos. Esperá ${Math.ceil((locked.lockedUntil - Date.now()) / 60000)} min.` });
+    const identity = resolveIdentity(req.body.pin || '', ACCESS_PIN);
+    if (identity.kind !== 'slot') {
+      registerFailure(ip);
+      const nowLocked = lockInfo(ip);
+      return res.status(401).json({ error: nowLocked ? `Demasiados intentos. Esperá ${Math.ceil((nowLocked.lockedUntil - Date.now()) / 60000)} min.` : 'PIN incorrecto' });
+    }
+    registerSuccess(ip);
+    res.cookie('ccm_auth', identity.slot.pin, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 24 * 3600 * 1000 });
+    res.json({ ok: true });
+  });
+
   app.use((req, res, next) => {
-    const PUBLIC = ['/login.html', '/__auth', '/__auth/otp', '/sw.js', '/manifest.json', '/icon-192.png', '/icon-512.png'];
+    const PUBLIC = ['/login.html', '/slot.html', '/__auth', '/__auth/otp', '/__auth/slot', '/sw.js', '/manifest.json', '/icon-192.png', '/icon-512.png'];
     if (PUBLIC.includes(req.path)) return next();
     const cookies = Object.fromEntries((req.headers.cookie || '').split(';').map(c => c.trim().split('=')));
-    if (cookies.ccm_auth === ACCESS_PIN) return next();
-    res.redirect('/login.html');
+    const identity = resolveIdentity(cookies.ccm_auth, ACCESS_PIN);
+    if (identity.kind === 'none') return res.redirect('/login.html');
+    req.identity = identity;
+    next();
   });
 }
 
