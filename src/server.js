@@ -2012,6 +2012,162 @@ app.use('/api/sala', createSalaRouter({
   accountHomeDir,
 }));
 
+// ── Endpoints de colaborador (slot) — Task 4: mensajeria y streaming ──
+// Mismo patron que ya usan Chats/Codex/Gemini (ver GET /:id/stream en
+// src/routes/conversations.js, codex.js y gemini.js): UN listener global por
+// motor (runner.on('event'/'status', ...), codexRunner.on(...), geminiRunner.on(...),
+// ya registrados mas arriba en este archivo) hace el broadcast real a quien
+// esté conectado por SSE para ese convId — el GET /api/slot/stream de acá
+// abajo solo se registra en el mismo Map compartido
+// (sseClients/codexSseClients/geminiSseClients), no abre un listener propio
+// por conexión (evitaría que se acumulen listeners en el runner en cada
+// reconexión del colaborador).
+//
+// La conversación activa de un slot se guarda en el MISMO meta store que ya
+// usa cada motor para una conversación normal — accountMetaFile(slot.osUser)
+// para claude, CODEX_META_FILE para codex, GEMINI_META_FILE para gemini —
+// así el listener global de arriba, SIN tocarlo, ya persiste el
+// currentSessionId real de cada turno (igual que ya hace para Sala) y
+// /api/slot/archived/:convId puede leer el historial real con el mismo
+// scanner que ya usa cada motor. Sin esto, cada mensaje arrancaría una
+// sesión nueva del CLI (sin --resume) y la "conversación activa" nunca
+// tendría memoria entre turnos.
+function requireSlot(req, res, next) {
+  if (req.identity?.kind !== 'slot') return res.status(403).json({ error: 'solo colaborador' });
+  next();
+}
+
+const slotRunners = { claude: runner, codex: codexRunner, gemini: geminiRunner };
+
+function slotMetaFileFor(slot) {
+  if (slot.engine === 'codex') return CODEX_META_FILE;
+  if (slot.engine === 'gemini') return GEMINI_META_FILE;
+  return accountMetaFile(slot.osUser);
+}
+
+function slotConvStatus(slot, convId) {
+  if (slot.engine === 'codex') return codexRunner.running.has(convId) ? 'running' : codexRunner.isBusy(convId) ? 'queued' : 'idle';
+  if (slot.engine === 'gemini') return geminiRunner.isBusy(convId) ? 'running' : 'idle';
+  return convStatus(convId);
+}
+
+function slotSseClientsFor(slot) {
+  if (slot.engine === 'codex') return codexSseClients;
+  if (slot.engine === 'gemini') return geminiSseClients;
+  return sseClients;
+}
+
+app.get('/api/slot/conversation', requireSlot, (req, res) => {
+  const { slot } = req.identity;
+  res.json({
+    activeConversationId: slot.activeConversationId,
+    archivedConversationIds: slot.archivedConversationIds,
+    engine: slot.engine,
+    label: slot.label,
+  });
+});
+
+app.post('/api/slot/message', requireSlot, (req, res) => {
+  const { slot } = req.identity;
+  const text = (req.body.text || '').trim();
+  if (!text) return res.status(400).json({ error: 'mensaje vacío' });
+  const engineRunner = slotRunners[slot.engine];
+  const metaFile = slotMetaFileFor(slot);
+  const data = meta.load(metaFile);
+  let convId = slot.activeConversationId;
+  if (!convId) {
+    convId = `slot-${slot.id}-${Date.now()}`;
+    slotsLib.setActiveConversation(slot.id, convId);
+  }
+  if (!data.conversations[convId]) {
+    // Primer mensaje de esta conversación (o red de seguridad si el meta
+    // store se perdió por algún motivo) — misma forma que usan las rutas
+    // normales de creación de conversación de cada motor.
+    data.conversations[convId] = slot.engine === 'gemini'
+      ? { currentSessionId: null, projectDir: slot.projectPath, messages: [], lastActivity: null }
+      : { currentSessionId: null, projectDir: slot.projectPath };
+  }
+  const conv = data.conversations[convId];
+  // Gemini no tiene un archivo de sesión en disco separado — gemini-runner.js
+  // persiste la charla directamente en este meta store (ver GET
+  // /api/gemini/conversations/:id/messages) — hay que empujar el mensaje del
+  // humano a mano, los otros dos motores lo leen del jsonl/rollout real.
+  if (slot.engine === 'gemini') conv.messages.push({ role: 'user', text, ts: new Date().toISOString() });
+  meta.save(data, metaFile);
+
+  engineRunner.send({
+    convId,
+    sessionId: conv.currentSessionId,
+    text,
+    account: slot.osUser,
+    cwd: slot.projectPath,
+    resolveSessionId: () => meta.load(metaFile).conversations[convId]?.currentSessionId,
+  });
+  res.json({ ok: true, convId });
+});
+
+app.get('/api/slot/stream', requireSlot, (req, res) => {
+  const { slot } = req.identity;
+  const convId = slot.activeConversationId;
+  if (!convId) return res.status(409).json({ error: 'no hay conversacion activa todavia' });
+  const clients = slotSseClientsFor(slot);
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  res.write('\n');
+  if (!clients.has(convId)) clients.set(convId, new Set());
+  clients.get(convId).add(res);
+  // Snapshot inicial, igual que /api/conversations/:id/stream — cubre
+  // reconexiones donde el cliente se perdió el último evento del turno.
+  res.write(`data: ${JSON.stringify({ kind: 'status', status: slotConvStatus(slot, convId) })}\n\n`);
+  // Mismo patrón de 20s contra el idle-timeout (~100s) del túnel de
+  // Cloudflare que ya usan /api/conversations/:id/stream,
+  // /api/codex/conversations/:id/stream y /api/gemini/conversations/:id/stream.
+  const heartbeat = setInterval(() => res.write(':heartbeat\n\n'), 20000);
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    const set = clients.get(convId);
+    if (!set) return;
+    set.delete(res);
+    if (set.size === 0) clients.delete(convId);
+  });
+});
+
+app.get('/api/slot/archived/:convId', requireSlot, (req, res) => {
+  const { slot } = req.identity;
+  const convId = req.params.convId;
+  if (!slot.archivedConversationIds.includes(convId)) {
+    return res.status(404).json({ error: 'esa conversacion no es de este slot' });
+  }
+  // Solo lectura: este endpoint nunca manda un mensaje a una conversación
+  // archivada. El convId pudo haber quedado archivado bajo un motor anterior
+  // (si el admin cambió el motor del slot más de una vez) — no necesariamente
+  // el motor ACTUAL del slot (slot.engine describe solo la activa) — por eso
+  // se busca en los tres meta stores en vez de confiar en slot.engine.
+  const claudeData = meta.load(accountMetaFile(slot.osUser));
+  if (claudeData.conversations[convId]) {
+    const conv = claudeData.conversations[convId];
+    if (!conv.currentSessionId) return res.json([]);
+    const file = scanner.findSessionFile(conv.currentSessionId, accountProjectsDir(slot.osUser));
+    return res.json(file ? scanner.getMessagesIncremental(file) : []);
+  }
+  const codexData = meta.load(CODEX_META_FILE);
+  if (codexData.conversations[convId]) {
+    const conv = codexData.conversations[convId];
+    if (!conv.currentSessionId) return res.json([]);
+    const file = codexScanner.findSessionFile(conv.currentSessionId);
+    return res.json(file ? codexScanner.getMessages(file) : []);
+  }
+  const geminiData = meta.load(GEMINI_META_FILE);
+  if (geminiData.conversations[convId]) {
+    const conv = geminiData.conversations[convId];
+    if (conv.currentSessionId) {
+      const realMessages = geminiScanner.getMessages(conv.currentSessionId);
+      if (realMessages && realMessages.length > 0) return res.json(realMessages);
+    }
+    return res.json(conv.messages || []);
+  }
+  res.json([]);
+});
+
 const server = app.listen(PORT, HOST, () => {
   console.log(`Claude Chat Manager en http://${HOST}:${PORT}`);
   // Backfill después del listen, no antes: el buscador arranca degradado
