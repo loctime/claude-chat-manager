@@ -39,6 +39,7 @@ const gitSync = require('./git-sync');
 const salaClient = require('./sala-client');
 const { buildContextBlock, isMentioned, mentionNotice } = require('./sala-context');
 const { resolveIdentity } = require('./identity');
+const slotsLib = require('./slots');
 
 const IS_WIN = process.platform === 'win32';
 // WSL: Linux corriendo dentro de Windows (kernel expone "microsoft" en
@@ -391,6 +392,41 @@ if (ACCESS_PIN) {
 const OTHER_LOCAL_URL = process.env.OTHER_LOCAL_URL || '';
 const OTHER_PUBLIC_URL = process.env.OTHER_PUBLIC_URL || '';
 const OTHER_LABEL = process.env.OTHER_LABEL || '';
+
+function requireAdmin(req, res, next) {
+  if (!ACCESS_PIN) return next(); // sin ACCESS_PIN configurado, no hay auth en absoluto (mismo comportamiento que hoy)
+  if (req.identity?.kind !== 'admin') return res.status(403).json({ error: 'solo admin' });
+  next();
+}
+
+app.get('/api/slots', requireAdmin, (req, res) => {
+  const list = slotsLib.listSlots().map(({ pin, ...rest }) => rest); // nunca se manda el pin de vuelta en el listado
+  res.json({ slots: list });
+});
+
+app.post('/api/slots', requireAdmin, (req, res) => {
+  const { label, osUser, projectPath, engine } = req.body;
+  if (!label || !osUser || !projectPath || !engine) {
+    return res.status(400).json({ error: 'faltan campos: label, osUser, projectPath, engine' });
+  }
+  try {
+    const slot = slotsLib.createSlot({ label, osUser, projectPath, engine });
+    res.json({ slot }); // el pin SI va en la respuesta de creacion — es el unico momento en que Diego lo necesita para compartirlo
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/slots/:id/engine', requireAdmin, (req, res) => {
+  const { engine } = req.body;
+  try {
+    const slot = slotsLib.switchEngine(req.params.id, engine);
+    const { pin, ...rest } = slot;
+    res.json({ slot: rest });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
 
 app.get('/api/accounts', (req, res) => {
   res.json({
