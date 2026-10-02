@@ -27,6 +27,6 @@ cat > "$SUDOERS_FILE" <<EOF
 claude ALL=($OS_USER) NOPASSWD: /usr/bin/claude
 EOF
 chmod 440 "$SUDOERS_FILE"
-visudo -c -f "$SUDOERS_FILE" || { echo "sudoers invalido, revisar $SUDOERS_FILE a mano" >&2; exit 1; }
+visudo -c -f "$SUDOERS_FILE" || { rm -f "$SUDOERS_FILE"; echo "sudoers invalido, se elimino el archivo (no se deja un sudoers roto en el VPS). Revisar a mano por que fallo." >&2; exit 1; }
 
 echo "Listo. projectPath para el panel de admin: /home/$OS_USER/$PROJECT_DIR"
