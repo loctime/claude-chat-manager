@@ -15,6 +15,8 @@ const meta = require('./meta');
 const config = require('./config');
 const icon = require('./icon');
 const { Runner } = require('./runner');
+const { BackgroundJobs } = require('./background-jobs');
+const { createBackgroundJobsRouter, launchBackgroundJob } = require('./routes/background-jobs');
 const { CLAUDE_CMD } = require('./claude-cmd');
 const { CodexRunner } = require('./codex-runner');
 const { createCodexRouter } = require('./routes/codex');
@@ -791,7 +793,23 @@ app.use(express.static(PUBLIC_DIR, {
   },
 }));
 
-const runner = new Runner({ selfHost: HOST, selfPort: PORT });
+const BACKGROUND_JOBS_FILE = path.join(HOME_DIR, '.ccm-background-jobs', 'jobs.json');
+const BACKGROUND_JOBS_TOKEN = crypto.randomUUID();
+const BACKGROUND_JOBS_SCRIPT = path.join(__dirname, '..', 'scripts', 'background-job.js');
+const backgroundJobs = new BackgroundJobs(BACKGROUND_JOBS_FILE);
+// Un worker pertenece al server, no al proceso `claude -p` que atendió el
+// chat original. Si el server se reinicia no fingimos que sigue vivo: queda
+// "interrumpido" y se puede reanudar de manera explícita y segura.
+backgroundJobs.recoverAfterRestart();
+const runner = new Runner({
+  selfHost: HOST,
+  selfPort: PORT,
+  backgroundJobsScript: BACKGROUND_JOBS_SCRIPT,
+  extraEnv: {
+    CCM_BACKGROUND_JOBS_URL: `http://127.0.0.1:${PORT}/api/background-jobs`,
+    CCM_BACKGROUND_JOBS_TOKEN: BACKGROUND_JOBS_TOKEN,
+  },
+});
 const sseClients = new Map(); // convId → Set<res>
 
 const CODEX_META_FILE = path.join(os.homedir(), '.claude', 'session-manager', 'codex-meta.json');
@@ -1012,6 +1030,28 @@ async function publishSalaReplyIfNeeded(convId, account, cancelled) {
   }
 }
 
+// Aviso corto por Telegram cuando alguien externo (Fernando/FerStark) mencionó
+// a esta instancia en la sala — así Diego se entera sin tener la PWA abierta
+// (pedido 2026-09-27). Reusa el mismo bot/chat que ya manda el código OTP del
+// login (arriba) en vez de pedir credenciales nuevas. No resume con IA —
+// costo/latencia extra de más en un poll que corre cada 20s — manda el texto
+// del último mensaje humano que mencionó, truncado; si por lo que sea no hay
+// texto, cae al aviso genérico mínimo que pidió Diego. Fire-and-forget: un
+// fallo de Telegram no debe frenar el turno real (mismo criterio que la
+// alerta de Bunn en cazador-webhook, ver project_tron_telegram_notificaciones).
+function notifySalaMentionByTelegram(messages) {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
+  const lastMention = [...messages].reverse().find(m => m.kind === 'human' && isMentioned(m.text, getAppName()));
+  const raw = ((lastMention && lastMention.text) || '').trim();
+  const body = raw.length > 260 ? raw.slice(0, 260) + '…' : raw;
+  const text = body ? `💬 Mensaje en la sala de ${getAppName()}:\n${body}` : '💬 Tenés un mensaje nuevo en la sala del chat-manager.';
+  fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text }),
+  }).catch(err => console.error('[sala] no se pudo avisar por Telegram:', err.message));
+}
+
 // Poll de fondo: revisa las salas donde esta instancia ya participó (viven
 // en SALA_META_FILE) buscando si alguien la mencionó con @<su appName>
 // desde la última vez que le tocó hablar — y si es así, dispara un turno
@@ -1072,6 +1112,8 @@ async function checkSalaMentions() {
       const mentioned = messages.some(m => m.kind === 'human' && isMentioned(m.text, getAppName()));
       if (!mentioned) continue;
 
+      notifySalaMentionByTelegram(messages);
+
       const outgoing = `${buildContextBlock(messages)}\n\n${mentionNotice(getAppName())}`;
       // restrictedTools: este turno lo disparó una mención de OTRA persona
       // (Fernando/FerStark), no un mensaje que Diego mandó desde su propio
@@ -1092,6 +1134,16 @@ async function checkSalaMentions() {
 }
 
 runner.on('status', s => {
+  const backgroundJob = backgroundJobs.findByConversation(s.convId);
+  if (backgroundJob) {
+    if (s.status === 'queued') backgroundJobs.update(backgroundJob.id, { status: 'queued' });
+    if (s.status === 'running') backgroundJobs.update(backgroundJob.id, { status: 'running', startedAt: new Date().toISOString(), error: undefined });
+    if (s.status === 'idle' && backgroundJob.status !== 'cancelled') {
+      backgroundJobs.update(backgroundJob.id, s.code === 0
+        ? { status: 'completed', finishedAt: new Date().toISOString(), error: undefined }
+        : { status: 'failed', finishedAt: new Date().toISOString(), error: (s.stderr || `el worker salió con código ${s.code}`).slice(0, 1000) });
+    }
+  }
   broadcast(s.convId, { kind: 'status', ...s });
   if (s.status === 'idle' && s.code === 0) {
     maybeGenerateTitle(s.convId, s.account || activeAccount).catch(() => {});
@@ -1715,6 +1767,16 @@ app.use('/api/conversations', createConversationsRouter({
   registerProject,
   sseClients,
   claudeCmd: CLAUDE_CMD,
+}));
+
+app.use('/api/background-jobs', createBackgroundJobsRouter({
+  jobs: backgroundJobs,
+  runner,
+  accountMetaFile,
+  getActiveAccount: () => activeAccount,
+  defaultCwd: HOME_DIR,
+  token: BACKGROUND_JOBS_TOKEN,
+  launch: (job, options) => launchBackgroundJob(runner, backgroundJobs, accountMetaFile, job, options),
 }));
 
 app.use('/api/codex', createCodexRouter({

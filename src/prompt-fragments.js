@@ -30,4 +30,8 @@ function restrictedToolsNotice() {
   return `HERRAMIENTAS LIMITADAS EN ESTE TURNO: te mencionaron en la sala pero tu propio humano no escribió nada ahora mismo — es una decisión de seguridad, no un error: no tenés Bash, Edit, Write ni NotebookEdit disponibles en este turno puntual, así que no podés ejecutar comandos ni modificar nada. Podés leer, investigar (Read/Grep/Glob) y contestar en la sala con lo que encuentres. Si te piden hacer algo que requiera ejecutar o escribir, explicá que hace falta que tu propio humano lo pida directamente desde su chat — recién ahí corre sin esta restricción.`;
 }
 
-module.exports = { infraNotice, pathContract, salaNotice, restrictedToolsNotice };
+function backgroundJobsNotice(scriptPath) {
+  return `TRABAJOS DE FONDO: esta app ejecuta cada turno de chat como un proceso temporal. Por eso NO uses Agent/subagentes nativos para delegar trabajo en background: se pausan al terminar tu turno. Si necesitás delegar una tarea larga y autónoma, escribí la instrucción completa en un archivo temporal y ejecutá: node "${scriptPath}" create --title "título corto" --cwd "carpeta absoluta" --prompt-file "ruta del archivo" [--project "nombre"]. Eso crea un worker durable, visible como una conversación ⚙️ en Chats. Avisale al usuario que quedó encolado; no afirmes resultados hasta que ese worker termine.`;
+}
+
+module.exports = { infraNotice, pathContract, salaNotice, restrictedToolsNotice, backgroundJobsNotice };

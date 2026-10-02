@@ -55,10 +55,25 @@ router.delete('/tasks/:id', (req, res) => {
 
 // Punto de entrada único para toda tarea determinística. El modo prueba se
 // decide exclusivamente del lado del servidor: el cliente no puede saltearlo.
+//
+// Lock en memoria por tarea (agregado 29/09/2026): sin esto, un doble-tap o
+// un reintento de red mientras la primera llamada seguía en curso disparaba
+// DOS ejecuciones concurrentes del mismo script — cada una releía el estado
+// en disco (todavía sin el resultado de la primera) y las dos terminaban
+// ejecutando la acción real. Pasó de verdad con "Facturar Coop16": salieron
+// dos Facturas C reales de $700.000 en vez de una. El lock no distingue
+// scripts idempotentes de los que no — rechazar el pisado es siempre más
+// seguro que permitirlo.
+const runningTasks = new Set();
+
 router.post('/:id/run', async (req, res) => {
   const task = agenda.list().find(candidate => candidate.id === req.params.id);
   if (!task) return res.status(404).json({ error: 'tarea no encontrada' });
   if (task.execution !== 'script') return res.status(400).json({ error: 'esta tarea no se ejecuta por script' });
+  if (runningTasks.has(task.id)) {
+    return res.status(409).json({ error: 'esta tarea ya se está ejecutando, esperá a que termine' });
+  }
+  runningTasks.add(task.id);
   try {
     const result = await runTaskScript(task, {
       state: agenda.getRunState(task.id),
@@ -69,8 +84,13 @@ router.post('/:id/run', async (req, res) => {
     res.json({ ui: result.ui, runStatus: updated.run.status });
   } catch (err) {
     console.error(`[api/agenda/${task.id}/run]`, err.message);
+    // err.response (si existe, ej. rechazo de AFIP) va al log del server, no
+    // al mensaje que ve la persona — puede tener el payload completo.
+    if (err.response) console.error(`[api/agenda/${task.id}/run] respuesta completa:`, JSON.stringify(err.response));
     agenda.saveRunError(task.id, err.message);
     res.status(500).json({ error: err.message });
+  } finally {
+    runningTasks.delete(task.id);
   }
 });
 
