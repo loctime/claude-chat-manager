@@ -15,7 +15,18 @@ function resolveIdentity(cookieValue, accessPin, slotsFile) {
 // /api/restart, /api/cleanup, etc. (hallazgo de la revision final del plan
 // docs/superpowers/plans/2026-10-02-slots-colaborador.md). Una ruta nueva
 // que se agregue despues queda afuera de un slot por default, no al revez.
-function isSlotAllowedPath(path) {
+function isSlotAllowedPath(rawPath) {
+  // El re-review de la tanda de fixes encontro que un path con ".." (crudo
+  // o codificado como %2e%2e) matchea textualmente el startsWith de abajo
+  // (la comparacion es sobre el string, no sobre el path ya resuelto), pero
+  // express.static SI resuelve ".." antes de servir el archivo — asi que
+  // /api/slot/%2e%2e/%2e%2e/app.js pasaba este chequeo y terminaba sirviendo
+  // un archivo estatico fuera de lo permitido. Decodificar y rechazar
+  // cualquier ".." de entrada cierra esto sin depender de como resuelva
+  // cada capa mas abajo.
+  let path;
+  try { path = decodeURIComponent(rawPath); } catch { return false; }
+  if (path.includes('..')) return false;
   if (path === '/slot.html' || path === '/slot.js') return true;
   // Con barra al final a proposito: distingue el singular /api/slot/* (lo
   // suyo) del plural /api/slots* (gestion de slots, exclusivo de admin) —

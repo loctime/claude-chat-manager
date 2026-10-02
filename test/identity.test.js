@@ -68,3 +68,12 @@ test('isSlotAllowedPath distingue el plural /api/slots (admin) del singular /api
   assert.strictEqual(isSlotAllowedPath('/api/slots'), false);
   assert.strictEqual(isSlotAllowedPath('/api/slots/abc123/engine'), false);
 });
+
+// Hallazgo del re-review de la tanda de fixes: express.static resuelve ".."
+// antes de servir, asi que un ".." (crudo o codificado) textualmente dentro
+// del prefijo permitido no debia dejarse pasar.
+test('isSlotAllowedPath rechaza .. crudo y codificado, aunque el texto matchee el prefijo permitido', () => {
+  assert.strictEqual(isSlotAllowedPath('/api/slot/../../app.js'), false);
+  assert.strictEqual(isSlotAllowedPath('/api/slot/%2e%2e/%2e%2e/app.js'), false);
+  assert.strictEqual(isSlotAllowedPath('/api/slot/%2E%2E/admin-slots.js'), false);
+});
