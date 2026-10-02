@@ -2134,14 +2134,18 @@ app.get('/api/slot/stream', requireSlot, (req, res) => {
 app.get('/api/slot/archived/:convId', requireSlot, (req, res) => {
   const { slot } = req.identity;
   const convId = req.params.convId;
-  if (!slot.archivedConversationIds.includes(convId)) {
+  const isActive = convId === slot.activeConversationId;
+  if (!isActive && !slot.archivedConversationIds.includes(convId)) {
     return res.status(404).json({ error: 'esa conversacion no es de este slot' });
   }
-  // Solo lectura: este endpoint nunca manda un mensaje a una conversación
-  // archivada. El convId pudo haber quedado archivado bajo un motor anterior
-  // (si el admin cambió el motor del slot más de una vez) — no necesariamente
-  // el motor ACTUAL del slot (slot.engine describe solo la activa) — por eso
-  // se busca en los tres meta stores en vez de confiar en slot.engine.
+  // Solo lectura, para la activa Y para las archivadas (Task 5 lo reusa como
+  // el equivalente de loadMessages() del chat principal: refrescar el
+  // historial real al terminar un turno, en vez de intentar reensamblar el
+  // texto a mano desde los eventos SSE de 3 motores distintos). El convId
+  // pudo haber quedado archivado bajo un motor anterior (si el admin cambió
+  // el motor del slot más de una vez) — no necesariamente el motor ACTUAL
+  // del slot (slot.engine describe solo la activa) — por eso se busca en los
+  // tres meta stores en vez de confiar en slot.engine.
   const claudeData = meta.load(accountMetaFile(slot.osUser));
   if (claudeData.conversations[convId]) {
     const conv = claudeData.conversations[convId];
