@@ -15,6 +15,7 @@ input, select { padding: .4rem; }
 </head>
 <body>
 <h1>Colaboradores</h1>
+<p style='color:#888;font-size:.85em'>Codex y Gemini todavia no estan habilitados para slots (no tienen aislamiento por usuario del sistema) — ver src/slots.js.</p>
 <table id="slots-table"><thead><tr><th>Nombre</th><th>Proyecto</th><th>Motor</th></tr></thead><tbody></tbody></table>
 <h2>Nuevo slot</h2>
 <form id="new-slot-form">
@@ -23,8 +24,6 @@ input, select { padding: .4rem; }
   <input id="projectPath" placeholder="/home/colab-fernando/proyecto" required>
   <select id="engine">
     <option value="claude">Claude</option>
-    <option value="codex">Codex</option>
-    <option value="gemini">Gemini</option>
   </select>
   <button type="submit">Crear</button>
 </form>

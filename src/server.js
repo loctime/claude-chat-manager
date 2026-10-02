@@ -38,7 +38,7 @@ const { getReplySuggestions } = require('./groq-suggest');
 const gitSync = require('./git-sync');
 const salaClient = require('./sala-client');
 const { buildContextBlock, isMentioned, mentionNotice } = require('./sala-context');
-const { resolveIdentity } = require('./identity');
+const { resolveIdentity, isSlotAllowedPath } = require('./identity');
 const slotsLib = require('./slots');
 
 const IS_WIN = process.platform === 'win32';
@@ -384,6 +384,18 @@ if (ACCESS_PIN) {
     const identity = resolveIdentity(cookies.ccm_auth, ACCESS_PIN);
     if (identity.kind === 'none') return res.redirect('/login.html');
     req.identity = identity;
+    // Un slot NUNCA debe llegar a ninguna ruta preexistente de admin (ni a
+    // los assets estaticos del chat completo) — sin este chequeo, el PIN de
+    // un colaborador (un solo factor, sin OTP) desbloqueaba literalmente todo
+    // Jarvis: cambiar de cuenta, leer cualquier conversacion, /api/restart,
+    // /api/cleanup, etc. Lista de permitidos explicita (deny-by-default), NO
+    // una lista de bloqueados: una ruta nueva que alguien agregue mas adelante
+    // queda afuera de un slot por default, no al revez.
+    if (identity.kind === 'slot') {
+      if (isSlotAllowedPath(req.path)) return next();
+      if (req.path === '/') return res.redirect('/slot.html');
+      return res.status(403).json({ error: 'no autorizado' });
+    }
     next();
   });
 }

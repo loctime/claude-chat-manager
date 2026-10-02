@@ -84,8 +84,17 @@ function renderArchivedList(ids, activeId) {
 let currentConvId = null;
 
 async function loadConversation() {
-  const r = await fetch('/api/slot/conversation');
-  const data = await r.json();
+  let r, data;
+  try {
+    r = await fetch('/api/slot/conversation');
+    // Sin cookie valida, el gate redirige a /login.html (HTML, no JSON) — un
+    // fetch normal sigue ese redirect solo, asi que r.ok puede ser true con
+    // un body que no es JSON. Chequear el content-type en vez de solo r.ok.
+    if (!r.ok || !(r.headers.get('content-type') || '').includes('application/json')) return false;
+    data = await r.json();
+  } catch {
+    return false;
+  }
   currentConvId = data.activeConversationId;
   if (currentConvId) {
     openStream(currentConvId);
@@ -93,7 +102,21 @@ async function loadConversation() {
     renderMessages(messages);
   }
   renderArchivedList(data.archivedConversationIds || [], currentConvId);
+  return true;
 }
+
+// La cookie de un slot persiste 30 dias (mismo criterio que la de admin) —
+// hacer que la persona vuelva a tipear un PIN largo y random cada vez que
+// recarga la pagina contradice el motivo por el que se eligio ese formato
+// de PIN (hallazgo de la revision final del plan). Si la cookie ya es
+// valida, entra directo al chat sin mostrar el formulario.
+(async function checkExistingSession() {
+  const ok = await loadConversation();
+  if (ok) {
+    $('login-form').hidden = true;
+    $('chat-screen').hidden = false;
+  }
+})();
 
 $('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();

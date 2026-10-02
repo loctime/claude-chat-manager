@@ -11,8 +11,6 @@ async function loadSlots() {
       <td>
         <select data-slot-id="${s.id}" class="engine-select">
           <option value="claude">Claude</option>
-          <option value="codex">Codex</option>
-          <option value="gemini">Gemini</option>
         </select>
       </td>
     </tr>

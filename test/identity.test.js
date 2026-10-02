@@ -4,7 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const slotsLib = require('../src/slots');
-const { resolveIdentity } = require('../src/identity');
+const { resolveIdentity, isSlotAllowedPath } = require('../src/identity');
 
 function tmpFile() {
   return path.join(os.tmpdir(), `ccm-identity-test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
@@ -17,7 +17,7 @@ test('resolveIdentity reconoce el ACCESS_PIN como admin', () => {
 
 test('resolveIdentity reconoce el pin de un slot como ese slot', () => {
   const file = tmpFile();
-  const slot = slotsLib.createSlot({ label: 'Fernando', osUser: 'colab-fernando', projectPath: '/a', engine: 'claude' }, file);
+  const slot = slotsLib.createSlot({ label: 'Fernando', osUser: 'colab-fernando', projectPath: '/home/colab-fernando/a', engine: 'claude' }, file);
   const result = resolveIdentity(slot.pin, 'el-pin-admin', file);
   assert.strictEqual(result.kind, 'slot');
   assert.strictEqual(result.slot.id, slot.id);
@@ -26,7 +26,7 @@ test('resolveIdentity reconoce el pin de un slot como ese slot', () => {
 
 test('resolveIdentity no reconoce un valor que no es ni el admin ni ningun slot', () => {
   const file = tmpFile();
-  slotsLib.createSlot({ label: 'Fernando', osUser: 'colab-fernando', projectPath: '/a', engine: 'claude' }, file);
+  slotsLib.createSlot({ label: 'Fernando', osUser: 'colab-fernando', projectPath: '/home/colab-fernando/a', engine: 'claude' }, file);
   const result = resolveIdentity('cualquier-otra-cosa', 'el-pin-admin', file);
   assert.deepStrictEqual(result, { kind: 'none' });
   fs.unlinkSync(file);
@@ -43,4 +43,28 @@ test('resolveIdentity prioriza admin si por error un slot tuviera el mismo pin q
   const result = resolveIdentity('el-pin-admin', 'el-pin-admin', file);
   assert.deepStrictEqual(result, { kind: 'admin' });
   fs.unlinkSync(file);
+});
+
+
+test('isSlotAllowedPath deja pasar solo lo propio de un slot', () => {
+  assert.strictEqual(isSlotAllowedPath('/slot.html'), true);
+  assert.strictEqual(isSlotAllowedPath('/slot.js'), true);
+  assert.strictEqual(isSlotAllowedPath('/api/slot/message'), true);
+  assert.strictEqual(isSlotAllowedPath('/api/slot/stream'), true);
+  assert.strictEqual(isSlotAllowedPath('/api/slot/archived/abc'), true);
+});
+
+test('isSlotAllowedPath bloquea cualquier ruta preexistente de admin', () => {
+  assert.strictEqual(isSlotAllowedPath('/'), false);
+  assert.strictEqual(isSlotAllowedPath('/app.js'), false);
+  assert.strictEqual(isSlotAllowedPath('/index.html'), false);
+  assert.strictEqual(isSlotAllowedPath('/api/accounts/switch'), false);
+  assert.strictEqual(isSlotAllowedPath('/api/conversations'), false);
+  assert.strictEqual(isSlotAllowedPath('/api/restart'), false);
+  assert.strictEqual(isSlotAllowedPath('/api/cleanup/delete'), false);
+});
+
+test('isSlotAllowedPath distingue el plural /api/slots (admin) del singular /api/slot/ (colaborador)', () => {
+  assert.strictEqual(isSlotAllowedPath('/api/slots'), false);
+  assert.strictEqual(isSlotAllowedPath('/api/slots/abc123/engine'), false);
 });
