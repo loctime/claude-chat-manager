@@ -824,10 +824,14 @@ git commit -m "feat: add admin panel for managing collaborator slots"
 ```bash
 #!/usr/bin/env bash
 # scripts/provision-slot.sh <osUser> <repoUrl> [projectDirName]
-# Crea el usuario de sistema para un slot y clona el proyecto asignado en su home.
-# Correr a mano en el VPS, una vez por slot nuevo, ANTES de crear el slot desde
-# el panel de admin (Tarea 6) — el projectPath que le pasas al panel tiene que
-# coincidir con la ruta que este script deja clonada.
+# Crea el usuario de sistema para un slot, clona el proyecto asignado en su
+# home, y habilita a `claude` (el usuario que corre el proceso de Jarvis en
+# este VPS) a ejecutar los motores de IA como ese usuario nuevo — mismo
+# patron acotado por comando ya usado en /etc/sudoers.d para tron/cazador/
+# bunn/matt (ver /etc/sudoers.d al inspeccionar el VPS), nunca un ALL
+# generico. Correr a mano en el VPS, una vez por slot nuevo, ANTES de crear
+# el slot desde el panel de admin (Tarea 6) — el projectPath que le pasas al
+# panel tiene que coincidir con la ruta que este script deja clonada.
 set -euo pipefail
 
 OS_USER="${1:?uso: provision-slot.sh <osUser> <repoUrl> [projectDirName]}"
@@ -842,8 +846,17 @@ fi
 useradd -m -s /bin/bash "$OS_USER"
 sudo -u "$OS_USER" git clone "$REPO_URL" "/home/$OS_USER/$PROJECT_DIR"
 
+SUDOERS_FILE="/etc/sudoers.d/ccm-slot-$OS_USER"
+cat > "$SUDOERS_FILE" <<EOF
+claude ALL=($OS_USER) NOPASSWD: /usr/bin/claude
+EOF
+chmod 440 "$SUDOERS_FILE"
+visudo -c -f "$SUDOERS_FILE" || { echo "sudoers invalido, revisar $SUDOERS_FILE a mano" >&2; exit 1; }
+
 echo "Listo. projectPath para el panel de admin: /home/$OS_USER/$PROJECT_DIR"
 ```
+
+**Nota para cuando el motor sea Codex o Gemini en vez de Claude**: agregar la ruta real del binario correspondiente (`which codex`/`which gemini` en el VPS) a la misma línea de `sudoers.d` separada por coma, o una línea aparte — este script v1 solo habilita `claude` porque es el único motor que hoy tiene binario instalado en este VPS.
 
 - [ ] **Step 2: Write the runbook**
 
