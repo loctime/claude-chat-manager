@@ -1,5 +1,10 @@
 # Slots de colaborador — Implementation Plan
 
+> **SUPERADO (02/10/2026):** ver la nota al tope del design doc hermano
+> (`docs/superpowers/specs/2026-10-02-slots-colaborador-design.md`) y la sección
+> "Instancias para colaboradores — 02/10/2026" en `CLAUDE.local.md`. Este plan se
+> ejecutó entero y después se revirtió; queda como historia, no como referencia.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let Diego lend a restricted, single-conversation Jarvis slot to a trusted collaborator, with its own OS-level isolation, its own PIN, and a motor (Claude/Codex/Gemini) that Diego can switch at will without the collaborator knowing which engine is behind it.

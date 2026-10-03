@@ -3,6 +3,15 @@
 **Fecha:** 2026-10-02
 **Estado:** Diseño aprobado, pendiente de plan de implementación
 
+> **SUPERADO (02/10/2026):** este enfoque se implementó, revisó y mergeó entero, pero
+> se terminó revirtiendo por completo — depende de un solo proceso de Jarvis
+> compartido con una variable global `activeAccount`, que no soporta dos personas
+> con contexto distinto a la vez. Se reemplazó por "una instancia completa de
+> Jarvis por colaborador" (mismo código, proceso y usuario del sistema propios).
+> Ver la sección "Instancias para colaboradores — 02/10/2026" en `CLAUDE.local.md`
+> para el diseño real que quedó. Este documento queda solo como historia de la
+> decisión descartada, no como referencia vigente.
+
 ## 1. Contexto y objetivo
 
 Diego quiere poder prestarle Jarvis (claude-chat-manager) a personas de confianza (ej. Fernando) para que trabajen en un proyecto puntual, sin darles una cuenta completa. La persona debe ver **una sola conversación activa**, sin saber qué motor de IA la responde (Claude Code normal, Codex, o Gemini/"agy"), y Diego debe poder cambiarle el motor cuando quiera desde su propia sesión. Se quiere como mecanismo **general y reutilizable** — no atado a una sola persona ni a un solo proyecto — para poder sumar más colaboradores a futuro.
