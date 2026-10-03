@@ -92,12 +92,16 @@ class GeminiRunner extends EventEmitter {
       this.activeSessions.delete(job.convId);
       const wasCancelled = !!child?._cancelled;
       const incomplete = !wasCancelled && (!gotResult || resultFailed);
+      // "incomplete" pisaba cualquier stderr real con el mismo mensaje
+      // generico -- sin esto, un corte por timeout, un 429/503 de Gemini,
+      // o cualquier otro motivo concreto quedaban indistinguibles entre si.
+      const detail = (error || '').trim();
       const reason = wasCancelled
         ? 'Cancelado por el usuario.'
         : resultFailed
           ? (resultError || 'Antigravity devolvió un error.')
           : incomplete
-            ? 'Antigravity terminó sin una respuesta final (probablemente alcanzó el límite de herramientas, el timeout, o se cortó la conexión).'
+            ? 'Antigravity terminó sin una respuesta final (probablemente alcanzó el límite de herramientas, el timeout, o se cortó la conexión).' + (detail ? ` Detalle: ${detail}` : '')
             : error;
       this.emit('status', { convId: job.convId, status: 'idle', code, stderr: reason, response, conversationId, incomplete, cancelled: wasCancelled, usage: lastUsage });
       this._drain();
