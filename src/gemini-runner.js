@@ -1,14 +1,26 @@
 const { spawn, execFileSync } = require('child_process');
 const { EventEmitter } = require('events');
+const os = require('os');
+const path = require('path');
 const { GEMINI_CMD } = require('./gemini-cmd');
 const { infraNotice, pathContract } = require('./prompt-fragments');
 
 const IS_WIN = process.platform === 'win32';
-const MEMORY_PROTOCOL = 'CONTEXTO JARVIS COMPARTIDO: sos un asistente que trabaja en la PC de Diego Bertosi junto a Claude Code. Antes de cualquier tarea no trivial, leé C:\\Users\\User\\.claude\\CLAUDE.md y C:\\Users\\User\\.claude\\projects\\C--Users-User\\memory\\MEMORY.md. Si trabajás dentro de un proyecto, leé también su CLAUDE.local.md. Esa memoria es fuente de verdad: no la reescribas ni la dupliques. Usá español argentino sin signos de apertura y fechas DD/MM/AAAA.';
+
+// Antigravity, a diferencia de Claude Code, no descubre CLAUDE.md solo --
+// hay que decirle explícitamente que lo vaya a leer. La ruta se arma en
+// base al HOME real del proceso (no hardcodeada a la cuenta de Diego): esta
+// misma clase la usa cualquier cuenta de sistema que corra una instancia de
+// Jarvis (ver claude-chat-manager, slots/instancias por colaborador), y
+// cada una tiene su propio CLAUDE.md bajo su propio HOME.
+function buildMemoryProtocol(userName) {
+  const claudeMdPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
+  return `CONTEXTO JARVIS COMPARTIDO: sos un asistente que trabaja junto a Claude Code para ${userName}. Antes de cualquier tarea no trivial, leé ${claudeMdPath} (ahí están tus instrucciones y dónde vive tu memoria persistente). Si trabajás dentro de un proyecto, leé también su CLAUDE.local.md si existe. Esa memoria es fuente de verdad: no la reescribas ni la dupliques. Usá español argentino sin signos de apertura y fechas DD/MM/AAAA.`;
+}
 
 class GeminiRunner extends EventEmitter {
-  constructor({ spawnFn = spawn, command = GEMINI_CMD, selfHost, selfPort } = {}) {
-    super(); this.spawnFn = spawnFn; this.command = command; this.selfHost = selfHost; this.selfPort = selfPort; this.running = new Map(); this.activeSessions = new Map(); this.queue = [];
+  constructor({ spawnFn = spawn, command = GEMINI_CMD, selfHost, selfPort, getUserName } = {}) {
+    super(); this.spawnFn = spawnFn; this.command = command; this.selfHost = selfHost; this.selfPort = selfPort; this.getUserName = getUserName || (() => 'Vos'); this.running = new Map(); this.activeSessions = new Map(); this.queue = [];
   }
   isBusy(id) { return this.running.has(id) || this.queue.some(job => job.convId === id); }
   getActiveSessionIds() { return new Set([...this.activeSessions.values()].filter(Boolean)); }
@@ -48,7 +60,8 @@ class GeminiRunner extends EventEmitter {
     // pedidos reales de trabajo (no aplica a /usage, que tiene el suyo propio
     // en antigravity-usage.js). Encontrado en vivo el 2026-09-14: un pedido
     // grande quedó sin ninguna respuesta ni rastro de error — ver más abajo.
-    const args = ['--prompt', `${job.text}\n\n${MEMORY_PROTOCOL}${safety}`, '--output-format', 'stream-json', '--dangerously-skip-permissions', '--print-timeout', job.printTimeout || '20m'];
+    const memoryProtocol = buildMemoryProtocol(this.getUserName());
+    const args = ['--prompt', `${job.text}\n\n${memoryProtocol}${safety}`, '--output-format', 'stream-json', '--dangerously-skip-permissions', '--print-timeout', job.printTimeout || '20m'];
     if (job.model) args.push('--model', job.model);
     // El primer resultado devuelve conversation_id; con --conversation los
     // siguientes procesos continúan exactamente el mismo contexto.

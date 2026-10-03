@@ -825,7 +825,7 @@ const GEMINI_META_FILE = path.join(os.homedir(), '.claude', 'session-manager', '
 const SALA_META_FILE = path.join(os.homedir(), '.claude', 'session-manager', 'sala-meta.json');
 const codexRunner = new CodexRunner({ selfHost: HOST, selfPort: PORT });
 const codexSseClients = new Map(); // convId → Set<res>
-const geminiRunner = new GeminiRunner({ selfHost: HOST, selfPort: PORT });
+const geminiRunner = new GeminiRunner({ selfHost: HOST, selfPort: PORT, getUserName });
 const geminiSseClients = new Map();
 // convId → Date.now() de cuando se despachó el mensaje. Sirve para distinguir
 // una respuesta real (aunque gemini-runner haya perdido el hilo del stream)
