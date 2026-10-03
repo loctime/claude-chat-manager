@@ -2585,3 +2585,6 @@ body.hide-tools details.tool { display: none !important; }
 .cleanup-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .cleanup-confirm-actions button.danger { background: var(--danger); color: #fff; border: none; border-radius: var(--radius); padding: 6px 14px; }
 .notes-empty { padding: 24px 12px; text-align: center; color: var(--text2); font-size: 13px; }
+
+/* Instancia de colaborador (COLLAB_MODE): sin secciones de admin en Ajustes */
+body.collab .admin-only { display: none !important; }

@@ -377,6 +377,32 @@ if (ACCESS_PIN) {
   });
 }
 
+// ── Modo colaborador ──
+// COLLAB_MODE=1 es la instancia que se le presta a otra persona (ver "Instancias
+// para colaboradores" en CLAUDE.local.md): mismo código, pero sin las
+// herramientas de admin. Las pestañas se ocultan en el cliente, pero acá se
+// cierran también las rutas — ocultar un botón no cierra el endpoint.
+const COLLAB_MODE = process.env.COLLAB_MODE === '1';
+const COLLAB_BLOCKED_PREFIXES = [
+  '/api/agenda',      // Task: incluye facturación (macarena/*)
+  '/api/sala',
+  '/api/notebooks',
+  '/api/cleanup',
+  '/api/accounts/switch',
+  '/api/shutdown-pc',
+  '/api/reveal',
+];
+if (COLLAB_MODE) {
+  app.use((req, res, next) => {
+    const p = req.path;
+    const blocked = COLLAB_BLOCKED_PREFIXES.some(pre => p === pre || p.startsWith(pre + '/'))
+      || p === '/api/restart'
+      || (p === '/api/config' && req.method !== 'GET');
+    if (blocked) return res.status(403).json({ error: 'no disponible en esta instancia' });
+    next();
+  });
+}
+
 // ── Endpoints de cuentas ──
 const OTHER_LOCAL_URL = process.env.OTHER_LOCAL_URL || '';
 const OTHER_PUBLIC_URL = process.env.OTHER_PUBLIC_URL || '';
@@ -389,6 +415,7 @@ app.get('/api/accounts', (req, res) => {
     otherLocalUrl: OTHER_LOCAL_URL,
     otherPublicUrl: OTHER_PUBLIC_URL,
     otherLabel: OTHER_LABEL,
+    collab: COLLAB_MODE,
     appName: getAppName(),
     appColor: getAppColor(),
     userName: getUserName(),

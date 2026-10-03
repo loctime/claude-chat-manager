@@ -56,6 +56,9 @@ let GROQ_KEY_SET = false;
 // el token sí (mismo patrón que GROQ_KEY_SET — nunca vuelve del server).
 let SALA_URL = '';
 let SALA_TOKEN_SET = false;
+// Instancia de colaborador (COLLAB_MODE en el server): sin pestañas ni botones de admin.
+let COLLAB_MODE = false;
+const COLLAB_HIDDEN_PANES = [3, 4, 5]; // Notas, Task, Sala
 
 const messagesEl = $('messages');
 
@@ -63,8 +66,11 @@ const messagesEl = $('messages');
 async function loadAccounts() {
   try {
     const r = await fetch('/api/accounts');
-    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName, appColor, userName, groqApiKeySet, salaUrl, salaTokenSet } = await r.json();
+    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName, appColor, userName, groqApiKeySet, salaUrl, salaTokenSet, collab } = await r.json();
     activeAccount = active;
+    COLLAB_MODE = !!collab;
+    document.body.classList.toggle('collab', COLLAB_MODE);
+    if (COLLAB_MODE) applyPaneVisibility();
     if (appName) { APP_NAME = appName; updateGlobalBusyIndicator(); }
     if (appColor) { APP_COLOR = appColor; applySettings(); }
     if (userName) USER_NAME = userName;
@@ -4759,6 +4765,7 @@ const PANE_VISIBILITY_SETTINGS = {
 };
 
 function isPaneVisible(index) {
+  if (COLLAB_MODE && COLLAB_HIDDEN_PANES.includes(index)) return false;
   const setting = PANE_VISIBILITY_SETTINGS[index];
   return !setting || settings[setting] !== false;
 }
@@ -4766,7 +4773,7 @@ function isPaneVisible(index) {
 function applyPaneVisibility() {
   for (const [pane, setting] of Object.entries(PANE_VISIBILITY_SETTINGS)) {
     const tab = document.querySelector(`.pane-tab[data-pane="${pane}"]`);
-    if (tab) tab.hidden = !settings[setting];
+    if (tab) tab.hidden = !settings[setting] || !isPaneVisible(Number(pane));
   }
   // Si se oculta la pestaña que estaba abierta, volver a Chats de inmediato.
   if (!isPaneVisible(activePane)) goToPane(0);
