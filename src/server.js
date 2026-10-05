@@ -23,6 +23,7 @@ const { createCodexRouter } = require('./routes/codex');
 const { GeminiRunner } = require('./gemini-runner');
 const { createGeminiRouter, createAntigravityRouter, resolveContextTokens } = require('./routes/gemini');
 const { createSalaRouter } = require('./routes/sala');
+const { createUpdateRouter } = require('./update');
 const { createConversationsRouter, resolveConversationGitRepo } = require('./routes/conversations');
 const {
   projectEntry,
@@ -1991,6 +1992,17 @@ app.use('/api/gemini', createGeminiRouter({
   },
 }));
 
+// Aviso de versión nueva + "Actualizar ahora" desde la página (ver src/update.js). Sin
+// supervisor no hay forma segura de relanzarse: solo Windows (doRestart se relanza a sí
+// mismo), RESTART_CMD, o instancias de colaborador (corren bajo pm2, que levanta de nuevo
+// el proceso al salir).
+app.use('/api', createUpdateRouter({
+  repoRoot: REPO_ROOT,
+  engines: { claude: runner, codex: codexRunner, agy: geminiRunner },
+  canSelfRestart: IS_WIN || !!process.env.RESTART_CMD || COLLAB_MODE,
+  restart: () => (IS_WIN || process.env.RESTART_CMD ? doRestart() : process.exit(0)),
+  resumeFile: path.join(HOME_DIR, '.claude', 'session-manager', 'update-resume.json'),
+}));
 app.use('/api/sala', createSalaRouter({
   runner,
   salaMetaFile: SALA_META_FILE,

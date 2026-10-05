@@ -2588,3 +2588,39 @@ body.hide-tools details.tool { display: none !important; }
 
 /* Instancia de colaborador (COLLAB_MODE): sin secciones de admin en Ajustes */
 body.collab .admin-only { display: none !important; }
+
+/* Aviso flotante de versión nueva (public/update.js) */
+#update-banner {
+  position: fixed;
+  left: 50%;
+  bottom: calc(96px + var(--safe-b));
+  transform: translateX(-50%);
+  z-index: 9000;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(92vw, 440px);
+  padding: 12px 14px;
+  background: var(--header);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 14px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.45);
+  font-size: 14px;
+  line-height: 1.35;
+}
+#update-banner[hidden] { display: none; }
+#update-banner .ub-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+#update-banner button {
+  padding: 8px 12px;
+  min-height: 36px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+#update-banner button:hover { background: var(--border); }
+#update-banner button.primary { background: var(--accent); border-color: var(--accent); color: #0b141a; font-weight: 600; }
+#update-banner button.primary:hover { filter: brightness(1.1); }
