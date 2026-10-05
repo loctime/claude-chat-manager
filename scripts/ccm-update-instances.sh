@@ -5,7 +5,8 @@
 # checkout /opt/claude-chat-manager, así que un solo pull alcanza; lo que falta
 # es reiniciar cada una para que tome el código. Este script:
 #   1. hace fetch + pull --ff-only del checkout (como el usuario dueño),
-#   2. reinicia (pm2 restart) cada instancia cuyo código en uso es más viejo que HEAD,
+#   2. reparte docs/CATALOGO.md a ~/.claude/CATALOGO-DIEGO.md de cada colaborador,
+#   3. reinicia (pm2 restart) cada instancia cuyo código en uso es más viejo que HEAD,
 #      pero SOLO si está inactiva: un reinicio corta el stream de un turno en curso.
 # "Inactiva" = ningún archivo de sesión de sus motores (Claude/Codex/AgY) se tocó en
 # los últimos IDLE_MIN minutos. Si está ocupada se deja para la próxima corrida.
@@ -40,7 +41,21 @@ if [ "$local_head" != "$remote_head" ]; then
 fi
 head=$(as $OWNER git -C $REPO rev-parse HEAD)
 
-# 2) instancias
+# 2) catálogo de Diego: docs/CATALOGO.md del repo -> ~/.claude/CATALOGO-DIEGO.md de cada
+#    colaborador. Los agentes lo leen por instrucción de su CLAUDE.md. Va como root:root 644
+#    (solo lectura para ellos) y no necesita reinicio: se lee al momento. Corre en cada
+#    pasada, no solo cuando hubo pull, así una cuenta nueva lo recibe en 10 min.
+catalogo="$REPO/docs/CATALOGO.md"
+if [ -f "$catalogo" ]; then
+  for home in /home/colab-*; do
+    [ -d "$home/.claude" ] || continue
+    dest="$home/.claude/CATALOGO-DIEGO.md"
+    cmp -s "$catalogo" "$dest" && [ "$(stat -c %U "$dest")" = root ] && continue
+    install -o root -g root -m 644 "$catalogo" "$dest" && log "catálogo actualizado en $(basename "$home")"
+  done
+fi
+
+# 3) instancias
 busy() { # $1 = home del colaborador
   find "$1/.claude/projects" "$1/.codex/sessions" "$1/.gemini" -type f -mmin -"$IDLE_MIN" -print -quit 2>/dev/null | grep -q .
 }
