@@ -395,6 +395,7 @@ const COLLAB_BLOCKED_PREFIXES = [
   '/api/accounts/switch',
   '/api/shutdown-pc',
   '/api/reveal',
+  '/mascot-studio.html', // la config de la mascota es del admin; el toggle de mostrarla queda
   ...(COLLAB_NO_CLAUDE ? ['/api/conversations', '/api/background-jobs', '/api/suggest-replies'] : []),
 ];
 if (COLLAB_MODE) {
