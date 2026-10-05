@@ -86,7 +86,9 @@ function getUserName() {
 // feature queda apagada en silencio, getReplySuggestions ya contempla eso).
 function getGroqApiKey() {
   const key = (config.load().groqApiKey || '').trim();
-  return key || process.env.GROQ_API_KEY || '';
+  // GROQ_API_KEY (const de más abajo) ya cubre env var y ~/.claude/settings.json:
+  // las cuentas de colaborador la tienen ahí, no como variable de entorno.
+  return key || process.env.GROQ_API_KEY || GROQ_API_KEY || '';
 }
 
 // URL y token del servicio sala-jarvis (VPS) — mismo patrón de prioridad que
