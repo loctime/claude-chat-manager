@@ -14,3 +14,7 @@ sala-jarvis/node_modules/
 sala-jarvis/data/
 sala-jarvis/.impeccable/
 *.tmp.js
+
+# Material de trabajo suelto (scripts y frames de prueba de la mascota): no es código de producción
+scratch_*
+scratch_frames/
