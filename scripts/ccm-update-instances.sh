@@ -6,7 +6,8 @@
 # es reiniciar cada una para que tome el código. Este script:
 #   1. hace fetch + pull --ff-only del checkout (como el usuario dueño),
 #   2. reparte docs/CATALOGO.md a ~/.claude/CATALOGO-DIEGO.md de cada colaborador,
-#   3. reinicia (pm2 restart) cada instancia cuyo código en uso es más viejo que HEAD,
+#   3. reinicia (pm2 restart) cada instancia cuyo código en uso es más viejo que HEAD
+#      (solo si cambió src/, public/ o dependencias),
 #      pero SOLO si está inactiva: un reinicio corta el stream de un turno en curso.
 # "Inactiva" = ningún archivo de sesión de sus motores (Claude/Codex/AgY) se tocó en
 # los últimos IDLE_MIN minutos. Si está ocupada se deja para la próxima corrida.
@@ -66,7 +67,13 @@ for home in /home/colab-*; do
   names=$(as "$user" pm2 jlist 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{JSON.parse(s).filter(p=>p.name.startsWith("ccm-")).forEach(p=>console.log(p.name))}catch{}})')
   for name in $names; do
     stamp="$STATE/$name"
-    [ "$(cat "$stamp" 2>/dev/null)" = "$head" ] && continue
+    old=$(cat "$stamp" 2>/dev/null)
+    [ "$old" = "$head" ] && continue
+    # Solo hace falta reiniciar si cambió código que corre (server, cliente, dependencias).
+    # Un commit de docs, scripts o del catálogo no reinicia a nadie: se anota el sello y listo.
+    if [ -n "$old" ] && as $OWNER git -C $REPO cat-file -e "$old^{commit}" 2>/dev/null        && [ -z "$(as $OWNER git -C $REPO diff --name-only "$old" "$head" -- src public package.json package-lock.json)" ]; then
+      echo "$head" > "$stamp"; continue
+    fi
     if busy "$home"; then
       log "$name: código viejo pero con actividad en los últimos ${IDLE_MIN} min, se pospone"
       continue
