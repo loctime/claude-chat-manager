@@ -4115,45 +4115,52 @@ $('input').addEventListener('paste', (e) => {
 let mediaRecorder = null;
 let audioChunks = [];
 
-$('mic-btn').onclick = async () => {
-  if (mediaRecorder && mediaRecorder.state === 'recording') {
-    mediaRecorder.stop();
-    return;
-  }
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    audioChunks = [];
-    mediaRecorder = new MediaRecorder(stream);
-    mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
-    mediaRecorder.onstop = async () => {
-      stream.getTracks().forEach(t => t.stop());
-      $('mic-btn').classList.remove('recording');
-      setStatus('transcribiendo…');
-      const blob = new Blob(audioChunks, { type: 'audio/webm' });
-      const fd = new FormData();
-      fd.append('audio', blob, 'audio.webm');
-      try {
-        const res = await fetch('/api/transcribe', { method: 'POST', body: fd });
-        if (!res.ok) throw new Error((await res.json()).error || res.statusText);
-        const { text } = await res.json();
-        if (text) {
-          const input = $('input');
-          input.value = (input.value ? input.value + ' ' : '') + text;
-          autoResize(input);
+// Graba, transcribe (/api/transcribe) y agrega el texto al campo dado. Lo comparten el
+// compositor principal (Chats y AgY) y el de Codex; errOpts va tal cual a addMsg para que
+// el error salga en el chat que corresponde.
+function wireMic(btn, inputEl, errOpts) {
+  btn.onclick = async () => {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunks = [];
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        btn.classList.remove('recording');
+        btn.title = 'Grabar audio';
+        setStatus('transcribiendo…');
+        const blob = new Blob(audioChunks, { type: 'audio/webm' });
+        const fd = new FormData();
+        fd.append('audio', blob, 'audio.webm');
+        try {
+          const res = await fetch('/api/transcribe', { method: 'POST', body: fd });
+          if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+          const { text } = await res.json();
+          if (text) {
+            inputEl.value = (inputEl.value ? inputEl.value + ' ' : '') + text;
+            autoResize(inputEl);
+          }
+        } catch (err) {
+          addMsg('error', 'Error transcripción: ' + err.message, errOpts);
+        } finally {
+          setStatus('');
         }
-      } catch (err) {
-        addMsg('error', 'Error transcripción: ' + err.message);
-      } finally {
-        setStatus('');
-      }
-    };
-    mediaRecorder.start();
-    $('mic-btn').classList.add('recording');
-    $('mic-btn').title = 'Detener grabación';
-  } catch (err) {
-    addMsg('error', 'No se pudo acceder al micrófono: ' + err.message);
-  }
-};
+      };
+      mediaRecorder.start();
+      btn.classList.add('recording');
+      btn.title = 'Detener grabación';
+    } catch (err) {
+      addMsg('error', 'No se pudo acceder al micrófono: ' + err.message, errOpts);
+    }
+  };
+}
+wireMic($('mic-btn'), $('input'));
+wireMic($('codex-mic-btn'), $('codex-composer-text'), { container: $('codex-messages') });
 
 // ── Mensaje de usuario con adjuntos inline ──
 function addUserMsgWithFiles(text, attachments) {
