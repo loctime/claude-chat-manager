@@ -18,9 +18,16 @@ const CHECK_TTL_MS = 15000;
 const RESUME_TTL_MS = 15 * 60 * 1000; // más viejo que esto, "continuar" ya no tiene sentido
 const CANCEL_GRACE_MS = 1500;          // margen para que los motores terminen de escribir su sesión
 
+// En el VPS el checkout es de otro usuario (claude) y la instancia corre como colab-*:
+// sin safe.directory git se niega a leerlo ("dubious ownership") y todo daría null.
+// Por línea de comandos es la forma que git acepta, y es de solo lectura.
+function gitArgs(repoRoot, args) {
+  return ['-c', `safe.directory=${repoRoot}`, ...args];
+}
+
 function runGit(repoRoot, args) {
   return new Promise(resolve => {
-    execFile('git', args, { cwd: repoRoot, windowsHide: true, timeout: 5000 }, (err, stdout) => {
+    execFile('git', gitArgs(repoRoot, args), { cwd: repoRoot, windowsHide: true, timeout: 5000 }, (err, stdout) => {
       resolve(err ? null : stdout.trim());
     });
   });
@@ -113,4 +120,4 @@ function createUpdateRouter({
   return router;
 }
 
-module.exports = { createUpdateRouter, WATCHED, RESUME_TTL_MS };
+module.exports = { createUpdateRouter, gitArgs, WATCHED, RESUME_TTL_MS };

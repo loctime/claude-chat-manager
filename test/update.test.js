@@ -4,7 +4,30 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const express = require('express');
-const { createUpdateRouter, RESUME_TTL_MS } = require('../src/update');
+const { createUpdateRouter, gitArgs, RESUME_TTL_MS } = require('../src/update');
+
+test('git se invoca con safe.directory para poder leer un checkout de otro dueño', () => {
+  assert.deepEqual(gitArgs('/opt/app', ['rev-parse', 'HEAD']), ['-c', 'safe.directory=/opt/app', 'rev-parse', 'HEAD']);
+});
+
+test('con el git real, un repo de este mismo dueño devuelve su HEAD', async () => {
+  const { execFileSync } = require('child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccm-update-git-'));
+  try {
+    const g = (...a) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { cwd: dir, stdio: 'pipe' }).toString().trim();
+    g('init', '-q'); fs.writeFileSync(path.join(dir, 'a.txt'), 'x'); g('add', '.'); g('commit', '-qm', 'uno');
+    const head = g('rev-parse', 'HEAD');
+    const router = createUpdateRouter({ repoRoot: dir, engines: {}, canSelfRestart: true, restart() {}, resumeFile: path.join(dir, 'r.json') });
+    const app = express(); app.use('/api', router);
+    const server = await new Promise(r => { const s = app.listen(0, '127.0.0.1', () => r(s)); });
+    try {
+      const body = await (await fetch(`http://127.0.0.1:${server.address().port}/api/version`)).json();
+      assert.equal(body.running, head);
+      assert.equal(body.available, head);
+      assert.equal(body.updateAvailable, false);
+    } finally { server.close(); }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
 
 function fakeRunner({ running = [], queue = [] } = {}) {
   const cancelled = [];
