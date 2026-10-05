@@ -383,6 +383,10 @@ if (ACCESS_PIN) {
 // herramientas de admin. Las pestañas se ocultan en el cliente, pero acá se
 // cierran también las rutas — ocultar un botón no cierra el endpoint.
 const COLLAB_MODE = process.env.COLLAB_MODE === '1';
+// COLLAB_ENGINES=codex,agy (lista separada por comas) limita qué motores ve la
+// instancia; sin la var, los tres. Sin 'claude' se cierran también las rutas de Chats.
+const COLLAB_ENGINES = (process.env.COLLAB_ENGINES || 'claude,codex,agy').split(',').map(s => s.trim()).filter(Boolean);
+const COLLAB_NO_CLAUDE = COLLAB_MODE && !COLLAB_ENGINES.includes('claude');
 const COLLAB_BLOCKED_PREFIXES = [
   '/api/agenda',      // Task: incluye facturación (macarena/*)
   '/api/sala',
@@ -391,6 +395,7 @@ const COLLAB_BLOCKED_PREFIXES = [
   '/api/accounts/switch',
   '/api/shutdown-pc',
   '/api/reveal',
+  ...(COLLAB_NO_CLAUDE ? ['/api/conversations', '/api/background-jobs', '/api/suggest-replies'] : []),
 ];
 if (COLLAB_MODE) {
   app.use((req, res, next) => {
@@ -416,6 +421,7 @@ app.get('/api/accounts', (req, res) => {
     otherPublicUrl: OTHER_PUBLIC_URL,
     otherLabel: OTHER_LABEL,
     collab: COLLAB_MODE,
+    engines: COLLAB_ENGINES,
     appName: getAppName(),
     appColor: getAppColor(),
     userName: getUserName(),

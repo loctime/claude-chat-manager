@@ -59,6 +59,10 @@ let SALA_TOKEN_SET = false;
 // Instancia de colaborador (COLLAB_MODE en el server): sin pestañas ni botones de admin.
 let COLLAB_MODE = false;
 const COLLAB_HIDDEN_PANES = [3, 4, 5]; // Notas, Task, Sala
+// Sin Claude (COLLAB_ENGINES sin 'claude') también se ocultan Chats y Archivado, y la
+// pantalla de inicio pasa a Codex (2) o AgY (6).
+let COLLAB_NO_CLAUDE = false;
+function homePane() { return COLLAB_NO_CLAUDE ? (isPaneVisible(2) ? 2 : 6) : 0; }
 
 const messagesEl = $('messages');
 
@@ -66,10 +70,11 @@ const messagesEl = $('messages');
 async function loadAccounts() {
   try {
     const r = await fetch('/api/accounts');
-    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName, appColor, userName, groqApiKeySet, salaUrl, salaTokenSet, collab } = await r.json();
+    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName, appColor, userName, groqApiKeySet, salaUrl, salaTokenSet, collab, engines } = await r.json();
     activeAccount = active;
     COLLAB_MODE = !!collab;
     document.body.classList.toggle('collab', COLLAB_MODE);
+    COLLAB_NO_CLAUDE = COLLAB_MODE && Array.isArray(engines) && !engines.includes('claude');
     if (COLLAB_MODE) applyPaneVisibility();
     if (appName) { APP_NAME = appName; updateGlobalBusyIndicator(); }
     if (appColor) { APP_COLOR = appColor; applySettings(); }
@@ -305,8 +310,8 @@ window.addEventListener('popstate', (e) => {
     return;
   }
   // Si estamos en Archivado/Codex/Notas sin nada abierto: volver a Chats.
-  if (activePane !== 0) {
-    goToPane(0);
+  if (activePane !== homePane()) {
+    goToPane(homePane());
     _exitArmed = false;
     history.pushState({ view: 'list-guard' }, '');
     return;
@@ -4766,6 +4771,7 @@ const PANE_VISIBILITY_SETTINGS = {
 
 function isPaneVisible(index) {
   if (COLLAB_MODE && COLLAB_HIDDEN_PANES.includes(index)) return false;
+  if (COLLAB_NO_CLAUDE && (index === 0 || index === 1)) return false;
   const setting = PANE_VISIBILITY_SETTINGS[index];
   return !setting || settings[setting] !== false;
 }
@@ -4776,7 +4782,9 @@ function applyPaneVisibility() {
     if (tab) tab.hidden = !settings[setting] || !isPaneVisible(Number(pane));
   }
   // Si se oculta la pestaña que estaba abierta, volver a Chats de inmediato.
-  if (!isPaneVisible(activePane)) goToPane(0);
+  const chatsTab = document.querySelector('.pane-tab[data-pane="0"]');
+  if (chatsTab) chatsTab.hidden = COLLAB_NO_CLAUDE;
+  if (!isPaneVisible(activePane)) goToPane(homePane());
 }
 
 function applySettings() {
