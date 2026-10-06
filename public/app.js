@@ -3958,13 +3958,25 @@ async function prepareForUpload(file, displayName) {
   const materialize = async () => {
     // Falla acá = el archivo ya no se puede leer, y eso no lo arregla ningún
     // reintento: hay que volver a elegir la foto.
+    let buf;
     try {
-      return new Blob([await file.arrayBuffer()], { type: file.type || 'application/octet-stream' });
+      buf = await file.arrayBuffer();
     } catch {
       const e = new Error('no se pudo leer el archivo desde el celu — volvé a elegirlo');
       e.isUnreadable = true;
       throw e;
     }
+    // A veces el celu entrega un archivo "fantasma" (audios de WhatsApp o de la nube sin
+    // descargar, por ejemplo): se lee sin error pero vacío, o con menos bytes de los que dice
+    // tener. Sin este chequeo se adjuntaba igual y al otro lado llegaba un archivo de 0 bytes.
+    if (buf.byteLength === 0 || (file.size > 0 && buf.byteLength !== file.size)) {
+      const e = new Error(buf.byteLength === 0
+        ? 'el archivo llegó vacío (0 bytes) — si es de WhatsApp o de la nube, descargalo primero al dispositivo y volvé a elegirlo'
+        : `el archivo se leyó incompleto (${buf.byteLength} de ${file.size} bytes) — volvé a elegirlo`);
+      e.isUnreadable = true;
+      throw e;
+    }
+    return new Blob([buf], { type: file.type || 'application/octet-stream' });
   };
 
   // Un video de decenas de MB copiado a memoria puede tumbar la pestaña en el

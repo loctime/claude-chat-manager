@@ -58,9 +58,22 @@ function createFilesRouter({
     } catch { return false; }
   })();
 
+  // Un archivo de 0 bytes no sirve para nada y antes se aceptaba como si fuera un adjunto
+  // normal (el chat terminaba con una ruta a un archivo vacío). Pasa cuando el celu entrega
+  // un archivo que no puede leer (típico: audios de WhatsApp o de la nube sin descargar). Se
+  // rechaza con un mensaje claro y se deja rastro del origen para poder diagnosticarlo.
+  function rejectEmpty(req, res, what) {
+    if (req.file.size > 0) return false;
+    fs.unlink(req.file.path, () => {});
+    console.warn(`[upload] ${what} vacío rechazado: "${req.file.originalname}" (${req.file.mimetype}) — ${req.headers['user-agent'] || 'sin user-agent'}`);
+    res.status(400).json({ error: `el ${what} llegó vacío (0 bytes). Si es de WhatsApp o de la nube, descargalo primero al dispositivo y volvé a elegirlo` });
+    return true;
+  }
+
   // ── Upload de archivo adjunto (con compresión automática de imágenes) ──
   router.post('/upload', upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'no se recibió archivo' });
+    if (rejectEmpty(req, res, 'archivo')) return;
     const ext = (path.extname(req.file.originalname) || '').slice(1).toLowerCase();
     const finalPath = req.file.path + '.' + (ext || 'bin');
 
@@ -95,6 +108,7 @@ function createFilesRouter({
   // ── Transcripción de audio vía Groq Whisper ──
   router.post('/transcribe', upload.single('audio'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'no se recibió audio' });
+    if (rejectEmpty(req, res, 'audio')) return;
     const apiKey = getGroqApiKey();
     if (!apiKey) {
       fs.unlinkSync(req.file.path);
