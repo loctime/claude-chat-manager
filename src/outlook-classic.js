@@ -86,4 +86,26 @@ async function findLatest(inboxChoice, { fromContains, subjectContains } = {}) {
   return match[0] || null;
 }
 
-module.exports = { readInbox, openItem, openReplyDraft, findLatest };
+// Manda DE VERDAD (Send(), no Display) — excepción puntual pedida por
+// Fernando el 16/09/2026 solo para la rutina automática de pedido de nómina
+// a Macarena (ver src/macarena-scheduler.js y memoria
+// project_cron_nomina_macarena). Si hay entryId, responde ese hilo; si no,
+// manda un mail nuevo con to/subject. El resto del módulo sigue sin enviar
+// nada solo — no reutilizar esto para otro flujo sin que Fernando lo pida
+// explícitamente.
+async function sendReply({ entryId, to, subject, bodyText }) {
+  const draftFile = path.join(os.tmpdir(), `ccm-outlook-send-${crypto.randomUUID()}.txt`);
+  await fs.promises.writeFile(draftFile, bodyText, { encoding: 'utf8', mode: 0o600 });
+  const args = [];
+  if (entryId) args.push('-EntryId', entryId);
+  if (to) args.push('-To', to);
+  if (subject) args.push('-Subject', subject);
+  args.push('-DraftFile', draftFile);
+  try {
+    await runPs('send-outlook-reply.ps1', args, { timeout: 30_000 });
+  } finally {
+    await fs.promises.unlink(draftFile).catch(() => {});
+  }
+}
+
+module.exports = { readInbox, openItem, openReplyDraft, findLatest, sendReply };

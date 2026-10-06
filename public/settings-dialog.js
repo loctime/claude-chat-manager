@@ -133,6 +133,7 @@ function openSettings() {
   $('cfg-show-notes-pane').checked = settings.showNotesPane;
   $('cfg-show-task-pane').checked = settings.showTaskPane;
   $('cfg-show-sala-pane').checked = settings.showSalaPane;
+  $('cfg-show-equipo-pane').checked = settings.showEquipoPane;
   $('cfg-voice').value = settings.voice;
   $('cfg-color-accent').value = settings.colorAccent || readComputedColor('--accent');
   $('cfg-color-codex').value = settings.colorCodex || readComputedColor('--codex-accent');
@@ -379,6 +380,7 @@ const PANE_TOGGLE_SETTINGS = {
   'cfg-show-notes-pane': 'showNotesPane',
   'cfg-show-task-pane': 'showTaskPane',
   'cfg-show-sala-pane': 'showSalaPane',
+  'cfg-show-equipo-pane': 'showEquipoPane',
 };
 for (const [inputId, setting] of Object.entries(PANE_TOGGLE_SETTINGS)) {
   $(inputId).onchange = e => {

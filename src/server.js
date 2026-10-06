@@ -11,6 +11,7 @@ const scanner = require('./scanner');
 const notes = require('./notes');
 const { createNotesRouter } = require('./routes/notes');
 const agendaRouter = require('./routes/agenda');
+const macarenaScheduler = require('./macarena-scheduler');
 const meta = require('./meta');
 const config = require('./config');
 const icon = require('./icon');
@@ -21,6 +22,7 @@ const { createCodexRouter } = require('./routes/codex');
 const { GeminiRunner } = require('./gemini-runner');
 const { createGeminiRouter, createAntigravityRouter, resolveContextTokens } = require('./routes/gemini');
 const { createSalaRouter } = require('./routes/sala');
+const { createEquipoRouter } = require('./routes/equipo');
 const { createConversationsRouter, resolveConversationGitRepo } = require('./routes/conversations');
 const {
   projectEntry,
@@ -268,6 +270,9 @@ const SEARCH_SYNC_MS = 60_000;
 // Más seguido que el índice de búsqueda a propósito — una mención quiere
 // sentirse como "el otro te contestó al toque", no como background sync.
 const SALA_MENTION_POLL_MS = 20_000;
+// Solo importa el DÍA, no la hora — 1h alcanza de sobra y evita spamear
+// Outlook por COM. Ver src/macarena-scheduler.js.
+const MACARENA_POLL_MS = 60 * 60_000;
 
 
 const app = express();
@@ -799,7 +804,7 @@ const GEMINI_META_FILE = path.join(os.homedir(), '.claude', 'session-manager', '
 const SALA_META_FILE = path.join(os.homedir(), '.claude', 'session-manager', 'sala-meta.json');
 const codexRunner = new CodexRunner({ selfHost: HOST, selfPort: PORT });
 const codexSseClients = new Map(); // convId → Set<res>
-const geminiRunner = new GeminiRunner({ selfHost: HOST, selfPort: PORT });
+const geminiRunner = new GeminiRunner({ selfHost: HOST, selfPort: PORT, getAppName, getUserName });
 const geminiSseClients = new Map();
 // convId → Date.now() de cuando se despachó el mensaje. Sirve para distinguir
 // una respuesta real (aunque gemini-runner haya perdido el hilo del stream)
@@ -1300,9 +1305,13 @@ async function maybeGenerateGeminiTitle(convId) {
 
 
 
+// Fernando trabaja siempre adentro de esta carpeta — cada subcarpeta es un
+// proyecto (ver CLAUDE.md ahí adentro). Antes esto apuntaba a
+// ~/Desktop/Proyectos y ~/Desktop del lado WSL (HOME_DIR = /home/fernando),
+// que no tienen nada que ver con la carpeta real de trabajo en Windows y
+// dejaban el picker de "+ Nuevo proyecto…" vacío.
 const PROJECT_SEARCH_ROOTS = [
-  path.join(HOME_DIR, 'Desktop', 'Proyectos'),
-  path.join(HOME_DIR, 'Desktop'),
+  '/mnt/c/Users/Fernando/Desktop/claude',
 ];
 
 function normalizeProjectName(value) {
@@ -1896,6 +1905,21 @@ app.use('/api/sala', createSalaRouter({
   accountHomeDir,
 }));
 
+app.use('/api/equipo', createEquipoRouter({
+  runner,
+  codexRunner,
+  geminiRunner,
+  scanner,
+  codexScanner,
+  accountMetaFile,
+  codexMetaFile: CODEX_META_FILE,
+  geminiMetaFile: GEMINI_META_FILE,
+  accountProjectsDir,
+  accountHomeDir,
+  getActiveAccount: () => activeAccount,
+  getUserName,
+}));
+
 const server = app.listen(PORT, HOST, () => {
   console.log(`Claude Chat Manager en http://${HOST}:${PORT}`);
   // Backfill después del listen, no antes: el buscador arranca degradado
@@ -1906,6 +1930,9 @@ const server = app.listen(PORT, HOST, () => {
     setInterval(() => syncSearchIndex(activeAccount), SEARCH_SYNC_MS).unref();
   }
   setInterval(() => checkSalaMentions().catch(err => console.error('[sala] error en el poll de menciones:', err.message)), SALA_MENTION_POLL_MS).unref();
+  // Pedido automático de nómina a Macarena (16/09/2026) — ver src/macarena-scheduler.js.
+  macarenaScheduler.checkMacarenaSchedule().catch(err => console.error('[macarena] error en el chequeo inicial:', err.message));
+  setInterval(() => macarenaScheduler.checkMacarenaSchedule().catch(err => console.error('[macarena] error en el poll:', err.message)), MACARENA_POLL_MS).unref();
 });
 
 // Cloudflare Tunnel mantiene conexiones al origin en su pool y las reutiliza

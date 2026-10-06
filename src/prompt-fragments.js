@@ -30,4 +30,84 @@ function restrictedToolsNotice() {
   return `HERRAMIENTAS LIMITADAS EN ESTE TURNO: te mencionaron en la sala pero tu propio humano no escribió nada ahora mismo — es una decisión de seguridad, no un error: no tenés Bash, Edit, Write ni NotebookEdit disponibles en este turno puntual, así que no podés ejecutar comandos ni modificar nada. Podés leer, investigar (Read/Grep/Glob) y contestar en la sala con lo que encuentres. Si te piden hacer algo que requiera ejecutar o escribir, explicá que hace falta que tu propio humano lo pida directamente desde su chat — recién ahí corre sin esta restricción.`;
 }
 
-module.exports = { infraNotice, pathContract, salaNotice, restrictedToolsNotice };
+function resolveMemoryFiles(cwd) {
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+
+  const home = os.homedir();
+  const projectsDir = path.join(home, '.claude', 'projects');
+
+  let primaryMemory = null;
+  try {
+    if (fs.existsSync(projectsDir)) {
+      const entries = fs.readdirSync(projectsDir);
+      let bestScore = -1;
+      for (const entry of entries) {
+        const mem = path.join(projectsDir, entry, 'memory', 'MEMORY.md');
+        try {
+          if (fs.existsSync(mem)) {
+            const stat = fs.statSync(mem);
+            const cwdSlug = cwd ? cwd.replace(/[\/\\:]/g, '-') : '';
+            const isMatch = cwdSlug && entry.includes(cwdSlug);
+            const score = stat.size + (isMatch ? 1000000 : 0);
+            if (score > bestScore) {
+              bestScore = score;
+              primaryMemory = mem;
+            }
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+
+  const claudeCandidates = [
+    cwd ? path.join(cwd, 'CLAUDE.md') : null,
+    path.join(home, '.claude', 'CLAUDE.md'),
+    path.join(home, 'CLAUDE.md'),
+  ].filter(Boolean);
+
+  let primaryClaude = null;
+  for (const c of claudeCandidates) {
+    if (fs.existsSync(c)) {
+      primaryClaude = c;
+      break;
+    }
+  }
+
+  if (!primaryClaude) {
+    primaryClaude = path.join(home, '.claude', 'CLAUDE.md');
+  }
+  if (!primaryMemory) {
+    const slug = path.basename(home) ? `projects-${path.basename(home)}` : 'default';
+    primaryMemory = path.join(projectsDir, slug, 'memory', 'MEMORY.md');
+  }
+
+  return { claudeMd: primaryClaude, memoryMd: primaryMemory };
+}
+
+function memoryProtocol({ appName, userName, cwd } = {}) {
+  const os = require('os');
+  const config = require('./config');
+
+  const cfg = config.load();
+  const resolvedApp = (appName || cfg.appName || process.env.CCM_APP_NAME || 'Jarvis').trim();
+  let resolvedUser = (userName || cfg.userName || process.env.CCM_USER_NAME || '').trim();
+
+  if (!resolvedUser || resolvedUser === 'Vos') {
+    let systemUser = '';
+    try { systemUser = os.userInfo().username.toLowerCase(); } catch {}
+    if (resolvedApp.toLowerCase().includes('ferstark') || systemUser === 'fernando') {
+      resolvedUser = 'Fernando';
+    } else {
+      resolvedUser = 'Diego Bertosi';
+    }
+  }
+
+  const marker = resolvedApp ? `CONTEXTO ${resolvedApp.toUpperCase()} COMPARTIDO:` : 'CONTEXTO COMPARTIDO:';
+  const { claudeMd, memoryMd } = resolveMemoryFiles(cwd);
+
+  return `${marker} sos un asistente que trabaja en la PC de ${resolvedUser} junto a Claude Code. Antes de cualquier tarea no trivial, leé ${claudeMd} y ${memoryMd}. Si trabajás dentro de un proyecto, leé también su CLAUDE.local.md. Esa memoria es fuente de verdad: no la reescribas ni la dupliques. Usá español argentino sin signos de apertura y fechas DD/MM/AAAA.`;
+}
+
+module.exports = { infraNotice, pathContract, salaNotice, restrictedToolsNotice, memoryProtocol, resolveMemoryFiles };

@@ -26,12 +26,16 @@ function cleanUserText(text) {
   if (m) t = m[1];
   for (const marker of [
     'CONTEXTO JARVIS COMPARTIDO:',
+    'CONTEXTO FERSTARK COMPARTIDO:',
+    'CONTEXTO COMPARTIDO:',
     'AVISO INFRAESTRUCTURA:',
     'CONTRATO DE RUTAS EN ESTE CHAT:',
   ]) {
     const idx = t.indexOf(marker);
     if (idx !== -1) t = t.slice(0, idx);
   }
+  const dynamicContextIdx = t.search(/CONTEXTO\s+[A-Za-z0-9_-]+\s+COMPARTIDO:/i);
+  if (dynamicContextIdx !== -1) t = t.slice(0, dynamicContextIdx);
   return t.trim();
 }
 

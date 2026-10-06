@@ -372,6 +372,7 @@ async function selectGemini(id, name, projectDir = '', project = undefined) {
   setGeminiBusy(false);
   showNotebookView(false);
   showSalaView(false);
+  if (typeof showEquipoView === 'function') showEquipoView(false);
   openChat();
   if (id) {
     await geminiApi(`/conversations/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ unread: false }) });

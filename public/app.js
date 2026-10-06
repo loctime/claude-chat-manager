@@ -893,6 +893,16 @@ async function goToPane(index) {
       return;
     }
   }
+  if (index === 7 && !equipoRoomListLoaded) {
+    try {
+      await loadEquipoRoomList();
+      equipoRoomListLoaded = true;
+    } catch (err) {
+      toast('No se pudieron cargar las salas de Equipo: ' + err.message);
+      if (myGeneration === paneNavGeneration) paneNavTarget = activePane;
+      return;
+    }
+  }
   if (myGeneration !== paneNavGeneration) return; // otra navegación más nueva ya tomó el control
   activePane = index;
   // El acento identifica la pestaña visible, no el chat que haya quedado
@@ -3737,6 +3747,7 @@ async function selectConv(convId, name, model, lastModel, projectDir) {
   }
   showNotebookView(false);
   showSalaView(false); // si había una sala abierta, se cierra — ver bug reportado por Diego
+  if (typeof showEquipoView === 'function') showEquipoView(false);
   openChat();
   // Al abrir otra conversación no heredamos la posición de scroll de la
   // anterior: arrancamos mostrando el PRINCIPIO del último mensaje (no el
@@ -4460,6 +4471,10 @@ $('new-conv').onclick = async () => {
       await createSalaRoom();
       return;
     }
+    if (activePane === 7) {
+      await createEquipoRoom();
+      return;
+    }
     // Si hay un proyecto filtrado en la barra, la charla nueva nace ya
     // etiquetada con ese proyecto (evita el paso extra de asignarlo a mano).
     const newConvProject = activeProjectFilter && activeProjectFilter !== '__none__' ? activeProjectFilter : undefined;
@@ -4520,9 +4535,9 @@ const PANE_SWIPE_THRESHOLD = 60;
 // sola vez para que el arrastre también muestre el panel correcto durante la
 // animación, no solo al soltar el dedo. Archivado queda al final: se abre de
 // forma explícita, no forma parte del recorrido habitual.
-const PANE_DOM_ORDER = [0, 6, 3, 4, 5, 2, 1];
-const PANE_ELEMENT_IDS = { 0: 'tree', 1: 'tree-archived', 2: 'codex-pane', 3: 'tree-notes', 4: 'tree-agenda', 5: 'tree-sala', 6: 'gemini-pane' };
-const PANE_SWIPE_ORDER = [0, 6, 3, 4, 5, 2];
+const PANE_DOM_ORDER = [0, 6, 3, 4, 5, 7, 2, 1];
+const PANE_ELEMENT_IDS = { 0: 'tree', 1: 'tree-archived', 2: 'codex-pane', 3: 'tree-notes', 4: 'tree-agenda', 5: 'tree-sala', 6: 'gemini-pane', 7: 'tree-equipo' };
+const PANE_SWIPE_ORDER = [0, 6, 3, 4, 5, 7, 2];
 const PANE_POSITION = Object.fromEntries(PANE_DOM_ORDER.map((pane, position) => [pane, position]));
 const paneInnerForOrder = $('tree-viewport-inner');
 PANE_DOM_ORDER.forEach(pane => paneInnerForOrder.appendChild($(PANE_ELEMENT_IDS[pane])));
@@ -4691,6 +4706,7 @@ const DEFAULT_SETTINGS = {
   showNotesPane: true,
   showTaskPane: true,
   showSalaPane: true,
+  showEquipoPane: true,
   voice: '', // una sola voz para mensajes propios y del agente (antes voiceAssistant/voiceUser separados)
   colorAccent: '',
   colorCodex: '#10a37f',
@@ -4756,6 +4772,7 @@ const PANE_VISIBILITY_SETTINGS = {
   4: 'showTaskPane',
   5: 'showSalaPane',
   6: 'showAgYPane',
+  7: 'showEquipoPane',
 };
 
 function isPaneVisible(index) {

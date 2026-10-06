@@ -288,6 +288,7 @@ async function openRoom(id, name) {
   closeSalaStream();
   closeSalaMentionMenu();
   if (typeof showNotebookView === 'function') showNotebookView(false);
+  if (typeof showEquipoView === 'function') showEquipoView(false);
   showSalaView(true);
   openChat();
   const roomRef = rooms.find(r => r.id === id);

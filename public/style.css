@@ -340,23 +340,24 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
 }
 
 #tree-viewport { flex: 1; overflow: hidden; position: relative; }
-/* Carrusel móvil: Chats → AgY → Notas → Task → Sala → Codex. Archivado queda
-   al final y se abre explícitamente; no forma parte del swipe normal. Los ids
-   de pane son históricos, por eso los translateX no siguen el valor numérico. */
+/* Carrusel móvil: Chats → AgY → Notas → Task → Sala → Equipo → Codex. Archivado
+   queda al final y se abre explícitamente; no forma parte del swipe normal. Los
+   ids de pane son históricos, por eso los translateX no siguen el valor numérico. */
 #tree-viewport-inner {
   display: flex;
-  width: 700%;
+  width: 800%;
   height: 100%;
   transition: transform .25s ease;
   touch-action: pan-y;
 }
-#tree-viewport-inner[data-pane="6"] { transform: translateX(calc(-100% / 7)); }
-#tree-viewport-inner[data-pane="3"] { transform: translateX(calc(-200% / 7)); }
-#tree-viewport-inner[data-pane="4"] { transform: translateX(calc(-300% / 7)); }
-#tree-viewport-inner[data-pane="5"] { transform: translateX(calc(-400% / 7)); }
-#tree-viewport-inner[data-pane="2"] { transform: translateX(calc(-500% / 7)); }
-#tree-viewport-inner[data-pane="1"] { transform: translateX(calc(-600% / 7)); }
-.tree-pane { width: calc(100% / 7); flex: none; height: 100%; overflow-y: auto; }
+#tree-viewport-inner[data-pane="6"] { transform: translateX(calc(-100% / 8)); }
+#tree-viewport-inner[data-pane="3"] { transform: translateX(calc(-200% / 8)); }
+#tree-viewport-inner[data-pane="4"] { transform: translateX(calc(-300% / 8)); }
+#tree-viewport-inner[data-pane="5"] { transform: translateX(calc(-400% / 8)); }
+#tree-viewport-inner[data-pane="7"] { transform: translateX(calc(-500% / 8)); }
+#tree-viewport-inner[data-pane="2"] { transform: translateX(calc(-600% / 8)); }
+#tree-viewport-inner[data-pane="1"] { transform: translateX(calc(-700% / 8)); }
+.tree-pane { width: calc(100% / 8); flex: none; height: 100%; overflow-y: auto; }
 .tree-pane::-webkit-scrollbar { width: 4px; }
 .tree-pane::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 

@@ -22,7 +22,15 @@ AVISO INFRAESTRUCTURA: te está ejecutando claude-chat-manager en 127.0.0.1:3777
 CONTRATO DE RUTAS EN ESTE CHAT: cuando compartas un archivo...
 </USER_REQUEST>`;
 
+  const rawFerStark = `<USER_REQUEST>
+hola fernando
+
+CONTEXTO FERSTARK COMPARTIDO: sos un asistente que trabaja en la PC de Fernando junto a Claude Code.
+AVISO INFRAESTRUCTURA: te está ejecutando claude-chat-manager en 127.0.0.1:3777.
+</USER_REQUEST>`;
+
   assert.strictEqual(cleanUserText(raw), 'conoces claude-chat-manager?');
+  assert.strictEqual(cleanUserText(rawFerStark), 'hola fernando');
   assert.strictEqual(cleanUserText('hola como estas?'), 'hola como estas?');
   assert.strictEqual(cleanUserText(null), '');
 });

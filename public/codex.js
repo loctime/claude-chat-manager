@@ -587,6 +587,7 @@ async function selectCodexShared(convId, name, projectDir = '', project = undefi
   setCodexMainBusy(false);
   showNotebookView(false);
   showSalaView(false);
+  if (typeof showEquipoView === 'function') showEquipoView(false);
   openChat();
   const markRead = codexApi(`/conversations/${convId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ unread: false }) }).catch(() => {});
   await loadCodexSharedMessages(convId);
@@ -630,6 +631,7 @@ async function createCodexSharedConversation() {
   setCodexMainBusy(false);
   showNotebookView(false);
   showSalaView(false);
+  if (typeof showEquipoView === 'function') showEquipoView(false);
   openChat();
   if (typeof invalidateUnifiedTreeCache === 'function') invalidateUnifiedTreeCache();
   loadCodexSharedTree();

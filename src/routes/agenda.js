@@ -2,15 +2,20 @@ const express = require('express');
 const agenda = require('../agenda');
 const outlookClassic = require('../outlook-classic');
 const { runTaskScript } = require('../task-runner');
+const macarenaScheduler = require('../macarena-scheduler');
 
 const router = express.Router();
 
 // ── Agenda (semáforo de tareas recurrentes mensuales) ──
 // Ver charla con Fernando 07/09/2026: catálogo fijo en agenda.js, el envío
 // real de mails pasa por Outlook clásico vía COM/MAPI (outlook-classic.js,
-// portado de maximia-mail-tasks) — sin Graph, sin Azure, sin SMTP. Esta
-// sesión NUNCA aprieta "Enviar": arma el texto, lo muestra, y recién cuando
-// el usuario confirma abre la ventana de Outlook para que la mande él mismo.
+// portado de maximia-mail-tasks) — sin Graph, sin Azure, sin SMTP. Por
+// defecto esta sesión NUNCA aprieta "Enviar": arma el texto, lo muestra, y
+// recién cuando el usuario confirma abre la ventana de Outlook para que la
+// mande él mismo.
+// ÚNICA excepción (16/09/2026, pedido explícito de Fernando): el pedido
+// mensual de nómina a Macarena SÍ se manda solo, ver src/macarena-scheduler.js
+// (poll desde server.js) — no duplicar ese criterio acá.
 router.get('/', (req, res) => {
   res.json({ tasks: agenda.list(), macarena: agenda.getMacarena() });
 });
@@ -86,20 +91,9 @@ router.post('/:id/reset-run', (req, res) => {
   res.json({ ok: true });
 });
 
-const MACARENA_EMAIL = 'macarena.schwindt@maximia.com.ar';
-
-function macarenaTemplateText() {
-  const meses = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
-  const now = new Date();
-  const mesActual = meses[now.getMonth()];
-  return `Hola Maca, ¿cómo estás? Te pido si podés pasarme la nómina de personal actualizada por operación, para armar el estadístico de contratista de ${mesActual}.\n\nMuchas gracias!`;
-}
-
-// Busca el último mail de Maca en el hilo de nómina — sirve tanto para armar
-// el "Preparar pedido" (reply-to) como para el chequeo de respuesta.
-async function findMacarenaThread() {
-  return outlookClassic.findLatest('30d', { fromContains: MACARENA_EMAIL, subjectContains: 'nomina' });
-}
+// Constantes y helpers de texto compartidos con la rutina automática —
+// ver src/macarena-scheduler.js, no duplicar acá.
+const { MACARENA_EMAIL, macarenaTemplateText, findMacarenaThread } = macarenaScheduler;
 
 // Arma el texto propuesto y lo devuelve para que el usuario lo revise/edite
 // en el front ANTES de tocar Outlook. No abre nada todavía.

@@ -206,6 +206,7 @@ async function openNotebook(id, name) {
   notesData = [];
   renderNotes();
   if (typeof showSalaView === 'function') showSalaView(false); // si había una sala abierta, se cierra — ver bug reportado por Diego
+  if (typeof showEquipoView === 'function') showEquipoView(false);
   showNotebookView(true);
   openChat();
   try { await loadNotes(); }
@@ -225,6 +226,7 @@ function openNotebookDraft() {
   notesData = [];
   renderNotes();
   if (typeof showSalaView === 'function') showSalaView(false); // si había una sala abierta, se cierra — ver bug reportado por Diego
+  if (typeof showEquipoView === 'function') showEquipoView(false);
   showNotebookView(true);
   openChat();
   $('notes-input').value = '';

@@ -183,5 +183,34 @@ test('serializa mensajes de la misma conversación en la cola del runner', () =>
   assert.equal(spawned.length, 2);
 });
 
+test('arma prompt con contexto dinamico segun getAppName y getUserName', () => {
+  const spawned = [];
+  const r = makeRunner(spawned, {
+    getAppName: () => 'FerStark',
+    getUserName: () => 'Fernando',
+  });
+  r.send({ convId: 'c1', sessionId: null, cwd: 'C:\\p', text: 'hola' });
+  const a = spawned[0].args;
+  const promptIdx = a.indexOf('--prompt');
+  assert.ok(promptIdx !== -1);
+  const promptVal = a[promptIdx + 1];
+  assert.ok(promptVal.includes('CONTEXTO FERSTARK COMPARTIDO:'));
+  assert.ok(promptVal.includes('PC de Fernando junto a Claude Code'));
+});
+
+test('arma prompt con Jarvis/Diego si getAppName devuelve Jarvis', () => {
+  const spawned = [];
+  const r = makeRunner(spawned, {
+    getAppName: () => 'Jarvis',
+    getUserName: () => 'Diego Bertosi',
+  });
+  r.send({ convId: 'c1', sessionId: null, cwd: 'C:\\p', text: 'hola' });
+  const a = spawned[0].args;
+  const promptIdx = a.indexOf('--prompt');
+  assert.ok(promptIdx !== -1);
+  const promptVal = a[promptIdx + 1];
+  assert.ok(promptVal.includes('CONTEXTO JARVIS COMPARTIDO:'));
+  assert.ok(promptVal.includes('PC de Diego Bertosi junto a Claude Code'));
+});
 
 
