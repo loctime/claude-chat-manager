@@ -1171,7 +1171,7 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
 }
 #mic-btn:hover, #attach-btn:hover { background: var(--border); color: var(--text); }
 #mic-btn:disabled, #attach-btn:disabled { opacity: .3; cursor: default; pointer-events: none; }
-#mic-btn.recording, #codex-mic-btn.recording { color: var(--danger); animation: pulse-rec .8s ease-in-out infinite alternate; }
+#mic-btn.recording, #codex-mic-btn.recording, #equipo-mic-btn.recording { color: var(--danger); animation: pulse-rec .8s ease-in-out infinite alternate; }
 @keyframes pulse-rec { from { opacity: 1; } to { opacity: .4; } }
 
 #input:disabled { opacity: .4; }

@@ -123,6 +123,7 @@ async function openEquipoRoom(id, name) {
   equipoMessages = [];
   renderEquipoMessages();
   setEquipoBusy(false);
+  clearEquipoAttachments();
   if (typeof showNotebookView === 'function') showNotebookView(false);
   if (typeof showSalaView === 'function') showSalaView(false);
   showEquipoView(true);
@@ -144,12 +145,120 @@ async function createEquipoRoom() {
   await openEquipoRoom(room.id, room.name);
 }
 
+// ── Equipo: adjuntar archivos ──
+// Mismo mecanismo que el composer principal (uploadAttachment/addAttachmentChip
+// en app.js): subir a /api/upload (genérico, no depende de conv) y mandar la
+// ruta absoluta como texto — Claude/Codex/AgY la leen solos con su propio
+// Read, no hace falta que el server la procese.
+let pendingEquipoAttachments = []; // [{ path, name, file }]
+
+function clearEquipoAttachments() {
+  for (const chip of $('equipo-attachments').querySelectorAll('.attach-chip')) {
+    if (chip._objUrl) URL.revokeObjectURL(chip._objUrl);
+  }
+  pendingEquipoAttachments = [];
+  $('equipo-attachments').innerHTML = '';
+}
+
+function addEquipoAttachmentChip(name, filePath, localFile) {
+  const ext = name.split('.').pop().toLowerCase();
+  const isImg = IMAGE_EXTS.has(ext);
+
+  const chip = document.createElement('div');
+  chip.className = 'attach-chip' + (isImg ? ' attach-chip-img' : '');
+
+  if (isImg && localFile) {
+    const objUrl = URL.createObjectURL(localFile);
+    const img = document.createElement('img');
+    img.className = 'attach-preview-img';
+    img.alt = name;
+    img.src = objUrl;
+    chip._objUrl = objUrl;
+    chip.appendChild(img);
+  } else if (isImg && filePath) {
+    const img = document.createElement('img');
+    img.className = 'attach-preview-img';
+    img.alt = name;
+    img.src = '/api/thumbnail?path=' + encodeURIComponent(filePath);
+    chip.appendChild(img);
+  } else {
+    chip.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5a2.5 2.5 0 0 1 5 0v10.5c0 .83-.67 1.5-1.5 1.5s-1.5-.67-1.5-1.5V6H9v9.5a2.5 2.5 0 0 0 5 0V5c0-2.21-1.79-4-4-4S6 2.79 6 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>`;
+  }
+
+  const nameSpan = document.createElement('span');
+  nameSpan.className = 'attach-chip-name';
+  nameSpan.title = name;
+  nameSpan.textContent = name;
+
+  const removeBtn = document.createElement('button');
+  removeBtn.className = 'attach-chip-remove';
+  removeBtn.type = 'button';
+  removeBtn.setAttribute('aria-label', 'Quitar');
+  removeBtn.textContent = '✕';
+  removeBtn.onclick = () => {
+    if (chip._objUrl) URL.revokeObjectURL(chip._objUrl);
+    const idx = pendingEquipoAttachments.findIndex(a => a.path === filePath);
+    if (idx >= 0) pendingEquipoAttachments.splice(idx, 1);
+    chip.remove();
+  };
+
+  chip.appendChild(nameSpan);
+  chip.appendChild(removeBtn);
+  $('equipo-attachments').appendChild(chip);
+}
+
+async function uploadEquipoFile(file) {
+  if (!currentEquipoRoom) return;
+  const displayName = file.name || `pegado-${Date.now()}.${(file.type.split('/')[1] || 'bin')}`;
+  const loadingChip = document.createElement('div');
+  loadingChip.className = 'attach-chip attach-chip-loading';
+  loadingChip.innerHTML = `<span class="attach-spinner"></span><span class="attach-chip-name"></span>`;
+  loadingChip.querySelector('.attach-chip-name').textContent = displayName;
+  $('equipo-attachments').appendChild(loadingChip);
+
+  const t0 = Date.now();
+  let sentBytes = 0;
+  try {
+    const { blob, name: uploadName } = await prepareForUpload(file, displayName);
+    file = blob;
+    sentBytes = blob.size;
+    const fd = new FormData();
+    fd.append('file', blob, uploadName);
+    const res = await netFetch('/api/upload', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+    const { path: filePath, name } = await res.json();
+    loadingChip.remove();
+    pendingEquipoAttachments.push({ path: filePath, name, file });
+    addEquipoAttachmentChip(name, filePath, file);
+  } catch (err) {
+    loadingChip.remove();
+    const detalle = sentBytes
+      ? ` [${(sentBytes / 1024 / 1024).toFixed(1)}MB, ${((Date.now() - t0) / 1000).toFixed(1)}s]`
+      : ` [falló al preparar, ${((Date.now() - t0) / 1000).toFixed(1)}s]`;
+    toast('No se pudo subir: ' + err.message + detalle);
+  }
+}
+
+$('equipo-attach-btn').onclick = () => { $('equipo-file-input').click(); };
+$('equipo-file-input').onchange = async () => {
+  const files = Array.from($('equipo-file-input').files);
+  $('equipo-file-input').value = '';
+  for (const f of files) await uploadEquipoFile(f);
+};
+
+wireMic($('equipo-mic-btn'), $('equipo-input'), { container: $('equipo-messages') });
+
 async function sendEquipoMessage() {
   const input = $('equipo-input');
-  const text = input.value.trim();
-  if (!text || !currentEquipoRoom || equipoBusy) return;
+  const rawText = input.value.trim();
+  const attachments = [...pendingEquipoAttachments];
+  if ((!rawText && attachments.length === 0) || !currentEquipoRoom || equipoBusy) return;
+  const text = attachments.length > 0
+    ? attachments.map(a => `[Archivo adjunto: ${a.path}]`).join('\n') + (rawText ? '\n\n' + rawText : '')
+    : rawText;
   input.value = '';
   autoResize(input);
+  clearEquipoAttachments();
   try {
     await api(`/equipo/rooms/${currentEquipoRoom.id}/message`, {
       method: 'POST',
@@ -159,8 +268,9 @@ async function sendEquipoMessage() {
     await loadEquipoMessages();
   } catch (err) {
     toast('No se pudo mandar el mensaje: ' + err.message);
-    input.value = text;
+    input.value = rawText;
     autoResize(input);
+    for (const a of attachments) { pendingEquipoAttachments.push(a); addEquipoAttachmentChip(a.name, a.path, a.file); }
   }
 }
 
