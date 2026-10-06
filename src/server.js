@@ -1834,7 +1834,7 @@ app.use('/api/background-jobs', createBackgroundJobsRouter({
   launch: (job, options) => launchBackgroundJob(runner, backgroundJobs, accountMetaFile, job, options),
 }));
 
-app.use('/api/codex', createCodexRouter({
+const codexRouter = createCodexRouter({
   codexRunner,
   codexSseClients,
   codexMetaFile: CODEX_META_FILE,
@@ -1851,7 +1851,9 @@ app.use('/api/codex', createCodexRouter({
     const data = meta.load(accountMetaFile(activeAccount));
     return hiddenProjectNames(data);
   },
-}));
+});
+app.use('/api/codex', codexRouter);
+codexRouter.prewarm();
 
 // ── Gemini CLI ──
 function geminiBroadcast(convId, payload) { for (const res of geminiSseClients.get(convId) || []) res.write(`data: ${JSON.stringify(payload)}\n\n`); }
