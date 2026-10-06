@@ -264,15 +264,24 @@ function showGeminiConvMenu(x, y, conv) {
   const rect = menu.getBoundingClientRect();
   menu.style.left = Math.min(x, window.innerWidth - rect.width - 8) + 'px';
   menu.style.top = Math.min(y, window.innerHeight - rect.height - 8) + 'px';
-  const dismiss = () => {
+  const close = () => {
     menu.remove();
     document.removeEventListener('click', dismiss, true);
     document.removeEventListener('touchstart', dismiss, true);
   };
+  // Solo cierra si el toque fue FUERA del menú. Sin esta guarda, apoyar el dedo en un botón
+  // (touchstart, en fase de captura) borraba el menú antes de que llegara el click, y el click
+  // caía sobre la conversación de atrás en vez de ejecutar la acción. Mismo patrón que Chats y Codex.
+  const dismiss = e => {
+    if (menu.contains(e.target)) return;
+    close();
+  };
+  menu.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
   menu.addEventListener('click', async e => {
+    e.stopPropagation();
     const action = e.target.dataset.action;
     if (!action) return;
-    dismiss();
+    close();
     if (action === 'new-in-project') {
       try {
         if (activePane !== 6) await goToPane(6);
