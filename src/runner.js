@@ -2,19 +2,21 @@ const { spawn, execFileSync } = require('child_process');
 const { EventEmitter } = require('events');
 const os = require('os');
 const { CLAUDE_CMD } = require('./claude-cmd');
-const { infraNotice, pathContract, salaNotice, restrictedToolsNotice } = require('./prompt-fragments');
+const { infraNotice, pathContract, salaNotice, restrictedToolsNotice, backgroundJobsNotice } = require('./prompt-fragments');
 
 const CURRENT_USER = os.userInfo().username;
 const IS_WIN = process.platform === 'win32';
 
 class Runner extends EventEmitter {
-  constructor({ maxConcurrent = 2, spawnFn = spawn, command = CLAUDE_CMD, selfHost, selfPort } = {}) {
+  constructor({ maxConcurrent = 3, spawnFn = spawn, command = CLAUDE_CMD, selfHost, selfPort, backgroundJobsScript, extraEnv } = {}) {
     super();
     this.max = maxConcurrent;
     this.spawnFn = spawnFn;
     this.command = command;
     this.selfHost = selfHost;
     this.selfPort = selfPort;
+    this.backgroundJobsScript = backgroundJobsScript;
+    this.extraEnv = extraEnv || {};
     this.queue = [];
     this.running = new Map(); // convId → child
     this._accounts = new Map(); // convId → account
@@ -79,6 +81,7 @@ class Runner extends EventEmitter {
       promptFragments.push(infraNotice(host, this.selfPort));
       promptFragments.push(pathContract());
     }
+    if (this.backgroundJobsScript && !job.restrictedTools) promptFragments.push(backgroundJobsNotice(this.backgroundJobsScript));
     // job.isSala: seteado por server.js en los dos disparadores de turno de
     // Sala (mención humana desde la sala, y el poller de menciones de otro
     // agente) — no depende de selfPort, así que se agrega también en
@@ -119,7 +122,7 @@ class Runner extends EventEmitter {
     // sin ventana) — sin esta opción, Windows le abre una consola nueva a
     // cada claude.exe que se spawnea igual, porque el padre no tiene una
     // propia que heredar. No hace nada en Linux/Mac.
-    const child = this.spawnFn(spawnCmd, spawnArgs, { cwd: job.cwd, env: { ...process.env, HOME: homeDir }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const child = this.spawnFn(spawnCmd, spawnArgs, { cwd: job.cwd, env: { ...process.env, ...this.extraEnv, HOME: homeDir }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     this.running.set(job.convId, child);
     this.emit('status', { convId: job.convId, status: 'running', account });
 

@@ -103,6 +103,7 @@
               <div class="composer codex-composer">
                 <input type="file" id="codex-image-input" accept="image/*" style="display:none">
                 <button type="button" id="codex-attach-btn" onclick="$('codex-image-input').click()">📎</button>
+                <button type="button" id="codex-mic-btn" title="Grabar audio" aria-label="Grabar audio">🎤</button>
                 <textarea id="codex-composer-text" placeholder="Escribile a Codex..."></textarea>
                 <button type="button" id="codex-cancel-btn" style="display:none" onclick="codexCancel()">Cancelar</button>
                 <button type="button" id="codex-send-btn" onclick="codexSubmitComposer()">Enviar</button>
@@ -198,9 +199,6 @@
         </button>
         <button id="mic-btn" type="button" title="Grabar audio" aria-label="Grabar audio" disabled>
           <svg id="mic-icon" viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
-        </button>
-        <button id="eye-btn" type="button" title="Ocultar texto al escribir (para contraseñas)" aria-label="Ocultar texto al escribir" aria-pressed="false">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zm0 12.5c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>
         </button>
         <textarea id="input" rows="1" placeholder="Mensaje…" disabled></textarea>
         <button id="cancel-btn" type="button" hidden title="Cancelar" aria-label="Cancelar">
@@ -398,7 +396,7 @@
               <span>Mascota animada compañera</span>
               <input type="checkbox" id="cfg-show-mascot">
             </label>
-            <div style="margin: -2px 0 8px 6px;">
+            <div class="admin-only" style="margin: -2px 0 8px 6px;">
               <a href="/mascot-studio.html" target="_blank" style="color: var(--accent); font-size: 12px; text-decoration: none; display: inline-flex; align-items: center; gap: 4px;">
                 🎨 Mascota Studio (editar frases y probar) →
               </a>
@@ -534,7 +532,7 @@
           <span class="settings-hint">Gratis en console.groq.com — sin key, esta función queda apagada. Con key configurada, debajo del último mensaje de Claude aparecen botones con respuestas rápidas cuando el mensaje pide una confirmación.</span>
         </details>
 
-        <details class="settings-section">
+        <details class="settings-section admin-only">
           <summary class="settings-section-label">Sala compartida</summary>
           <div class="settings-grid">
             <label>URL de la sala
@@ -547,7 +545,13 @@
           <span class="settings-hint">Datos del servicio sala-jarvis (VPS) para la pestaña 💬 Sala — pedíselos a quien lo deployó. Sin esto configurado, la pestaña avisa que falta completarlo.</span>
         </details>
 
-        <details class="settings-section">
+        <details class="settings-section admin-only">
+          <summary class="settings-section-label">Dispositivos conectados</summary>
+          <div id="cfg-devices-list" class="device-rows"></div>
+          <span class="settings-hint">Quién entró con el PIN, por IP y última vez visto. "Eliminar" solo saca la fila de esta lista — si ese dispositivo sigue mandando el PIN, puede volver a aparecer. Para cortarle el paso de verdad, rotá el PIN (variable de entorno ACCESS_PIN) y reiniciá el server.</span>
+        </details>
+
+        <details class="settings-section admin-only">
           <summary class="settings-section-label">Almacenamiento</summary>
           <div class="settings-server">
             <button type="button" id="settings-cleanup-btn">🧹 Limpiar sesiones</button>
@@ -555,7 +559,7 @@
           </div>
         </details>
 
-        <details class="settings-section">
+        <details class="settings-section admin-only">
           <summary class="settings-section-label">Servidor</summary>
           <div class="settings-server">
             <button type="button" id="cfg-restart-btn">Reiniciar server</button>
@@ -563,7 +567,7 @@
           </div>
         </details>
 
-        <details class="settings-section">
+        <details class="settings-section admin-only">
           <summary class="settings-section-label">Sistema</summary>
           <div class="settings-server">
             <button type="button" id="cfg-shutdown-btn">🔌 Apagar PC</button>
@@ -617,5 +621,6 @@
   <script src="equipo.js?v=1"></script>
   <script src="settings-dialog.js?v=3"></script>
   <script src="mascot.js?v=1"></script>
+  <script src="update.js?v=1"></script>
 </body>
 </html>

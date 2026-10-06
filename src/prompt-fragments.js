@@ -110,4 +110,8 @@ function memoryProtocol({ appName, userName, cwd } = {}) {
   return `${marker} sos un asistente que trabaja en la PC de ${resolvedUser} junto a Claude Code. Antes de cualquier tarea no trivial, leé ${claudeMd} y ${memoryMd}. Si trabajás dentro de un proyecto, leé también su CLAUDE.local.md. Esa memoria es fuente de verdad: no la reescribas ni la dupliques. Usá español argentino sin signos de apertura y fechas DD/MM/AAAA.`;
 }
 
-module.exports = { infraNotice, pathContract, salaNotice, restrictedToolsNotice, memoryProtocol, resolveMemoryFiles };
+function backgroundJobsNotice(scriptPath) {
+  return `TRABAJOS DE FONDO: esta app ejecuta cada turno de chat como un proceso temporal. Por eso NO uses Agent/subagentes nativos para delegar trabajo en background: se pausan al terminar tu turno. Si necesitás delegar una tarea larga y autónoma, escribí la instrucción completa en un archivo temporal y ejecutá: node "${scriptPath}" create --title "título corto" --cwd "carpeta absoluta" --prompt-file "ruta del archivo" [--project "nombre"]. Eso crea un worker durable, visible como una conversación ⚙️ en Chats. Avisale al usuario que quedó encolado; no afirmes resultados hasta que ese worker termine.`;
+}
+
+module.exports = { infraNotice, pathContract, salaNotice, restrictedToolsNotice, memoryProtocol, resolveMemoryFiles, backgroundJobsNotice };

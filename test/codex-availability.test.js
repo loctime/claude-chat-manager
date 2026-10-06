@@ -37,3 +37,40 @@ test('para un entrypoint .js invoca Node con el script de Codex', async () => {
   assert.equal(received[0], process.execPath);
   assert.deepEqual(received[1], ['C:\\codex.js', 'login', 'status']);
 });
+
+test('un timeout NO se recuerda: el próximo chequeo vuelve a intentar', async () => {
+  let spawns = 0;
+  const hangs = () => { spawns++; const c = new EventEmitter(); c.kill = () => {}; return c; };
+  const service = new CodexAvailability({ spawnFn: spawns => hangs(), timeoutMs: 20 });
+  assert.equal((await service.get()).available, false);
+  assert.equal((await service.get()).available, false);
+  assert.equal(spawns, 2, 'cada get() relanzó el chequeo en vez de usar un falso negativo en caché');
+});
+
+test('un fallo al lanzar el CLI tampoco se recuerda', async () => {
+  let spawns = 0;
+  const service = new CodexAvailability({ spawnFn: () => { spawns++; const c = new EventEmitter(); c.kill = () => {}; process.nextTick(() => c.emit('error', new Error('ENOENT'))); return c; } });
+  assert.equal((await service.get()).available, false);
+  assert.equal((await service.get()).available, false);
+  assert.equal(spawns, 2);
+});
+
+test('un veredicto real de login status sí se recuerda (true y false)', async () => {
+  for (const code of [0, 1]) {
+    let spawns = 0;
+    const service = new CodexAvailability({ spawnFn: () => { spawns++; return childThatCloses(code); } });
+    const a = await service.get();
+    const b = await service.get();
+    assert.equal(a.available, code === 0);
+    assert.equal(b.available, code === 0);
+    assert.equal(spawns, 1);
+  }
+});
+
+test('varias consultas simultáneas comparten un solo chequeo', async () => {
+  let spawns = 0;
+  const service = new CodexAvailability({ spawnFn: () => { spawns++; return childThatCloses(0); } });
+  const results = await Promise.all([service.get(), service.get(), service.get(), service.get()]);
+  assert.ok(results.every(r => r.available === true));
+  assert.equal(spawns, 1);
+});

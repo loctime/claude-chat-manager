@@ -276,19 +276,19 @@ function agendaRenderRunStep(task, ui, box) {
     const textarea = document.createElement('textarea'); textarea.value = ui.texto || '';
     const confirm = document.createElement('button');
     confirm.type = 'button'; confirm.className = 'primary'; confirm.textContent = 'Confirmar';
-    confirm.onclick = () => agendaRunScript(task.id, textarea.value);
+    confirm.onclick = () => { confirm.disabled = true; agendaRunScript(task.id, textarea.value); };
     wrap.append(textarea, agendaActionContainer(confirm));
   } else if (ui.type === 'pedir-dato') {
     const label = document.createElement('div'); label.className = 'agenda-meta'; label.textContent = ui.pregunta || '';
     const input = document.createElement('input'); input.type = 'text';
     const send = document.createElement('button');
     send.type = 'button'; send.className = 'primary'; send.textContent = 'Enviar';
-    send.onclick = () => agendaRunScript(task.id, input.value);
+    send.onclick = () => { send.disabled = true; agendaRunScript(task.id, input.value); };
     wrap.append(label, input, agendaActionContainer(send));
   } else if (ui.type === 'accion') {
     const button = document.createElement('button');
     button.type = 'button'; button.className = 'primary'; button.textContent = ui.boton || 'Continuar';
-    button.onclick = () => agendaRunScript(task.id);
+    button.onclick = () => { button.disabled = true; agendaRunScript(task.id); };
     wrap.appendChild(agendaActionContainer(button));
   } else {
     return;

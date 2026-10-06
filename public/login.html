@@ -47,6 +47,10 @@
         stepPin.classList.add('hidden');
         stepOtp.classList.remove('hidden');
         document.getElementById('otp').focus();
+      } else if (res.ok && data.ok) {
+        // Sin bot de Telegram configurado, el PIN solo ya deja logueado --
+        // no hay paso de OTP que mostrar.
+        location.href = '/';
       } else {
         showError(data.error || 'PIN incorrecto');
         document.getElementById('pin').select();

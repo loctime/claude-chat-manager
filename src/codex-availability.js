@@ -5,10 +5,11 @@ const { CODEX_CMD } = require('./codex-cmd');
 // CLI pero no una cuenta iniciada. `codex login status` cubre ambas cosas sin
 // iniciar un turno ni consumir uso de Codex.
 class CodexAvailability {
-  constructor({ command = CODEX_CMD, spawnFn = spawn, cacheMs = 60_000 } = {}) {
+  constructor({ command = CODEX_CMD, spawnFn = spawn, cacheMs = 60_000, timeoutMs = 15_000 } = {}) {
     this.command = command;
     this.spawnFn = spawnFn;
     this.cacheMs = cacheMs;
+    this.timeoutMs = timeoutMs;
     this.cache = null;
     this.pending = null;
   }
@@ -35,22 +36,26 @@ class CodexAvailability {
       }
 
       let settled = false;
-      const finish = available => {
+      // Solo un veredicto de `login status` (terminó, con o sin error de login) se recuerda.
+      // Un timeout o un fallo al lanzar el CLI NO: con el server recién arrancado y ocupado
+      // el chequeo puede tardar más que el límite, y guardar ese "no" 60 s dejaba la pestaña
+      // de Codex rota ("no está configurado") hasta recargar, aunque Codex sí estuviera bien.
+      const finish = (available, definitive) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
         const data = { available, checkedAt: Date.now() };
-        this.cache = data;
+        if (definitive) this.cache = data;
         resolve(data);
       };
       // Si el binario está roto o quedó bloqueado, no frenar la carga de toda
       // la PWA: simplemente no se ofrece la pestaña en esta instalación.
       const timeout = setTimeout(() => {
         if (child.kill) child.kill();
-        finish(false);
-      }, 4_000);
-      child.on('error', () => finish(false));
-      child.on('close', code => finish(code === 0));
+        finish(false, false);
+      }, this.timeoutMs);
+      child.on('error', () => finish(false, false));
+      child.on('close', code => finish(code === 0, true));
     });
   }
 }

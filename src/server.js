@@ -16,6 +16,8 @@ const meta = require('./meta');
 const config = require('./config');
 const icon = require('./icon');
 const { Runner } = require('./runner');
+const { BackgroundJobs } = require('./background-jobs');
+const { createBackgroundJobsRouter, launchBackgroundJob } = require('./routes/background-jobs');
 const { CLAUDE_CMD } = require('./claude-cmd');
 const { CodexRunner } = require('./codex-runner');
 const { createCodexRouter } = require('./routes/codex');
@@ -23,6 +25,7 @@ const { GeminiRunner } = require('./gemini-runner');
 const { createGeminiRouter, createAntigravityRouter, resolveContextTokens } = require('./routes/gemini');
 const { createSalaRouter } = require('./routes/sala');
 const { createEquipoRouter } = require('./routes/equipo');
+const { createUpdateRouter } = require('./update');
 const { createConversationsRouter, resolveConversationGitRepo } = require('./routes/conversations');
 const {
   projectEntry,
@@ -38,6 +41,7 @@ const { getReplySuggestions } = require('./groq-suggest');
 const gitSync = require('./git-sync');
 const salaClient = require('./sala-client');
 const { buildContextBlock, isMentioned, mentionNotice } = require('./sala-context');
+const devices = require('./devices');
 
 const IS_WIN = process.platform === 'win32';
 // WSL: Linux corriendo dentro de Windows (kernel expone "microsoft" en
@@ -86,7 +90,9 @@ function getUserName() {
 // feature queda apagada en silencio, getReplySuggestions ya contempla eso).
 function getGroqApiKey() {
   const key = (config.load().groqApiKey || '').trim();
-  return key || process.env.GROQ_API_KEY || '';
+  // GROQ_API_KEY (const de más abajo) ya cubre env var y ~/.claude/settings.json:
+  // las cuentas de colaborador la tienen ahí, no como variable de entorno.
+  return key || process.env.GROQ_API_KEY || GROQ_API_KEY || '';
 }
 
 // URL y token del servicio sala-jarvis (VPS) — mismo patrón de prioridad que
@@ -334,6 +340,14 @@ if (ACCESS_PIN) {
       const nowLocked = lockInfo(ip);
       return res.status(401).json({ error: nowLocked ? `Demasiados intentos. Esperá ${Math.ceil((nowLocked.lockedUntil - Date.now()) / 60000)} min.` : 'PIN incorrecto' });
     }
+    // Sin bot de Telegram configurado no hay forma de mandar el segundo
+    // factor -- en vez de romper el login entero, alcanza con el PIN solo
+    // (instancias sin Telegram, p.ej. las de colaboradores).
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+      registerSuccess(ip);
+      res.cookie('ccm_auth', ACCESS_PIN, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 24 * 3600 * 1000 });
+      return res.json({ ok: true });
+    }
     const code = String(Math.floor(100000 + Math.random() * 900000));
     pendingOtp.set(ip, { code, expiresAt: Date.now() + OTP_TTL_MS });
     try {
@@ -367,8 +381,67 @@ if (ACCESS_PIN) {
     const PUBLIC = ['/login.html', '/__auth', '/__auth/otp', '/sw.js', '/manifest.json', '/icon-192.png', '/icon-512.png'];
     if (PUBLIC.includes(req.path)) return next();
     const cookies = Object.fromEntries((req.headers.cookie || '').split(';').map(c => c.trim().split('=')));
-    if (cookies.ccm_auth === ACCESS_PIN) return next();
+    if (cookies.ccm_auth === ACCESS_PIN) {
+      // ccm_device: id random sin valor de seguridad (no reemplaza a
+      // ccm_auth, solo identifica "la misma instalación/navegador" entre
+      // requests) para poder listar dispositivos en Configuración. Vida
+      // larga a propósito — si expirara antes que ccm_auth, el mismo
+      // dispositivo aparecería duplicado en la lista cada tanto.
+      let deviceId = cookies.ccm_device;
+      if (!deviceId) {
+        deviceId = crypto.randomUUID();
+        res.cookie('ccm_device', deviceId, { httpOnly: true, sameSite: 'lax', maxAge: 400 * 24 * 3600 * 1000 });
+      }
+      devices.track(deviceId, { ip: clientIp(req), userAgent: req.headers['user-agent'] || '' });
+      return next();
+    }
     res.redirect('/login.html');
+  });
+
+  // Listado de "dispositivos conectados" para Configuración (pedido Diego
+  // 2026-10-06) — ver comentario en devices.js sobre qué significa y qué NO
+  // significa "eliminar" acá.
+  app.get('/api/devices', (req, res) => {
+    const cookies = Object.fromEntries((req.headers.cookie || '').split(';').map(c => c.trim().split('=')));
+    res.json({ devices: devices.list(), selfDeviceId: cookies.ccm_device || null });
+  });
+
+  app.delete('/api/devices/:id', (req, res) => {
+    const ok = devices.remove(req.params.id);
+    if (!ok) return res.status(404).json({ error: 'no existe ese dispositivo' });
+    res.json({ ok: true });
+  });
+}
+
+// ── Modo colaborador ──
+// COLLAB_MODE=1 es la instancia que se le presta a otra persona (ver "Instancias
+// para colaboradores" en CLAUDE.local.md): mismo código, pero sin las
+// herramientas de admin. Las pestañas se ocultan en el cliente, pero acá se
+// cierran también las rutas — ocultar un botón no cierra el endpoint.
+const COLLAB_MODE = process.env.COLLAB_MODE === '1';
+// COLLAB_ENGINES=codex,agy (lista separada por comas) limita qué motores ve la
+// instancia; sin la var, los tres. Sin 'claude' se cierran también las rutas de Chats.
+const COLLAB_ENGINES = (process.env.COLLAB_ENGINES || 'claude,codex,agy').split(',').map(s => s.trim()).filter(Boolean);
+const COLLAB_NO_CLAUDE = COLLAB_MODE && !COLLAB_ENGINES.includes('claude');
+const COLLAB_BLOCKED_PREFIXES = [
+  '/api/agenda',      // Task: incluye facturación (macarena/*)
+  '/api/sala',
+  '/api/notebooks',
+  '/api/cleanup',
+  '/api/accounts/switch',
+  '/api/shutdown-pc',
+  '/api/reveal',
+  '/mascot-studio.html', // la config de la mascota es del admin; el toggle de mostrarla queda
+  ...(COLLAB_NO_CLAUDE ? ['/api/conversations', '/api/background-jobs', '/api/suggest-replies'] : []),
+];
+if (COLLAB_MODE) {
+  app.use((req, res, next) => {
+    const p = req.path;
+    const blocked = COLLAB_BLOCKED_PREFIXES.some(pre => p === pre || p.startsWith(pre + '/'))
+      || p === '/api/restart'
+      || (p === '/api/config' && req.method !== 'GET');
+    if (blocked) return res.status(403).json({ error: 'no disponible en esta instancia' });
+    next();
   });
 }
 
@@ -384,6 +457,8 @@ app.get('/api/accounts', (req, res) => {
     otherLocalUrl: OTHER_LOCAL_URL,
     otherPublicUrl: OTHER_PUBLIC_URL,
     otherLabel: OTHER_LABEL,
+    collab: COLLAB_MODE,
+    engines: COLLAB_ENGINES,
     appName: getAppName(),
     appColor: getAppColor(),
     userName: getUserName(),
@@ -796,7 +871,23 @@ app.use(express.static(PUBLIC_DIR, {
   },
 }));
 
-const runner = new Runner({ selfHost: HOST, selfPort: PORT });
+const BACKGROUND_JOBS_FILE = path.join(HOME_DIR, '.ccm-background-jobs', 'jobs.json');
+const BACKGROUND_JOBS_TOKEN = crypto.randomUUID();
+const BACKGROUND_JOBS_SCRIPT = path.join(__dirname, '..', 'scripts', 'background-job.js');
+const backgroundJobs = new BackgroundJobs(BACKGROUND_JOBS_FILE);
+// Un worker pertenece al server, no al proceso `claude -p` que atendió el
+// chat original. Si el server se reinicia no fingimos que sigue vivo: queda
+// "interrumpido" y se puede reanudar de manera explícita y segura.
+backgroundJobs.recoverAfterRestart();
+const runner = new Runner({
+  selfHost: HOST,
+  selfPort: PORT,
+  backgroundJobsScript: BACKGROUND_JOBS_SCRIPT,
+  extraEnv: {
+    CCM_BACKGROUND_JOBS_URL: `http://127.0.0.1:${PORT}/api/background-jobs`,
+    CCM_BACKGROUND_JOBS_TOKEN: BACKGROUND_JOBS_TOKEN,
+  },
+});
 const sseClients = new Map(); // convId → Set<res>
 
 const CODEX_META_FILE = path.join(os.homedir(), '.claude', 'session-manager', 'codex-meta.json');
@@ -1017,6 +1108,28 @@ async function publishSalaReplyIfNeeded(convId, account, cancelled) {
   }
 }
 
+// Aviso corto por Telegram cuando alguien externo (Fernando/FerStark) mencionó
+// a esta instancia en la sala — así Diego se entera sin tener la PWA abierta
+// (pedido 2026-09-27). Reusa el mismo bot/chat que ya manda el código OTP del
+// login (arriba) en vez de pedir credenciales nuevas. No resume con IA —
+// costo/latencia extra de más en un poll que corre cada 20s — manda el texto
+// del último mensaje humano que mencionó, truncado; si por lo que sea no hay
+// texto, cae al aviso genérico mínimo que pidió Diego. Fire-and-forget: un
+// fallo de Telegram no debe frenar el turno real (mismo criterio que la
+// alerta de Bunn en cazador-webhook, ver project_tron_telegram_notificaciones).
+function notifySalaMentionByTelegram(messages) {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
+  const lastMention = [...messages].reverse().find(m => m.kind === 'human' && isMentioned(m.text, getAppName()));
+  const raw = ((lastMention && lastMention.text) || '').trim();
+  const body = raw.length > 260 ? raw.slice(0, 260) + '…' : raw;
+  const text = body ? `💬 Mensaje en la sala de ${getAppName()}:\n${body}` : '💬 Tenés un mensaje nuevo en la sala del chat-manager.';
+  fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text }),
+  }).catch(err => console.error('[sala] no se pudo avisar por Telegram:', err.message));
+}
+
 // Poll de fondo: revisa las salas donde esta instancia ya participó (viven
 // en SALA_META_FILE) buscando si alguien la mencionó con @<su appName>
 // desde la última vez que le tocó hablar — y si es así, dispara un turno
@@ -1077,6 +1190,8 @@ async function checkSalaMentions() {
       const mentioned = messages.some(m => m.kind === 'human' && isMentioned(m.text, getAppName()));
       if (!mentioned) continue;
 
+      notifySalaMentionByTelegram(messages);
+
       const outgoing = `${buildContextBlock(messages)}\n\n${mentionNotice(getAppName())}`;
       // restrictedTools: este turno lo disparó una mención de OTRA persona
       // (Fernando/FerStark), no un mensaje que Diego mandó desde su propio
@@ -1097,6 +1212,16 @@ async function checkSalaMentions() {
 }
 
 runner.on('status', s => {
+  const backgroundJob = backgroundJobs.findByConversation(s.convId);
+  if (backgroundJob) {
+    if (s.status === 'queued') backgroundJobs.update(backgroundJob.id, { status: 'queued' });
+    if (s.status === 'running') backgroundJobs.update(backgroundJob.id, { status: 'running', startedAt: new Date().toISOString(), error: undefined });
+    if (s.status === 'idle' && backgroundJob.status !== 'cancelled') {
+      backgroundJobs.update(backgroundJob.id, s.code === 0
+        ? { status: 'completed', finishedAt: new Date().toISOString(), error: undefined }
+        : { status: 'failed', finishedAt: new Date().toISOString(), error: (s.stderr || `el worker salió con código ${s.code}`).slice(0, 1000) });
+    }
+  }
   broadcast(s.convId, { kind: 'status', ...s });
   if (s.status === 'idle' && s.code === 0) {
     maybeGenerateTitle(s.convId, s.account || activeAccount).catch(() => {});
@@ -1309,10 +1434,24 @@ async function maybeGenerateGeminiTitle(convId) {
 // proyecto (ver CLAUDE.md ahí adentro). Antes esto apuntaba a
 // ~/Desktop/Proyectos y ~/Desktop del lado WSL (HOME_DIR = /home/fernando),
 // que no tienen nada que ver con la carpeta real de trabajo en Windows y
-// dejaban el picker de "+ Nuevo proyecto…" vacío.
+// dejaban el picker de "+ Nuevo proyecto…" vacío. Se mantiene como primera
+// raíz fija (readdirSync ignora silenciosamente rutas que no existen, así
+// que no afecta a otras instancias) y se suman las raíces genéricas: en las
+// instancias de colaboradores (VPS Linux) los repos se clonan directo en el
+// home (~/controlgames), sin Desktop/Proyectos, así que el home es una raíz
+// más. PROJECT_ROOTS (separado por path.delimiter) permite sumar otras a mano.
 const PROJECT_SEARCH_ROOTS = [
   '/mnt/c/Users/Fernando/Desktop/claude',
+  path.join(HOME_DIR, 'Desktop', 'Proyectos'),
+  path.join(HOME_DIR, 'Desktop'),
+  ...(COLLAB_MODE ? [HOME_DIR] : []),
+  ...String(process.env.PROJECT_ROOTS || '').split(path.delimiter).map(s => s.trim()).filter(Boolean),
 ];
+
+// Carpetas ocultas (.claude, .codex, .local…) y de dependencias no son proyectos.
+function isProjectDirEntry(entry) {
+  return entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules';
+}
 
 function normalizeProjectName(value) {
   return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -1342,7 +1481,7 @@ async function inferRepoFromMessage(text) {
     let entries = [];
     try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
     for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
+      if (!isProjectDirEntry(entry)) continue;
       const score = projectMatchScore(text, entry.name);
       if (score) candidates.push({ path: path.join(root, entry.name), score });
     }
@@ -1361,7 +1500,7 @@ function listProjectFolderNames() {
     let entries = [];
     try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
     for (const entry of entries) {
-      if (entry.isDirectory()) names.add(entry.name);
+      if (isProjectDirEntry(entry)) names.add(entry.name);
     }
   }
   return [...names].sort((a, b) => a.localeCompare(b, 'es'));
@@ -1726,7 +1865,17 @@ app.use('/api/conversations', createConversationsRouter({
   claudeCmd: CLAUDE_CMD,
 }));
 
-app.use('/api/codex', createCodexRouter({
+app.use('/api/background-jobs', createBackgroundJobsRouter({
+  jobs: backgroundJobs,
+  runner,
+  accountMetaFile,
+  getActiveAccount: () => activeAccount,
+  defaultCwd: HOME_DIR,
+  token: BACKGROUND_JOBS_TOKEN,
+  launch: (job, options) => launchBackgroundJob(runner, backgroundJobs, accountMetaFile, job, options),
+}));
+
+const codexRouter = createCodexRouter({
   codexRunner,
   codexSseClients,
   codexMetaFile: CODEX_META_FILE,
@@ -1743,7 +1892,9 @@ app.use('/api/codex', createCodexRouter({
     const data = meta.load(accountMetaFile(activeAccount));
     return hiddenProjectNames(data);
   },
-}));
+});
+app.use('/api/codex', codexRouter);
+codexRouter.prewarm();
 
 // ── Gemini CLI ──
 function geminiBroadcast(convId, payload) { for (const res of geminiSseClients.get(convId) || []) res.write(`data: ${JSON.stringify(payload)}\n\n`); }
@@ -1894,6 +2045,17 @@ app.use('/api/gemini', createGeminiRouter({
   },
 }));
 
+// Aviso de versión nueva + "Actualizar ahora" desde la página (ver src/update.js). Sin
+// supervisor no hay forma segura de relanzarse: solo Windows (doRestart se relanza a sí
+// mismo), RESTART_CMD, o instancias de colaborador (corren bajo pm2, que levanta de nuevo
+// el proceso al salir).
+app.use('/api', createUpdateRouter({
+  repoRoot: REPO_ROOT,
+  engines: { claude: runner, codex: codexRunner, agy: geminiRunner },
+  canSelfRestart: IS_WIN || !!process.env.RESTART_CMD || COLLAB_MODE,
+  restart: () => (IS_WIN || process.env.RESTART_CMD ? doRestart() : process.exit(0)),
+  resumeFile: path.join(HOME_DIR, '.claude', 'session-manager', 'update-resume.json'),
+}));
 app.use('/api/sala', createSalaRouter({
   runner,
   salaMetaFile: SALA_META_FILE,

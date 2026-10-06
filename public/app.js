@@ -56,6 +56,13 @@ let GROQ_KEY_SET = false;
 // el token sí (mismo patrón que GROQ_KEY_SET — nunca vuelve del server).
 let SALA_URL = '';
 let SALA_TOKEN_SET = false;
+// Instancia de colaborador (COLLAB_MODE en el server): sin pestañas ni botones de admin.
+let COLLAB_MODE = false;
+const COLLAB_HIDDEN_PANES = [3, 4, 5]; // Notas, Task, Sala
+// Sin Claude (COLLAB_ENGINES sin 'claude') también se ocultan Chats y Archivado, y la
+// pantalla de inicio pasa a Codex (2) o AgY (6).
+let COLLAB_NO_CLAUDE = false;
+function homePane() { return COLLAB_NO_CLAUDE ? (isPaneVisible(2) ? 2 : 6) : 0; }
 
 const messagesEl = $('messages');
 
@@ -63,8 +70,12 @@ const messagesEl = $('messages');
 async function loadAccounts() {
   try {
     const r = await fetch('/api/accounts');
-    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName, appColor, userName, groqApiKeySet, salaUrl, salaTokenSet } = await r.json();
+    const { accounts, active, otherLocalUrl, otherPublicUrl, otherLabel, appName, appColor, userName, groqApiKeySet, salaUrl, salaTokenSet, collab, engines } = await r.json();
     activeAccount = active;
+    COLLAB_MODE = !!collab;
+    document.body.classList.toggle('collab', COLLAB_MODE);
+    COLLAB_NO_CLAUDE = COLLAB_MODE && Array.isArray(engines) && !engines.includes('claude');
+    if (COLLAB_MODE) applyPaneVisibility();
     if (appName) { APP_NAME = appName; updateGlobalBusyIndicator(); }
     if (appColor) { APP_COLOR = appColor; applySettings(); }
     if (userName) USER_NAME = userName;
@@ -299,8 +310,8 @@ window.addEventListener('popstate', (e) => {
     return;
   }
   // Si estamos en Archivado/Codex/Notas sin nada abierto: volver a Chats.
-  if (activePane !== 0) {
-    goToPane(0);
+  if (activePane !== homePane()) {
+    goToPane(homePane());
     _exitArmed = false;
     history.pushState({ view: 'list-guard' }, '');
     return;
@@ -3336,6 +3347,23 @@ function addCompactDivider() {
   messagesEl.appendChild(div);
 }
 
+// Al abrir OTRA conversación el panel todavía tiene los mensajes de la anterior hasta que llega la
+// respuesta del server, y se veía un instante la charla equivocada. Se vacía antes de abrir, con un
+// "Cargando…" que el CSS muestra recién a los 350 ms (una carga rápida no parpadea). Si es la misma
+// conversación (volver desde Notas, reabrir) no se toca, para no perder el scroll. La clave lleva el
+// motor porque los ids de cada motor son independientes.
+let shownConvKey = null;
+function prepareMessagesForOpen(key) {
+  if (key && shownConvKey === key) return;
+  shownConvKey = key || null;
+  messagesEl.innerHTML = '<div id="empty-state" class="loading-messages"><p>Cargando…</p></div>';
+}
+// Si la carga falla y el panel sigue en "Cargando…", que no quede así para siempre.
+function showMessagesLoadFailed() {
+  if (!messagesEl.querySelector('.loading-messages')) return;
+  messagesEl.innerHTML = '<div id="empty-state"><p>No se pudo cargar la conversación. Volvé a abrirla.</p></div>';
+}
+
 async function loadMessages(convId, { scrollState } = {}) {
   // Esta función vacía y reconstruye toda la lista (la llama el evento `idle`
   // del stream). Sin esto, el rebuild resetea el scroll y te tira al fondo
@@ -3391,6 +3419,7 @@ async function loadMessages(convId, { scrollState } = {}) {
     // El caller de background no siempre espera esta promesa; absorber el
     // error evita un rechazo silencioso y, sobre todo, no borra el historial.
     if (loadVersion === messageLoadVersion && convId === currentConv) {
+      showMessagesLoadFailed();
       toast('No se pudo actualizar la conversación. Reintentaremos al reconectar.', 'error', 4000);
     }
     return false;
@@ -3748,6 +3777,7 @@ async function selectConv(convId, name, model, lastModel, projectDir) {
   showNotebookView(false);
   showSalaView(false); // si había una sala abierta, se cierra — ver bug reportado por Diego
   if (typeof showEquipoView === 'function') showEquipoView(false);
+  prepareMessagesForOpen('claude:' + convId);
   openChat();
   // Al abrir otra conversación no heredamos la posición de scroll de la
   // anterior: arrancamos mostrando el PRINCIPIO del último mensaje (no el
@@ -3958,13 +3988,25 @@ async function prepareForUpload(file, displayName) {
   const materialize = async () => {
     // Falla acá = el archivo ya no se puede leer, y eso no lo arregla ningún
     // reintento: hay que volver a elegir la foto.
+    let buf;
     try {
-      return new Blob([await file.arrayBuffer()], { type: file.type || 'application/octet-stream' });
+      buf = await file.arrayBuffer();
     } catch {
       const e = new Error('no se pudo leer el archivo desde el celu — volvé a elegirlo');
       e.isUnreadable = true;
       throw e;
     }
+    // A veces el celu entrega un archivo "fantasma" (audios de WhatsApp o de la nube sin
+    // descargar, por ejemplo): se lee sin error pero vacío, o con menos bytes de los que dice
+    // tener. Sin este chequeo se adjuntaba igual y al otro lado llegaba un archivo de 0 bytes.
+    if (buf.byteLength === 0 || (file.size > 0 && buf.byteLength !== file.size)) {
+      const e = new Error(buf.byteLength === 0
+        ? 'el archivo llegó vacío (0 bytes) — si es de WhatsApp o de la nube, descargalo primero al dispositivo y volvé a elegirlo'
+        : `el archivo se leyó incompleto (${buf.byteLength} de ${file.size} bytes) — volvé a elegirlo`);
+      e.isUnreadable = true;
+      throw e;
+    }
+    return new Blob([buf], { type: file.type || 'application/octet-stream' });
   };
 
   // Un video de decenas de MB copiado a memoria puede tumbar la pestaña en el
@@ -4034,16 +4076,6 @@ async function uploadAttachment(file) {
 async function uploadFiles(files) {
   for (const f of files) await uploadAttachment(f);
 }
-
-// ── Ocultar texto al escribir (para pegar contraseñas/claves sin que queden a la vista) ──
-function setHiddenInput(on) {
-  $('input').classList.toggle('hidden-text', on);
-  $('eye-btn').setAttribute('aria-pressed', String(on));
-  $('eye-btn').title = on ? 'Mostrar texto al escribir' : 'Ocultar texto al escribir (para contraseñas)';
-}
-$('eye-btn').onclick = () => setHiddenInput($('eye-btn').getAttribute('aria-pressed') !== 'true');
-// Al enviar, vuelve a texto visible para el próximo mensaje (evita dejarlo "trabado" oculto).
-$('composer').addEventListener('submit', () => setHiddenInput(false), true);
 
 $('attach-btn').onclick = () => { $('file-input').click(); };
 $('file-input').onchange = async () => {
@@ -4115,45 +4147,52 @@ $('input').addEventListener('paste', (e) => {
 let mediaRecorder = null;
 let audioChunks = [];
 
-$('mic-btn').onclick = async () => {
-  if (mediaRecorder && mediaRecorder.state === 'recording') {
-    mediaRecorder.stop();
-    return;
-  }
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    audioChunks = [];
-    mediaRecorder = new MediaRecorder(stream);
-    mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
-    mediaRecorder.onstop = async () => {
-      stream.getTracks().forEach(t => t.stop());
-      $('mic-btn').classList.remove('recording');
-      setStatus('transcribiendo…');
-      const blob = new Blob(audioChunks, { type: 'audio/webm' });
-      const fd = new FormData();
-      fd.append('audio', blob, 'audio.webm');
-      try {
-        const res = await fetch('/api/transcribe', { method: 'POST', body: fd });
-        if (!res.ok) throw new Error((await res.json()).error || res.statusText);
-        const { text } = await res.json();
-        if (text) {
-          const input = $('input');
-          input.value = (input.value ? input.value + ' ' : '') + text;
-          autoResize(input);
+// Graba, transcribe (/api/transcribe) y agrega el texto al campo dado. Lo comparten el
+// compositor principal (Chats y AgY) y el de Codex; errOpts va tal cual a addMsg para que
+// el error salga en el chat que corresponde.
+function wireMic(btn, inputEl, errOpts) {
+  btn.onclick = async () => {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunks = [];
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        btn.classList.remove('recording');
+        btn.title = 'Grabar audio';
+        setStatus('transcribiendo…');
+        const blob = new Blob(audioChunks, { type: 'audio/webm' });
+        const fd = new FormData();
+        fd.append('audio', blob, 'audio.webm');
+        try {
+          const res = await fetch('/api/transcribe', { method: 'POST', body: fd });
+          if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+          const { text } = await res.json();
+          if (text) {
+            inputEl.value = (inputEl.value ? inputEl.value + ' ' : '') + text;
+            autoResize(inputEl);
+          }
+        } catch (err) {
+          addMsg('error', 'Error transcripción: ' + err.message, errOpts);
+        } finally {
+          setStatus('');
         }
-      } catch (err) {
-        addMsg('error', 'Error transcripción: ' + err.message);
-      } finally {
-        setStatus('');
-      }
-    };
-    mediaRecorder.start();
-    $('mic-btn').classList.add('recording');
-    $('mic-btn').title = 'Detener grabación';
-  } catch (err) {
-    addMsg('error', 'No se pudo acceder al micrófono: ' + err.message);
-  }
-};
+      };
+      mediaRecorder.start();
+      btn.classList.add('recording');
+      btn.title = 'Detener grabación';
+    } catch (err) {
+      addMsg('error', 'No se pudo acceder al micrófono: ' + err.message, errOpts);
+    }
+  };
+}
+wireMic($('mic-btn'), $('input'));
+wireMic($('codex-mic-btn'), $('codex-composer-text'), { container: $('codex-messages') });
 
 // ── Mensaje de usuario con adjuntos inline ──
 function addUserMsgWithFiles(text, attachments) {
@@ -4776,6 +4815,8 @@ const PANE_VISIBILITY_SETTINGS = {
 };
 
 function isPaneVisible(index) {
+  if (COLLAB_MODE && COLLAB_HIDDEN_PANES.includes(index)) return false;
+  if (COLLAB_NO_CLAUDE && (index === 0 || index === 1)) return false;
   const setting = PANE_VISIBILITY_SETTINGS[index];
   return !setting || settings[setting] !== false;
 }
@@ -4783,10 +4824,12 @@ function isPaneVisible(index) {
 function applyPaneVisibility() {
   for (const [pane, setting] of Object.entries(PANE_VISIBILITY_SETTINGS)) {
     const tab = document.querySelector(`.pane-tab[data-pane="${pane}"]`);
-    if (tab) tab.hidden = !settings[setting];
+    if (tab) tab.hidden = !settings[setting] || !isPaneVisible(Number(pane));
   }
   // Si se oculta la pestaña que estaba abierta, volver a Chats de inmediato.
-  if (!isPaneVisible(activePane)) goToPane(0);
+  const chatsTab = document.querySelector('.pane-tab[data-pane="0"]');
+  if (chatsTab) chatsTab.hidden = COLLAB_NO_CLAUDE;
+  if (!isPaneVisible(activePane)) goToPane(homePane());
 }
 
 function applySettings() {

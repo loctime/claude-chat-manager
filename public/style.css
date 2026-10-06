@@ -1016,6 +1016,9 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
   #mascot-widget.tapped, #mascot-widget.state-pop, #mascot-widget.hit-bounce { animation: none; }
 }
 
+/* "Cargando…" al abrir una conversación: invisible los primeros 350 ms, así una carga rápida no parpadea */
+#messages .loading-messages { opacity: 0; animation: loading-messages-in .2s ease .35s forwards; }
+@keyframes loading-messages-in { to { opacity: 1; } }
 #empty-state {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   flex: 1; gap: 12px; color: var(--text2); font-size: 14px;
@@ -1145,9 +1148,8 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
 }
 #input::placeholder { color: var(--text2); }
 #input::-webkit-scrollbar { width: 3px; }
-#input.hidden-text { -webkit-text-security: disc; text-security: disc; }
 
-#send, #cancel-btn, #mic-btn, #attach-btn, #eye-btn, #sala-cancel-btn {
+#send, #cancel-btn, #mic-btn, #attach-btn, #sala-cancel-btn {
   border-radius: 50%; border: none; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0; transition: transform .1s, background .15s;
@@ -1163,14 +1165,13 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
 #cancel-btn, #sala-cancel-btn { background: #3d1a1d; color: var(--danger); width: 44px; height: 44px; }
 #cancel-btn:hover, #sala-cancel-btn:hover { background: #5a1f24; }
 
-#mic-btn, #attach-btn, #eye-btn {
+#mic-btn, #attach-btn {
   background: none; color: var(--text2);
   width: 44px; height: 44px;
 }
-#mic-btn:hover, #attach-btn:hover, #eye-btn:hover { background: var(--border); color: var(--text); }
+#mic-btn:hover, #attach-btn:hover { background: var(--border); color: var(--text); }
 #mic-btn:disabled, #attach-btn:disabled { opacity: .3; cursor: default; pointer-events: none; }
-#mic-btn.recording { color: var(--danger); animation: pulse-rec .8s ease-in-out infinite alternate; }
-#eye-btn[aria-pressed="true"] { color: var(--accent); background: var(--border); }
+#mic-btn.recording, #codex-mic-btn.recording { color: var(--danger); animation: pulse-rec .8s ease-in-out infinite alternate; }
 @keyframes pulse-rec { from { opacity: 1; } to { opacity: .4; } }
 
 #input:disabled { opacity: .4; }
@@ -1544,6 +1545,22 @@ dialog button:hover { background: var(--border); }
 #settings-dialog .voice-row.voice-off .voice-select,
 #settings-dialog .voice-row.voice-off .voice-volume { opacity: .45; pointer-events: none; }
 #settings-dialog .voice-browser-tts { margin-top: 12px; margin-bottom: 0; }
+
+/* Lista de "Dispositivos conectados" — mismo criterio visual que voice-rows
+   (filas separadas por borde, sin tarjetas) con un botón de eliminar chico
+   al lado en vez de controles de switch/slider. */
+#settings-dialog .device-rows { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+#settings-dialog .device-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; }
+#settings-dialog .device-row:not(:last-child) { border-bottom: 1px solid var(--border); }
+#settings-dialog .device-row-main { flex: 1 1 auto; min-width: 0; }
+#settings-dialog .device-row-top { font-size: 13.5px; font-weight: 500; }
+#settings-dialog .device-row-meta { font-size: 12px; color: var(--text2); margin-top: 2px; word-break: break-word; }
+#settings-dialog .device-row-del {
+  width: 30px; height: 30px; padding: 0; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; font-size: 14px; line-height: 1;
+  color: var(--danger); border-color: var(--danger);
+}
 
 /* Botón que reemplaza al <select> nativo de tipografía: el <select> real
    sigue existiendo oculto (guarda el valor y dispara el "change" de
@@ -1957,7 +1974,7 @@ body.hide-tools details.tool { display: none !important; }
 
   /* Composer más compacto en mobile para que quepan los botones */
   #composer { gap: 2px; padding: 6px 6px calc(6px + var(--safe-b)); }
-  #mic-btn, #attach-btn, #eye-btn { width: 40px; height: 40px; min-width: 40px; min-height: 40px; }
+  #mic-btn, #attach-btn { width: 40px; height: 40px; min-width: 40px; min-height: 40px; }
   #send, #cancel-btn { width: 42px; height: 42px; min-width: 42px; min-height: 42px; }
   #input { padding: 9px 10px; min-width: 0; }
 }
@@ -2586,3 +2603,42 @@ body.hide-tools details.tool { display: none !important; }
 .cleanup-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .cleanup-confirm-actions button.danger { background: var(--danger); color: #fff; border: none; border-radius: var(--radius); padding: 6px 14px; }
 .notes-empty { padding: 24px 12px; text-align: center; color: var(--text2); font-size: 13px; }
+
+/* Instancia de colaborador (COLLAB_MODE): sin secciones de admin en Ajustes */
+body.collab .admin-only { display: none !important; }
+
+/* Aviso flotante de versión nueva (public/update.js) */
+#update-banner {
+  position: fixed;
+  left: 50%;
+  bottom: calc(96px + var(--safe-b));
+  transform: translateX(-50%);
+  z-index: 9000;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(92vw, 440px);
+  padding: 12px 14px;
+  background: var(--header);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 14px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.45);
+  font-size: 14px;
+  line-height: 1.35;
+}
+#update-banner[hidden] { display: none; }
+#update-banner .ub-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+#update-banner button {
+  padding: 8px 12px;
+  min-height: 36px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+#update-banner button:hover { background: var(--border); }
+#update-banner button.primary { background: var(--accent); border-color: var(--accent); color: #0b141a; font-weight: 600; }
+#update-banner button.primary:hover { filter: brightness(1.1); }

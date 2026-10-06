@@ -29,6 +29,9 @@ function createCodexRouter({
   router.get('/status', async (req, res) => {
     res.json(await codexAvailability.get());
   });
+  // El primer chequeo (`codex login status`) tarda con el server recién arrancado. Se lanza al
+  // inicio para que, cuando llegue la primera página, el resultado ya esté en caché.
+  router.prewarm = () => codexAvailability.get().catch(() => {});
 
   router.get('/usage', async (req, res) => {
     try {

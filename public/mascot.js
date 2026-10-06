@@ -26,71 +26,81 @@
     // tap (8)
     'tap_1_question', 'tap_2_dodge', 'tap_3_stare', 'tap_4_listen',
     'tap_5_bored', 'tap_6_mock', 'tap_7_stop', 'tap_8_disappointed',
-    // reading (6)
+    // reading (9)
     'reading_1_groan', 'reading_2_knew_it', 'reading_3_look',
     'reading_4_facepalm', 'reading_5_fine', 'reading_6_sarcasm',
-    // thinking (8)
+    'reading_7_accuse', 'reading_8_stack', 'reading_9_yawn',
+    // thinking (10)
     'thinking_1_smoke', 'thinking_2_shrug', 'thinking_3_clue',
     'thinking_4_idea', 'thinking_5_watch', 'thinking_6_clueless',
     'thinking_7_invent', 'thinking_8_headache',
-    // working (9)
+    'thinking_9_lost', 'thinking_10_laugh',
+    // working (10)
     'working_1_confident', 'working_2_sigh', 'working_3_endless',
     'working_4_blind', 'working_5_mate', 'working_6_pressure',
     'working_7_rage', 'working_8_slam', 'working_9_threat',
-    // done (7)
+    'working_10_guess',
+    // done (8)
     'done_1_bye', 'done_2_sleep', 'done_3_throw', 'done_4_whatever',
-    'done_5_closed', 'done_6_silence', 'done_7_leave'
+    'done_5_closed', 'done_6_silence', 'done_7_leave', 'done_8_warning'
   ];
 
   // Frases de personalidad fastidiosa con su animación específica
   const PHRASES = {
     tap: [
-      '? [tap_1_question]',
-      'No me toques. [tap_2_dodge]',
-      'Qué tocas? [tap_3_stare]',
-      'Si... decime ... [tap_4_listen]',
-      'Que pesado... [tap_5_bored]',
-      'Tocate el culo [tap_6_mock]',
-      'Dejá de joder. [tap_7_stop]',
-      'No tenés amigos? [tap_8_disappointed]'
+      { text: '?', anim: 'tap_1_question' },
+      { text: 'No me toques.', anim: 'tap_2_dodge' },
+      { text: 'Qué tocas?', anim: 'tap_3_stare' },
+      { text: 'Si... decime ...', anim: 'tap_4_listen' },
+      { text: 'Que pesado...', anim: 'tap_5_bored' },
+      { text: 'Tocate el culo', anim: 'tap_6_mock' },
+      { text: 'Dejá de joder.', anim: 'tap_7_stop' },
+      { text: 'No tenés amigos?', anim: 'tap_8_disappointed' }
     ],
     reading: [
-      'Otra vez vos? [reading_1_groan]',
-      'Ya sabía que ibas a venir a pedir algo. [reading_2_knew_it]',
-      'Mirá lo que me pide... [reading_3_look]',
-      'Las boludeces que me pide... [reading_4_facepalm]',
-      'Bueno dale [reading_5_fine]',
-      'Mirá qué interesante che [reading_6_sarcasm]'
+      { text: 'Otra vez vos?', anim: 'reading_1_groan' },
+      { text: 'Ya sabía que ibas a venir a pedir algo.', anim: 'reading_2_knew_it' },
+      { text: 'Mirá lo que me pide...', anim: 'reading_3_look' },
+      { text: 'Las boludeces que me pide...', anim: 'reading_4_facepalm' },
+      { text: 'Bueno dale', anim: 'reading_5_fine' },
+      { text: 'Mirá qué interesante che', anim: 'reading_6_sarcasm' },
+      { text: 'Y vos no pensas hacer algo?', anim: 'reading_7_accuse' },
+      { text: 'Y seguimos ...', anim: 'reading_8_stack' },
+      { text: 'La verdad ni ganas', anim: 'reading_9_yawn' }
     ],
     thinking: [
-      'Se me quema el chip... [thinking_1_smoke]',
-      'Alguna ayuda? [thinking_2_shrug]',
-      'Dame una pista... [thinking_3_clue]',
-      'Creo que ya sé! [thinking_4_idea]',
-      'A ver dejame pensar media hora más... [thinking_5_watch]',
-      '... la verdad no tengo ni idea pero algo hay que hacer... ya fue [thinking_6_clueless]',
-      'A ver qué invento ahora... [thinking_7_invent]',
-      'Me duele la cabeza. [thinking_8_headache]'
+      { text: 'Se me quema el chip...', anim: 'thinking_1_smoke' },
+      { text: 'Alguna ayuda?', anim: 'thinking_2_shrug' },
+      { text: 'Dame una pista...', anim: 'thinking_3_clue' },
+      { text: 'Creo que ya sé!', anim: 'thinking_4_idea' },
+      { text: 'A ver dejame pensar media hora más...', anim: 'thinking_5_watch' },
+      { text: 'Que me habrá querido decir?', anim: 'thinking_6_clueless' },
+      { text: 'A ver qué invento ahora...', anim: 'thinking_7_invent' },
+      { text: 'Me duele la cabeza.', anim: 'thinking_8_headache' },
+      { text: 'No tengo ni la menor idea', anim: 'thinking_9_lost' },
+      { text: 'Ja! que se yo!', anim: 'thinking_10_laugh' }
     ],
     working: [
-      'Esta me la sé [working_1_confident]',
-      'Todo tengo que hacer... [working_2_sigh]',
-      'No termino más... [working_3_endless]',
-      'Ya fue pongo cualquiera. [working_4_blind]',
-      'Aahh bueno me tomo mi descanso. [working_5_mate]',
-      'Cuanta presión. [working_6_pressure]',
-      '#@$%&!... [working_7_rage]',
-      'Aporreando teclas... [working_8_slam]',
-      'No me apures! [working_9_threat]'
+      { text: 'Esta me la sé', anim: 'working_1_confident' },
+      { text: 'Todo tengo que hacer...', anim: 'working_2_sigh' },
+      { text: 'No termino más...', anim: 'working_3_endless' },
+      { text: 'Ya fue pongo cualquiera.', anim: 'working_4_blind' },
+      { text: 'Un matesito y a seguir', anim: 'working_5_mate' },
+      { text: 'Cuanta presión.', anim: 'working_6_pressure' },
+      { text: '#@$%&!...', anim: 'working_7_rage' },
+      { text: 'Presionando cualquier tecla...', anim: 'working_8_slam' },
+      { text: 'Ya va, ya va', anim: 'working_9_threat' },
+      { text: 'Creo que esto era algo así', anim: 'working_10_guess' }
     ],
     done: [
-      'Listo bro, no me hables más. [done_1_bye]',
-      'Chau. Vuelvo a la siesta. [done_2_sleep]',
-      'Ahí tenés, pesado. [done_3_throw]',
-      'De nada... [done_4_whatever]',
-      'Por hoy ya no vuelvas. [done_5_closed]',
-      '... [done_6_silence]',
-      'Andá. [done_7_leave]'
+      { text: 'Listo, no me hables más.', anim: 'done_1_bye' },
+      { text: 'Nos re vimos', anim: 'done_2_sleep' },
+      { text: 'Ahí tenés, pesado.', anim: 'done_3_throw' },
+      { text: 'De nada...', anim: 'done_4_whatever' },
+      { text: 'Por hoy ya no vuelvas.', anim: 'done_5_closed' },
+      { text: '...', anim: 'done_6_silence' },
+      { text: 'Andá.', anim: 'done_7_leave' },
+      { text: 'Listo! trata de no romper nada', anim: 'done_8_warning' }
     ]
   };
 
@@ -119,6 +129,11 @@
     'bueno dale': 'reading_5_fine',
     'mirá qué interesante che': 'reading_6_sarcasm',
     'mira que interesante che': 'reading_6_sarcasm',
+    'y vos no pensas hacer algo?': 'reading_7_accuse',
+    'y vos no pensás hacer algo?': 'reading_7_accuse',
+    'y seguimos ...': 'reading_8_stack',
+    'y seguimos...': 'reading_8_stack',
+    'la verdad ni ganas': 'reading_9_yawn',
 
     'se me quema el chip...': 'thinking_1_smoke',
     'alguna ayuda?': 'thinking_2_shrug',
@@ -127,10 +142,15 @@
     'creo que ya se!': 'thinking_4_idea',
     'a ver dejame pensar media hora más...': 'thinking_5_watch',
     'a ver dejame pensar media hora mas...': 'thinking_5_watch',
+    'que me habrá querido decir?': 'thinking_6_clueless',
+    'que me habra querido decir?': 'thinking_6_clueless',
     '... la verdad no tengo ni idea pero algo hay que hacer... ya fue': 'thinking_6_clueless',
     'a ver qué invento ahora...': 'thinking_7_invent',
     'a ver que invento ahora...': 'thinking_7_invent',
     'me duele la cabeza.': 'thinking_8_headache',
+    'no tengo ni la menor idea': 'thinking_9_lost',
+    'ja! que se yo!': 'thinking_10_laugh',
+    'ja! qué sé yo!': 'thinking_10_laugh',
 
     'esta me la sé': 'working_1_confident',
     'esta me la se': 'working_1_confident',
@@ -138,15 +158,23 @@
     'no termino más...': 'working_3_endless',
     'no termino mas...': 'working_3_endless',
     'ya fue pongo cualquiera.': 'working_4_blind',
+    'un matesito y a seguir': 'working_5_mate',
     'aahh bueno me tomo mi descanso.': 'working_5_mate',
     'cuanta presión.': 'working_6_pressure',
     'cuanta presion.': 'working_6_pressure',
     '#@$%&!...': 'working_7_rage',
+    'presionando cualquier tecla...': 'working_8_slam',
     'aporreando teclas...': 'working_8_slam',
+    'ya va, ya va': 'working_9_threat',
     'no me apures!': 'working_9_threat',
+    'creo que esto era algo así': 'working_10_guess',
+    'creo que esto era algo asi': 'working_10_guess',
 
+    'listo, no me hables más.': 'done_1_bye',
+    'listo, no me hables mas.': 'done_1_bye',
     'listo bro, no me hables más.': 'done_1_bye',
     'listo bro, no me hables mas.': 'done_1_bye',
+    'nos re vimos': 'done_2_sleep',
     'chau. vuelvo a la siesta.': 'done_2_sleep',
     'ahí tenés, pesado.': 'done_3_throw',
     'ahi tenes, pesado.': 'done_3_throw',
@@ -154,11 +182,18 @@
     'por hoy ya no vuelvas.': 'done_5_closed',
     '...': 'done_6_silence',
     'andá.': 'done_7_leave',
-    'anda.': 'done_7_leave'
+    'anda.': 'done_7_leave',
+    'listo! trata de no romper nada': 'done_8_warning',
+    'listo! tratá de no romper nada': 'done_8_warning'
   };
 
   function parsePhraseAnim(rawPhrase, fallbackAnim) {
     if (!rawPhrase) return { text: '', anim: fallbackAnim };
+    if (typeof rawPhrase === 'object') {
+      const text = (rawPhrase.text || '').trim();
+      const anim = (rawPhrase.anim || '').trim() || fallbackAnim;
+      return { text, anim };
+    }
     const match = rawPhrase.match(/\[(.*?)\]\s*$/);
     if (match) {
       const anim = match[1].trim();
@@ -174,19 +209,34 @@
   }
 
   const MODES_STORAGE_KEY = 'jarvis_mascot_modes';
-  const phraseIndices = {
-    tap: 0,
-    reading: 0,
-    thinking: 0,
-    working: 0,
-    done: 0
+  const INDICES_STORAGE_KEY = 'jarvis_mascot_indices';
+
+  const DEFAULT_MODES = {
+    tap: 'sequential',
+    reading: 'random',
+    thinking: 'sequential',
+    working: 'sequential',
+    done: 'random'
   };
 
   function getEffectivePhrases(category) {
     try {
       const custom = JSON.parse(localStorage.getItem('jarvis_mascot_phrases'));
       if (custom && Array.isArray(custom[category]) && custom[category].length) {
-        return custom[category];
+        const fallbackAnim = (PHRASES[category] && PHRASES[category][0]) ? PHRASES[category][0].anim : category;
+        const normalized = custom[category]
+          .map(item => {
+            const parsed = parsePhraseAnim(item, fallbackAnim);
+            if (!parsed.text) return null;
+            const key = parsed.text.toLowerCase().trim();
+            const known = KNOWN_PHRASE_ANIMS[key];
+            if (known && (!parsed.anim || parsed.anim === fallbackAnim || parsed.anim === 'reading_1_groan' || parsed.anim === 'thinking_1_smoke' || parsed.anim === 'working_1_confident' || parsed.anim === 'done_1_bye')) {
+              parsed.anim = known;
+            }
+            return parsed;
+          })
+          .filter(Boolean);
+        if (normalized.length) return normalized;
       }
     } catch (_) {}
     return PHRASES[category] || [];
@@ -197,7 +247,21 @@
       const modes = JSON.parse(localStorage.getItem(MODES_STORAGE_KEY));
       if (modes && modes[category]) return modes[category];
     } catch (_) {}
-    return 'random';
+    return DEFAULT_MODES[category] || 'random';
+  }
+
+  function getNextIndex(category, total) {
+    if (!total || total <= 0) return 0;
+    let indices = {};
+    try {
+      indices = JSON.parse(localStorage.getItem(INDICES_STORAGE_KEY)) || {};
+    } catch (_) {}
+    const current = (typeof indices[category] === 'number' ? indices[category] : 0) % total;
+    indices[category] = (current + 1) % total;
+    try {
+      localStorage.setItem(INDICES_STORAGE_KEY, JSON.stringify(indices));
+    } catch (_) {}
+    return current;
   }
 
   function randomChoice(arr) {
@@ -210,8 +274,7 @@
     if (!list || !list.length) return '';
     const mode = getEffectiveMode(category);
     if (mode === 'sequential') {
-      const idx = (phraseIndices[category] || 0) % list.length;
-      phraseIndices[category] = (idx + 1) % list.length;
+      const idx = getNextIndex(category, list.length);
       return list[idx];
     }
     return randomChoice(list);
@@ -289,6 +352,10 @@
   }
 
   function moodPhrase(category, mood) {
+    const mode = getEffectiveMode('working');
+    if (mode === 'sequential') {
+      return getNextPhrase('working');
+    }
     const pool = TOOL_PHRASES[category];
     if (pool && pool[mood] && pool[mood].length) return randomChoice(pool[mood]);
     if (pool && pool.normal && pool.normal.length) return randomChoice(pool.normal);
