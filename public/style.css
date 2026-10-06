@@ -1144,9 +1144,8 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
 }
 #input::placeholder { color: var(--text2); }
 #input::-webkit-scrollbar { width: 3px; }
-#input.hidden-text { -webkit-text-security: disc; text-security: disc; }
 
-#send, #cancel-btn, #mic-btn, #attach-btn, #eye-btn, #sala-cancel-btn {
+#send, #cancel-btn, #mic-btn, #attach-btn, #sala-cancel-btn {
   border-radius: 50%; border: none; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0; transition: transform .1s, background .15s;
@@ -1162,14 +1161,13 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
 #cancel-btn, #sala-cancel-btn { background: #3d1a1d; color: var(--danger); width: 44px; height: 44px; }
 #cancel-btn:hover, #sala-cancel-btn:hover { background: #5a1f24; }
 
-#mic-btn, #attach-btn, #eye-btn {
+#mic-btn, #attach-btn {
   background: none; color: var(--text2);
   width: 44px; height: 44px;
 }
-#mic-btn:hover, #attach-btn:hover, #eye-btn:hover { background: var(--border); color: var(--text); }
+#mic-btn:hover, #attach-btn:hover { background: var(--border); color: var(--text); }
 #mic-btn:disabled, #attach-btn:disabled { opacity: .3; cursor: default; pointer-events: none; }
 #mic-btn.recording, #codex-mic-btn.recording { color: var(--danger); animation: pulse-rec .8s ease-in-out infinite alternate; }
-#eye-btn[aria-pressed="true"] { color: var(--accent); background: var(--border); }
 @keyframes pulse-rec { from { opacity: 1; } to { opacity: .4; } }
 
 #input:disabled { opacity: .4; }
@@ -1956,7 +1954,7 @@ body.hide-tools details.tool { display: none !important; }
 
   /* Composer más compacto en mobile para que quepan los botones */
   #composer { gap: 2px; padding: 6px 6px calc(6px + var(--safe-b)); }
-  #mic-btn, #attach-btn, #eye-btn { width: 40px; height: 40px; min-width: 40px; min-height: 40px; }
+  #mic-btn, #attach-btn { width: 40px; height: 40px; min-width: 40px; min-height: 40px; }
   #send, #cancel-btn { width: 42px; height: 42px; min-width: 42px; min-height: 42px; }
   #input { padding: 9px 10px; min-width: 0; }
 }

@@ -4035,16 +4035,6 @@ async function uploadFiles(files) {
   for (const f of files) await uploadAttachment(f);
 }
 
-// ── Ocultar texto al escribir (para pegar contraseñas/claves sin que queden a la vista) ──
-function setHiddenInput(on) {
-  $('input').classList.toggle('hidden-text', on);
-  $('eye-btn').setAttribute('aria-pressed', String(on));
-  $('eye-btn').title = on ? 'Mostrar texto al escribir' : 'Ocultar texto al escribir (para contraseñas)';
-}
-$('eye-btn').onclick = () => setHiddenInput($('eye-btn').getAttribute('aria-pressed') !== 'true');
-// Al enviar, vuelve a texto visible para el próximo mensaje (evita dejarlo "trabado" oculto).
-$('composer').addEventListener('submit', () => setHiddenInput(false), true);
-
 $('attach-btn').onclick = () => { $('file-input').click(); };
 $('file-input').onchange = async () => {
   const files = Array.from($('file-input').files);
