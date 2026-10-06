@@ -1397,10 +1397,20 @@ async function maybeGenerateGeminiTitle(convId) {
 
 
 
+// En las instancias de colaboradores (VPS Linux) los repos se clonan directo en
+// el home (~/controlgames), sin Desktop/Proyectos, así que el home es una raíz
+// más. PROJECT_ROOTS (separado por path.delimiter) permite sumar otras a mano.
 const PROJECT_SEARCH_ROOTS = [
   path.join(HOME_DIR, 'Desktop', 'Proyectos'),
   path.join(HOME_DIR, 'Desktop'),
+  ...(COLLAB_MODE ? [HOME_DIR] : []),
+  ...String(process.env.PROJECT_ROOTS || '').split(path.delimiter).map(s => s.trim()).filter(Boolean),
 ];
+
+// Carpetas ocultas (.claude, .codex, .local…) y de dependencias no son proyectos.
+function isProjectDirEntry(entry) {
+  return entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules';
+}
 
 function normalizeProjectName(value) {
   return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -1430,7 +1440,7 @@ async function inferRepoFromMessage(text) {
     let entries = [];
     try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
     for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
+      if (!isProjectDirEntry(entry)) continue;
       const score = projectMatchScore(text, entry.name);
       if (score) candidates.push({ path: path.join(root, entry.name), score });
     }
@@ -1449,7 +1459,7 @@ function listProjectFolderNames() {
     let entries = [];
     try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
     for (const entry of entries) {
-      if (entry.isDirectory()) names.add(entry.name);
+      if (isProjectDirEntry(entry)) names.add(entry.name);
     }
   }
   return [...names].sort((a, b) => a.localeCompare(b, 'es'));
