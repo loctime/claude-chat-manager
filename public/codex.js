@@ -490,7 +490,10 @@ async function loadCodexSharedMessages(convId) {
   } catch (err) {
     // No limpiar antes del fetch: al volver de background una reconexión puede
     // fallar una vez y no debe dejar el chat en blanco.
-    if (loadVersion === codexMessagesLoadVersion && currentCodexConv?.id === convId) toast('No se pudo actualizar Codex. Reintentaremos al reconectar.', 'error', 4000);
+    if (loadVersion === codexMessagesLoadVersion && currentCodexConv?.id === convId) {
+      showMessagesLoadFailed();
+      toast('No se pudo actualizar Codex. Reintentaremos al reconectar.', 'error', 4000);
+    }
     return false;
   }
   if (loadVersion !== codexMessagesLoadVersion || currentCodexConv?.id !== convId) return false;
@@ -587,6 +590,7 @@ async function selectCodexShared(convId, name, projectDir = '', project = undefi
   setCodexMainBusy(false);
   showNotebookView(false);
   showSalaView(false);
+  prepareMessagesForOpen('codex:' + convId); // ver prepareMessagesForOpen en app.js
   openChat();
   const markRead = codexApi(`/conversations/${convId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ unread: false }) }).catch(() => {});
   await loadCodexSharedMessages(convId);
@@ -627,6 +631,7 @@ async function createCodexSharedConversation() {
   $('queued-bar').hidden = true;
   $('last-user-pin').hidden = true;
   messagesEl.innerHTML = '<div id="empty-state"><p>Escribile algo a Codex</p></div>';
+  shownConvKey = null; // el panel ya no corresponde a ninguna conversación abierta antes
   setCodexMainBusy(false);
   showNotebookView(false);
   showSalaView(false);

@@ -3337,6 +3337,23 @@ function addCompactDivider() {
   messagesEl.appendChild(div);
 }
 
+// Al abrir OTRA conversación el panel todavía tiene los mensajes de la anterior hasta que llega la
+// respuesta del server, y se veía un instante la charla equivocada. Se vacía antes de abrir, con un
+// "Cargando…" que el CSS muestra recién a los 350 ms (una carga rápida no parpadea). Si es la misma
+// conversación (volver desde Notas, reabrir) no se toca, para no perder el scroll. La clave lleva el
+// motor porque los ids de cada motor son independientes.
+let shownConvKey = null;
+function prepareMessagesForOpen(key) {
+  if (key && shownConvKey === key) return;
+  shownConvKey = key || null;
+  messagesEl.innerHTML = '<div id="empty-state" class="loading-messages"><p>Cargando…</p></div>';
+}
+// Si la carga falla y el panel sigue en "Cargando…", que no quede así para siempre.
+function showMessagesLoadFailed() {
+  if (!messagesEl.querySelector('.loading-messages')) return;
+  messagesEl.innerHTML = '<div id="empty-state"><p>No se pudo cargar la conversación. Volvé a abrirla.</p></div>';
+}
+
 async function loadMessages(convId, { scrollState } = {}) {
   // Esta función vacía y reconstruye toda la lista (la llama el evento `idle`
   // del stream). Sin esto, el rebuild resetea el scroll y te tira al fondo
@@ -3392,6 +3409,7 @@ async function loadMessages(convId, { scrollState } = {}) {
     // El caller de background no siempre espera esta promesa; absorber el
     // error evita un rechazo silencioso y, sobre todo, no borra el historial.
     if (loadVersion === messageLoadVersion && convId === currentConv) {
+      showMessagesLoadFailed();
       toast('No se pudo actualizar la conversación. Reintentaremos al reconectar.', 'error', 4000);
     }
     return false;
@@ -3748,6 +3766,7 @@ async function selectConv(convId, name, model, lastModel, projectDir) {
   }
   showNotebookView(false);
   showSalaView(false); // si había una sala abierta, se cierra — ver bug reportado por Diego
+  prepareMessagesForOpen('claude:' + convId);
   openChat();
   // Al abrir otra conversación no heredamos la posición de scroll de la
   // anterior: arrancamos mostrando el PRINCIPIO del último mensaje (no el

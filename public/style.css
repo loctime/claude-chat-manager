@@ -1015,6 +1015,9 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
   #mascot-widget.tapped, #mascot-widget.state-pop, #mascot-widget.hit-bounce { animation: none; }
 }
 
+/* "Cargando…" al abrir una conversación: invisible los primeros 350 ms, así una carga rápida no parpadea */
+#messages .loading-messages { opacity: 0; animation: loading-messages-in .2s ease .35s forwards; }
+@keyframes loading-messages-in { to { opacity: 1; } }
 #empty-state {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   flex: 1; gap: 12px; color: var(--text2); font-size: 14px;

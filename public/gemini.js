@@ -36,7 +36,10 @@ async function loadGeminiMessages(id) {
   } catch (err) {
     // Mantener lo que ya se estaba leyendo si el regreso de background pierde
     // momentáneamente la red o el stream.
-    if (loadVersion === geminiMessagesLoadVersion && currentGeminiConv?.id === id) toast('No se pudo actualizar Antigravity. Reintentaremos al reconectar.', 'error', 4000);
+    if (loadVersion === geminiMessagesLoadVersion && currentGeminiConv?.id === id) {
+      showMessagesLoadFailed();
+      toast('No se pudo actualizar Antigravity. Reintentaremos al reconectar.', 'error', 4000);
+    }
     return false;
   }
   if (loadVersion !== geminiMessagesLoadVersion || currentGeminiConv?.id !== id) return false;
@@ -381,6 +384,8 @@ async function selectGemini(id, name, projectDir = '', project = undefined) {
   setGeminiBusy(false);
   showNotebookView(false);
   showSalaView(false);
+  if (id) prepareMessagesForOpen('agy:' + id); // ver prepareMessagesForOpen en app.js
+  else shownConvKey = null; // conversación nueva: abajo se arma su propio estado vacío
   openChat();
   if (id) {
     await geminiApi(`/conversations/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ unread: false }) });
