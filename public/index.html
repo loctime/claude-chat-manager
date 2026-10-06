@@ -517,6 +517,12 @@
         </details>
 
         <details class="settings-section admin-only">
+          <summary class="settings-section-label">Dispositivos conectados</summary>
+          <div id="cfg-devices-list" class="device-rows"></div>
+          <span class="settings-hint">Quién entró con el PIN, por IP y última vez visto. "Eliminar" solo saca la fila de esta lista — si ese dispositivo sigue mandando el PIN, puede volver a aparecer. Para cortarle el paso de verdad, rotá el PIN (variable de entorno ACCESS_PIN) y reiniciá el server.</span>
+        </details>
+
+        <details class="settings-section admin-only">
           <summary class="settings-section-label">Almacenamiento</summary>
           <div class="settings-server">
             <button type="button" id="settings-cleanup-btn">🧹 Limpiar sesiones</button>

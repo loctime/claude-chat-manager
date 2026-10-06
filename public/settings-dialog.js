@@ -151,7 +151,56 @@ function openSettings() {
   $('cfg-sala-token').value = '';
   updateSalaTokenStatus();
   loadVoiceSettings();
+  loadDevices();
   $('settings-dialog').showModal();
+}
+
+// Lista de "dispositivos conectados" (ver devices.js del server) — se lee
+// fresca cada vez que se abre Configuración, mismo criterio que Voces: no
+// cachear nada localmente, puede haber cambiado desde otro dispositivo.
+function formatDeviceSeen(ms) {
+  if (!ms) return '?';
+  const d = new Date(ms);
+  const pad = n => String(n).padStart(2, '0');
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+async function loadDevices() {
+  const box = $('cfg-devices-list');
+  if (!box) return;
+  box.textContent = 'Cargando…';
+  let data;
+  try { data = await api('/devices'); }
+  catch (err) { box.textContent = 'No se pudo leer la lista: ' + err.message; return; }
+  renderDevices(data.devices || [], data.selfDeviceId);
+}
+
+function renderDevices(list, selfId) {
+  const box = $('cfg-devices-list');
+  if (!list.length) { box.innerHTML = '<span class="settings-hint">Todavía no se registró ningún dispositivo.</span>'; return; }
+  box.innerHTML = list.map(d => `
+    <div class="device-row" data-id="${d.id}">
+      <div class="device-row-main">
+        <div class="device-row-top">${d.ip || 'IP desconocida'}${d.id === selfId ? ' <span class="settings-key-status">· este dispositivo</span>' : ''}</div>
+        <div class="device-row-meta">${(d.userAgent || 'sin user-agent').slice(0, 90)}</div>
+        <div class="device-row-meta">Visto por primera vez ${formatDeviceSeen(d.firstSeen)} · última vez ${formatDeviceSeen(d.lastSeen)}</div>
+      </div>
+      <button type="button" class="device-row-del" title="Eliminar de la lista" aria-label="Eliminar de la lista">🗑</button>
+    </div>
+  `).join('');
+  box.querySelectorAll('.device-row-del').forEach(btn => {
+    btn.onclick = async () => {
+      const row = btn.closest('.device-row');
+      const id = row.dataset.id;
+      if (!confirm('Sacar este dispositivo de la lista?\n\nNo le corta el acceso — si sigue mandando el PIN puede volver a aparecer. Para cortarle el paso de verdad hay que rotar el PIN.')) return;
+      try {
+        await api(`/devices/${id}`, { method: 'DELETE' });
+        row.remove();
+      } catch (err) {
+        toast('No se pudo eliminar: ' + err.message);
+      }
+    };
+  });
 }
 
 // Panel "Voces" — reemplaza los accesos directos sueltos del escritorio

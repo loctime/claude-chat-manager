@@ -39,6 +39,7 @@ const { getReplySuggestions } = require('./groq-suggest');
 const gitSync = require('./git-sync');
 const salaClient = require('./sala-client');
 const { buildContextBlock, isMentioned, mentionNotice } = require('./sala-context');
+const devices = require('./devices');
 
 const IS_WIN = process.platform === 'win32';
 // WSL: Linux corriendo dentro de Windows (kernel expone "microsoft" en
@@ -375,8 +376,35 @@ if (ACCESS_PIN) {
     const PUBLIC = ['/login.html', '/__auth', '/__auth/otp', '/sw.js', '/manifest.json', '/icon-192.png', '/icon-512.png'];
     if (PUBLIC.includes(req.path)) return next();
     const cookies = Object.fromEntries((req.headers.cookie || '').split(';').map(c => c.trim().split('=')));
-    if (cookies.ccm_auth === ACCESS_PIN) return next();
+    if (cookies.ccm_auth === ACCESS_PIN) {
+      // ccm_device: id random sin valor de seguridad (no reemplaza a
+      // ccm_auth, solo identifica "la misma instalación/navegador" entre
+      // requests) para poder listar dispositivos en Configuración. Vida
+      // larga a propósito — si expirara antes que ccm_auth, el mismo
+      // dispositivo aparecería duplicado en la lista cada tanto.
+      let deviceId = cookies.ccm_device;
+      if (!deviceId) {
+        deviceId = crypto.randomUUID();
+        res.cookie('ccm_device', deviceId, { httpOnly: true, sameSite: 'lax', maxAge: 400 * 24 * 3600 * 1000 });
+      }
+      devices.track(deviceId, { ip: clientIp(req), userAgent: req.headers['user-agent'] || '' });
+      return next();
+    }
     res.redirect('/login.html');
+  });
+
+  // Listado de "dispositivos conectados" para Configuración (pedido Diego
+  // 2026-10-06) — ver comentario en devices.js sobre qué significa y qué NO
+  // significa "eliminar" acá.
+  app.get('/api/devices', (req, res) => {
+    const cookies = Object.fromEntries((req.headers.cookie || '').split(';').map(c => c.trim().split('=')));
+    res.json({ devices: devices.list(), selfDeviceId: cookies.ccm_device || null });
+  });
+
+  app.delete('/api/devices/:id', (req, res) => {
+    const ok = devices.remove(req.params.id);
+    if (!ok) return res.status(404).json({ error: 'no existe ese dispositivo' });
+    res.json({ ok: true });
   });
 }
 
