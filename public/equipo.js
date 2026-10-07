@@ -78,6 +78,7 @@ function setEquipoBusy(busy) {
   const el = $('equipo-busy');
   el.innerHTML = busy ? badge('running') : '';
   el.hidden = !busy;
+  $('equipo-cancel-btn').hidden = !busy;
   updateEquipoComposerLock();
 }
 
@@ -244,6 +245,12 @@ $('equipo-file-input').onchange = async () => {
   const files = Array.from($('equipo-file-input').files);
   $('equipo-file-input').value = '';
   for (const f of files) await uploadEquipoFile(f);
+};
+
+$('equipo-cancel-btn').onclick = async () => {
+  if (!currentEquipoRoom) return;
+  try { await api(`/equipo/rooms/${currentEquipoRoom.id}/message`, { method: 'DELETE' }); }
+  catch (err) { toast('No se pudo cancelar: ' + err.message); }
 };
 
 wireMic($('equipo-mic-btn'), $('equipo-input'), { container: $('equipo-messages') });

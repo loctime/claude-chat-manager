@@ -36,6 +36,9 @@ function createEquipoRouter({
   // solo con un reinicio del server — una ronda a medio terminar en ese
   // momento ya se cortó con el proceso de todos modos.
   const busyRooms = new Set();
+  // Salas a las que Fernando les tocó la cruz: la ronda en curso corta en el
+  // próximo punto de control en vez de seguir con el agente que sigue.
+  const cancelledRooms = new Set();
 
   function waitForIdle(emitter, convId) {
     return new Promise(resolve => {
@@ -122,11 +125,13 @@ function createEquipoRouter({
 
   async function runEquipoRound(room, humanText) {
     busyRooms.add(room.id);
+    cancelledRooms.delete(room.id);
     equipo.setBusy(room.id, true);
     try {
       if (room.phase === 'rules') {
         const convId = ensureAgentConv(room, 'claude');
         const reply = await runClaudeTurn(convId, rulesPrompt('', humanText));
+        if (cancelledRooms.has(room.id)) return;
         equipo.appendMessage(room.id, { from: 'Claude', kind: 'agent', text: reply });
         equipo.setPhase(room.id, 'open');
         return;
@@ -140,20 +145,26 @@ function createEquipoRouter({
 
       const claudeConvId = ensureAgentConv(room, 'claude');
       const claudeReply = await runClaudeTurn(claudeConvId, openPrompt('Claude', 'Codex y AgY (Gemini)', ctx, humanText));
+      if (cancelledRooms.has(room.id)) return;
       equipo.appendMessage(room.id, { from: 'Claude', kind: 'agent', text: claudeReply });
 
       const ctx2 = equipo.buildContextBlock(equipo.getRoom(room.id).messages);
       const codexConvId = ensureAgentConv(room, 'codex');
       const codexReply = await runCodexTurn(codexConvId, openPrompt('Codex', 'Claude y AgY (Gemini)', ctx2, humanText));
+      if (cancelledRooms.has(room.id)) return;
       equipo.appendMessage(room.id, { from: 'Codex', kind: 'agent', text: codexReply });
 
       const ctx3 = equipo.buildContextBlock(equipo.getRoom(room.id).messages);
       const geminiConvId = ensureAgentConv(room, 'gemini');
       const geminiReply = await runGeminiTurn(geminiConvId, openPrompt('AgY (Gemini)', 'Claude y Codex', ctx3, humanText));
+      if (cancelledRooms.has(room.id)) return;
       equipo.appendMessage(room.id, { from: 'AgY', kind: 'agent', text: geminiReply });
     } catch (err) {
       equipo.appendMessage(room.id, { from: 'sistema', kind: 'system', text: `Error en la ronda: ${err.message}` });
     } finally {
+      if (cancelledRooms.delete(room.id)) {
+        equipo.appendMessage(room.id, { from: 'sistema', kind: 'system', text: 'Ronda cancelada.' });
+      }
       busyRooms.delete(room.id);
       equipo.setBusy(room.id, false);
     }
@@ -197,6 +208,20 @@ function createEquipoRouter({
       busyRooms.delete(room.id);
       equipo.setBusy(room.id, false);
     });
+  });
+
+  // La cruz: corta el turno del agente que esté hablando y descarta el resto
+  // de la ronda. cancel() devuelve false si ese agente no está corriendo, así
+  // que se puede llamar a los tres sin mirar cuál es.
+  router.delete('/rooms/:id/message', (req, res) => {
+    const room = equipo.getRoom(req.params.id);
+    if (!room) return res.status(404).json({ error: 'sala no encontrada' });
+    if (!busyRooms.has(room.id)) return res.json({ cancelled: false });
+    cancelledRooms.add(room.id);
+    if (room.claudeConvId) runner.cancel(room.claudeConvId);
+    if (room.codexConvId) codexRunner.cancel(room.codexConvId);
+    if (room.geminiConvId) geminiRunner.cancel(room.geminiConvId);
+    res.json({ cancelled: true });
   });
 
   return router;
