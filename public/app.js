@@ -58,7 +58,7 @@ let SALA_URL = '';
 let SALA_TOKEN_SET = false;
 // Instancia de colaborador (COLLAB_MODE en el server): sin pestañas ni botones de admin.
 let COLLAB_MODE = false;
-const COLLAB_HIDDEN_PANES = [3, 4, 5]; // Notas, Task, Sala
+const COLLAB_HIDDEN_PANES = [3, 4, 5, 7]; // Notas, Task, Sala, Equipo
 // Sin Claude (COLLAB_ENGINES sin 'claude') también se ocultan Chats y Archivado, y la
 // pantalla de inicio pasa a Codex (2) o AgY (6).
 let COLLAB_NO_CLAUDE = false;

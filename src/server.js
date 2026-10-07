@@ -426,6 +426,7 @@ const COLLAB_NO_CLAUDE = COLLAB_MODE && !COLLAB_ENGINES.includes('claude');
 const COLLAB_BLOCKED_PREFIXES = [
   '/api/agenda',      // Task: incluye facturación (macarena/*)
   '/api/sala',
+  '/api/equipo',      // Equipo FerStark: coordinación entre instancias de Diego/Fernando, no para colaboradores
   '/api/notebooks',
   '/api/cleanup',
   '/api/accounts/switch',
@@ -2053,6 +2054,8 @@ app.use('/api', createUpdateRouter({
   repoRoot: REPO_ROOT,
   engines: { claude: runner, codex: codexRunner, agy: geminiRunner },
   canSelfRestart: IS_WIN || !!process.env.RESTART_CMD || COLLAB_MODE,
+  // Las instancias de colaborador las actualiza el cron del VPS; el resto baja el código solo.
+  canPull: !COLLAB_MODE,
   restart: () => (IS_WIN || process.env.RESTART_CMD ? doRestart() : process.exit(0)),
   resumeFile: path.join(HOME_DIR, '.claude', 'session-manager', 'update-resume.json'),
 }));
