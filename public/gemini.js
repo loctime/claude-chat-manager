@@ -23,6 +23,7 @@ function setGeminiBusy(value) {
   $('input').disabled = !currentGeminiConv;
   $('send').disabled = !currentGeminiConv;
   $('attach-btn').disabled = !currentGeminiConv;
+  $('mic-btn').disabled = !currentGeminiConv;
   $('cancel-btn').hidden = !value;
   $('conv-status').textContent = value ? 'escribiendo…' : '';
 }
@@ -125,6 +126,14 @@ function openGeminiStream(id) {
         }
         loadGeminiMessages(id);
         refreshGeminiCostBadge(id);
+        if (window._autoSpeakReply && typeof speak === 'function') {
+          window._autoSpeakReply = false;
+          const textToSpeak = (payload && payload.response) || live;
+          setTimeout(() => {
+            const finalTxt = textToSpeak || document.querySelector('#messages .msg.assistant:last-child .msg-text')?.textContent || '';
+            if (finalTxt) speak(finalTxt, null, 'assistant');
+          }, 350);
+        }
       }
       // El runner ya está marcado como busy cuando emite este evento. Sin este
       // refresh el composer decía “escribiendo”, pero la fila AgY podía quedar
@@ -372,7 +381,8 @@ async function selectGemini(id, name, projectDir = '', project = undefined) {
   setModelSelectOptions(AGY_MODELS, currentModel);
   $('model-select').hidden = false;
   setConversationRepoChip(projectDir);
-  $('mic-btn').hidden = true;
+  $('mic-btn').hidden = false;
+  $('mic-btn').disabled = !currentGeminiConv;
   if (id) {
     refreshGeminiCostBadge(id);
   } else {

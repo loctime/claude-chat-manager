@@ -3488,9 +3488,15 @@ function renderQueuedBar() {
 }
 
 function updateComposerLock() {
-  // La cola ahora vive en el servidor: puede recibir varios mensajes aunque
-  // esta pestaña se cierre o cambie de conversación. El composer se mantiene
-  // disponible mientras Claude trabaja; solo se bloquea sin charla abierta.
+  if (typeof currentGeminiConv !== 'undefined' && currentGeminiConv) {
+    const locked = !currentGeminiConv;
+    $('input').disabled = locked;
+    $('send').disabled = locked;
+    $('attach-btn').disabled = locked;
+    $('mic-btn').disabled = locked;
+    $('cancel-btn').hidden = !(typeof geminiMainBusy !== 'undefined' && geminiMainBusy) || !currentGeminiConv;
+    return;
+  }
   const locked = !currentConv;
   $('input').disabled = locked;
   $('send').disabled = locked;
@@ -3550,6 +3556,15 @@ function openStream(convId) {
           if (payload.code !== 0 && payload.stderr) addMsg('error', 'Error: ' + payload.stderr);
           // Turno terminado: si estás leyendo más arriba, el botón pasa a verde.
           flagJumpBtn('done');
+          if (window._autoSpeakReply && typeof speak === 'function') {
+            window._autoSpeakReply = false;
+            const msgs = document.querySelectorAll('#messages .msg.assistant');
+            const last = msgs[msgs.length - 1];
+            if (last) {
+              const txtEl = last.querySelector('.msg-text');
+              if (txtEl) setTimeout(() => speak(txtEl.textContent || '', null, 'assistant'), 300);
+            }
+          }
           if (convId !== currentConv) return; // te fuiste a otra conversación mientras recargaba
           // Mensaje en cola esperando este turno: se dispara solo, salvo que
           // el turno anterior lo hayas cancelado o haya terminado en error
@@ -4143,51 +4158,176 @@ $('input').addEventListener('paste', (e) => {
   window.addEventListener('drop', (e) => { if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) e.preventDefault(); });
 })();
 
-// ── Mic / Grabación ──
-let mediaRecorder = null;
+// ── Mic / Grabación Dinámica ──
+let activeMediaRecorder = null;
 let audioChunks = [];
 
-// Graba, transcribe (/api/transcribe) y agrega el texto al campo dado. Lo comparten el
-// compositor principal (Chats y AgY) y el de Codex; errOpts va tal cual a addMsg para que
-// el error salga en el chat que corresponde.
+// Graba, transcribe en vivo (Web Speech API) o vía /api/transcribe y agrega el texto al campo dado.
+// Si detecta silencio natural (~1.5s) o al hacer clic de nuevo, auto-envía el mensaje.
 function wireMic(btn, inputEl, errOpts) {
-  btn.onclick = async () => {
-    if (mediaRecorder && mediaRecorder.state === 'recording') {
-      mediaRecorder.stop();
-      return;
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let silenceTimer = null;
+  let baseText = '';
+  let recognition = null;
+
+  function getForm() {
+    return inputEl.closest('form');
+  }
+
+  function cleanupRecognition() {
+    if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+    if (recognition) {
+      const rec = recognition;
+      recognition = null;
+      try { rec.abort(); } catch {}
     }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      audioChunks = [];
-      mediaRecorder = new MediaRecorder(stream);
-      mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
-      mediaRecorder.onstop = async () => {
-        stream.getTracks().forEach(t => t.stop());
-        btn.classList.remove('recording');
-        btn.title = 'Grabar audio';
-        setStatus('transcribiendo…');
-        const blob = new Blob(audioChunks, { type: 'audio/webm' });
-        const fd = new FormData();
-        fd.append('audio', blob, 'audio.webm');
-        try {
-          const res = await fetch('/api/transcribe', { method: 'POST', body: fd });
-          if (!res.ok) throw new Error((await res.json()).error || res.statusText);
-          const { text } = await res.json();
-          if (text) {
-            inputEl.value = (inputEl.value ? inputEl.value + ' ' : '') + text;
-            autoResize(inputEl);
+    btn.classList.remove('recording');
+    btn.title = 'Grabar audio';
+    setStatus('');
+  }
+
+  function submitIfReady() {
+    cleanupRecognition();
+    const txt = inputEl.value.trim();
+    const form = getForm();
+    if (txt && form) {
+      const sendBtn = form.querySelector('button[type="submit"]') || form.querySelector('#send');
+      if (sendBtn && !sendBtn.disabled) {
+        window._autoSpeakReply = true;
+        form.requestSubmit();
+      }
+    }
+  }
+
+  btn.onclick = async () => {
+    // Si ya está activo, este clic detiene y envía al instante
+    if (btn.classList.contains('recording')) {
+      if (recognition) {
+        submitIfReady();
+        return;
+      }
+      if (activeMediaRecorder && activeMediaRecorder.state === 'recording') {
+        activeMediaRecorder.stop();
+        return;
+      }
+    }
+
+    // Cancelar cualquier audio de voz en curso (barge-in) y desbloquear síntesis en móviles
+    if ('speechSynthesis' in window) {
+      try {
+        speechSynthesis.cancel();
+        if (speechSynthesis.resume) speechSynthesis.resume();
+        const prime = new SpeechSynthesisUtterance(' ');
+        prime.volume = 0;
+        speechSynthesis.speak(prime);
+      } catch {}
+    }
+
+    // 1. Intentar Web Speech API nativo (Chrome) para streaming en vivo y VAD
+    if (SpeechRecognition) {
+      cleanupRecognition();
+      try {
+        recognition = new SpeechRecognition();
+        recognition.lang = 'es-AR';
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        baseText = inputEl.value ? inputEl.value.trim() + ' ' : '';
+
+        recognition.onstart = () => {
+          btn.classList.add('recording');
+          btn.title = 'Escuchando… pausa para enviar o clic para cortar';
+          setStatus('escuchando…');
+        };
+
+        recognition.onresult = (e) => {
+          if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+          let interim = '';
+          let final = '';
+          for (let i = e.resultIndex; i < e.results.length; ++i) {
+            const transcript = e.results[i][0].transcript;
+            if (e.results[i].isFinal) final += transcript;
+            else interim += transcript;
           }
-        } catch (err) {
-          addMsg('error', 'Error transcripción: ' + err.message, errOpts);
-        } finally {
-          setStatus('');
-        }
-      };
-      mediaRecorder.start();
-      btn.classList.add('recording');
-      btn.title = 'Detener grabación';
-    } catch (err) {
-      addMsg('error', 'No se pudo acceder al micrófono: ' + err.message, errOpts);
+          const spoken = (final || interim).trim();
+          if (spoken) {
+            inputEl.value = baseText + spoken;
+            autoResize(inputEl);
+            // Detección de silencio: si no habla por 1.5s, auto-envío
+            silenceTimer = setTimeout(() => {
+              submitIfReady();
+            }, 1500);
+          }
+        };
+
+        recognition.onerror = (e) => {
+          console.warn('SpeechRecognition error:', e.error);
+          cleanupRecognition();
+          if (e.error !== 'no-speech' && e.error !== 'aborted') {
+            fallbackMediaRecorder();
+          }
+        };
+
+        recognition.onend = () => {
+          if (btn.classList.contains('recording')) {
+            submitIfReady();
+          } else {
+            cleanupRecognition();
+          }
+        };
+
+        recognition.start();
+        return;
+      } catch (err) {
+        console.warn('Fallo SpeechRecognition, usando MediaRecorder:', err);
+        cleanupRecognition();
+      }
+    }
+
+    // 2. Fallback a MediaRecorder + Whisper
+    fallbackMediaRecorder();
+
+    async function fallbackMediaRecorder() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioChunks = [];
+        activeMediaRecorder = new MediaRecorder(stream);
+        activeMediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+        activeMediaRecorder.onstop = async () => {
+          stream.getTracks().forEach(t => t.stop());
+          btn.classList.remove('recording');
+          btn.title = 'Grabar audio';
+          setStatus('transcribiendo…');
+          const blob = new Blob(audioChunks, { type: 'audio/webm' });
+          const fd = new FormData();
+          fd.append('audio', blob, 'audio.webm');
+          try {
+            const res = await fetch('/api/transcribe', { method: 'POST', body: fd });
+            if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+            const { text } = await res.json();
+            if (text) {
+              inputEl.value = (inputEl.value ? inputEl.value + ' ' : '') + text;
+              autoResize(inputEl);
+              const form = getForm();
+              if (form) {
+                const sendBtn = form.querySelector('button[type="submit"]') || form.querySelector('#send');
+                if (sendBtn && !sendBtn.disabled) {
+                  window._autoSpeakReply = true;
+                  form.requestSubmit();
+                }
+              }
+            }
+          } catch (err) {
+            addMsg('error', 'Error transcripción: ' + err.message, errOpts);
+          } finally {
+            setStatus('');
+          }
+        };
+        activeMediaRecorder.start();
+        btn.classList.add('recording');
+        btn.title = 'Detener grabación';
+      } catch (err) {
+        addMsg('error', 'No se pudo acceder al micrófono: ' + err.message, errOpts);
+      }
     }
   };
 }

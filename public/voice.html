@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gemini Live — FerStark Voz</title>
+  <style>
+    :root {
+      --bg: #0b0f17;
+      --card: #151b26;
+      --border: #232d3f;
+      --accent: #4f8cff;
+      --accent-glow: rgba(79, 140, 255, 0.35);
+      --text: #f0f3f8;
+      --text-muted: #8a99ad;
+      --user-bubble: #1c2638;
+      --bot-bubble: #162233;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    header {
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      background: rgba(11, 15, 23, 0.85);
+      backdrop-filter: blur(12px);
+      z-index: 10;
+    }
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .brand-title {
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .badge-live {
+      font-size: 11px;
+      font-weight: 700;
+      color: #10b981;
+      background: rgba(16, 185, 129, 0.15);
+      padding: 2px 8px;
+      border-radius: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .badge-live.active {
+      color: #ef4444;
+      background: rgba(239, 68, 68, 0.15);
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    .settings-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .settings-btn:hover {
+      color: var(--text);
+      border-color: var(--text-muted);
+    }
+    #settings-panel {
+      position: absolute;
+      top: 60px;
+      right: 20px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      width: 320px;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.4);
+      z-index: 20;
+      display: none;
+    }
+    #settings-panel.open { display: block; }
+    .field { margin-bottom: 12px; }
+    .field label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+    .field input, .field select {
+      width: 100%;
+      background: #0d121c;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      color: var(--text);
+      font-size: 13px;
+    }
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px;
+      position: relative;
+    }
+    #orb-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      position: relative;
+    }
+    #orb-canvas {
+      width: 240px;
+      height: 240px;
+      border-radius: 50%;
+      transition: transform 0.2s ease-out;
+    }
+    #status-text {
+      margin-top: 24px;
+      font-size: 18px;
+      font-weight: 500;
+      color: var(--text-muted);
+      letter-spacing: -0.2px;
+    }
+    #transcript-box {
+      width: 100%;
+      max-width: 600px;
+      max-height: 180px;
+      overflow-y: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      mask-image: linear-gradient(to bottom, transparent 0%, black 15%);
+    }
+    .transcript-bubble {
+      padding: 8px 14px;
+      border-radius: 12px;
+      font-size: 14px;
+      line-height: 1.45;
+      max-width: 85%;
+      word-break: break-word;
+    }
+    .transcript-bubble.user {
+      align-self: flex-end;
+      background: var(--user-bubble);
+      color: var(--text);
+      border-bottom-right-radius: 2px;
+    }
+    .transcript-bubble.bot {
+      align-self: flex-start;
+      background: var(--bot-bubble);
+      color: var(--text);
+      border-bottom-left-radius: 2px;
+      border: 1px solid rgba(79, 140, 255, 0.15);
+    }
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      margin-top: 10px;
+      margin-bottom: 20px;
+    }
+    .mic-main-btn {
+      width: 76px;
+      height: 76px;
+      border-radius: 50%;
+      border: none;
+      background: var(--accent);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      box-shadow: 0 0 24px var(--accent-glow);
+      transition: all 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    }
+    .mic-main-btn:hover {
+      transform: scale(1.06);
+    }
+    .mic-main-btn.active {
+      background: var(--danger);
+      box-shadow: 0 0 28px rgba(239, 68, 68, 0.5);
+      animation: pulse 1.8s infinite;
+    }
+    .mic-main-btn svg {
+      width: 34px;
+      height: 34px;
+    }
+    .btn-action {
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      border-radius: 50%;
+      width: 44px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-action:hover {
+      color: var(--text);
+      border-color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <div class="brand-title">
+        <span>FerStark Live</span>
+        <span id="live-badge" class="badge-live">Listo</span>
+      </div>
+    </div>
+    <div>
+      <button class="settings-btn" id="toggle-settings">Ajustes</button>
+      <div id="settings-panel">
+        <div class="field">
+          <label>Google API Key</label>
+          <input type="password" id="api-key-input" placeholder="AIzaSy...">
+        </div>
+        <div class="field">
+          <label>Voz del Asistente</label>
+          <select id="voice-select">
+            <option value="Puck">Puck (Enérgico)</option>
+            <option value="Charon">Charon (Profundo)</option>
+            <option value="Kore">Kore (Cálida)</option>
+            <option value="Fenrir">Fenrir (Firme)</option>
+            <option value="Aoede">Aoede (Amigable)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Pausa para auto-envío</label>
+          <select id="pause-select">
+            <option value="1200">1.2 segundos (Rápido)</option>
+            <option value="1600" selected>1.6 segundos (Normal)</option>
+            <option value="2200">2.2 segundos (Tranquilo)</option>
+          </select>
+        </div>
+        <button class="settings-btn" style="width:100%;margin-top:6px;" id="save-settings">Guardar</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div id="orb-container">
+      <canvas id="orb-canvas" width="480" height="480"></canvas>
+      <div id="status-text">Tocá el micrófono para hablar</div>
+    </div>
+
+    <div id="transcript-box"></div>
+
+    <div class="controls">
+      <button class="btn-action" id="clear-btn" title="Limpiar pantalla">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+      </button>
+      <button class="mic-main-btn" id="mic-btn" title="Iniciar llamada de voz">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+      </button>
+      <button class="btn-action" id="interrupt-btn" title="Cortar respuesta">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M6 6h12v12H6z"/></svg>
+      </button>
+    </div>
+  </main>
+
+  <script>
+    const DEFAULT_KEY = "AIzaSyDEWlS6eJKoV9UsDf0qrZUS-lwnud--vxU";
+    let apiKey = localStorage.getItem('gemini_api_key') || DEFAULT_KEY;
+    let selectedVoice = localStorage.getItem('gemini_voice') || 'Puck';
+    let silenceDelay = parseInt(localStorage.getItem('gemini_silence') || '1600', 10);
+
+    const apiKeyInput = document.getElementById('api-key-input');
+    const voiceSelect = document.getElementById('voice-select');
+    const pauseSelect = document.getElementById('pause-select');
+    apiKeyInput.value = apiKey;
+    voiceSelect.value = selectedVoice;
+    pauseSelect.value = silenceDelay;
+
+    document.getElementById('toggle-settings').onclick = () => {
+      document.getElementById('settings-panel').classList.toggle('open');
+    };
+    document.getElementById('save-settings').onclick = () => {
+      apiKey = apiKeyInput.value.trim() || DEFAULT_KEY;
+      selectedVoice = voiceSelect.value;
+      silenceDelay = parseInt(pauseSelect.value, 10);
+      localStorage.setItem('gemini_api_key', apiKey);
+      localStorage.setItem('gemini_voice', selectedVoice);
+      localStorage.setItem('gemini_silence', silenceDelay);
+      document.getElementById('settings-panel').classList.remove('open');
+    };
+
+    // ── Orbe / Visualizador de audio ──
+    const canvas = document.getElementById('orb-canvas');
+    const ctx = canvas.getContext('2d');
+    let orbState = 'idle'; // idle, listening, thinking, speaking
+    let orbIntensity = 0;
+    let animFrame = null;
+
+    function drawOrb() {
+      const w = canvas.width, h = canvas.height;
+      const cx = w / 2, cy = h / 2;
+      ctx.clearRect(0, 0, w, h);
+
+      const time = performance.now() * 0.003;
+      let baseRadius = 80;
+      let color1 = 'rgba(79, 140, 255, ';
+      let color2 = 'rgba(168, 85, 247, ';
+
+      if (orbState === 'listening') {
+        color1 = 'rgba(16, 185, 129, ';
+        color2 = 'rgba(5, 150, 105, ';
+        baseRadius = 85 + Math.sin(time * 3) * 6 + orbIntensity * 35;
+      } else if (orbState === 'thinking') {
+        color1 = 'rgba(234, 179, 8, ';
+        color2 = 'rgba(249, 115, 22, ';
+        baseRadius = 80 + Math.sin(time * 6) * 8;
+      } else if (orbState === 'speaking') {
+        color1 = 'rgba(239, 68, 68, ';
+        color2 = 'rgba(244, 63, 94, ';
+        baseRadius = 85 + Math.sin(time * 4) * 10 + orbIntensity * 40;
+      } else {
+        baseRadius = 75 + Math.sin(time) * 4;
+      }
+
+      const grad = ctx.createRadialGradient(cx, cy, 10, cx, cy, baseRadius * 1.6);
+      grad.addColorStop(0, color1 + '0.9)');
+      grad.addColorStop(0.4, color2 + '0.6)');
+      grad.addColorStop(0.8, color1 + '0.2)');
+      grad.addColorStop(1, 'transparent');
+
+      ctx.beginPath();
+      ctx.arc(cx, cy, baseRadius * 1.5, 0, Math.PI * 2);
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(cx, cy, baseRadius, 0, Math.PI * 2);
+      ctx.fillStyle = color1 + '0.95)';
+      ctx.shadowBlur = 40;
+      ctx.shadowColor = color1 + '0.8)';
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      animFrame = requestAnimationFrame(drawOrb);
+    }
+    drawOrb();
+
+    // ── Estado y UI ──
+    const statusText = document.getElementById('status-text');
+    const liveBadge = document.getElementById('live-badge');
+    const micBtn = document.getElementById('mic-btn');
+    const transcriptBox = document.getElementById('transcript-box');
+
+    function setStatus(state, msg) {
+      orbState = state;
+      statusText.textContent = msg;
+      if (state === 'idle') {
+        liveBadge.textContent = 'En espera';
+        liveBadge.classList.remove('active');
+        micBtn.classList.remove('active');
+      } else {
+        liveBadge.textContent = 'En vivo';
+        liveBadge.classList.add('active');
+        micBtn.classList.add('active');
+      }
+    }
+
+    function addTranscript(role, text) {
+      const bubble = document.createElement('div');
+      bubble.className = 'transcript-bubble ' + role;
+      bubble.textContent = text;
+      transcriptBox.appendChild(bubble);
+      transcriptBox.scrollTop = transcriptBox.scrollHeight;
+    }
+
+    document.getElementById('clear-btn').onclick = () => {
+      transcriptBox.innerHTML = '';
+    };
+
+    // ── Motor de Conversación en Vivo ──
+    let isLive = false;
+    let recognition = null;
+    let silenceTimer = null;
+    let currentAudio = null;
+    const conversationHistory = [
+      {
+        role: "user",
+        parts: [{ text: "Sos el asistente personal de Fernando Vidal (FerStark) en Ramallo. Hablás en español rioplatense (argentino sin che exagerado, cercano, conciso). Como estamos hablando por voz en vivo, tus respuestas DEBEN ser cortas: 1 a 3 oraciones como máximo. Nunca uses markdown, asteriscos ni código en tus respuestas habladas." }]
+      },
+      {
+        role: "model",
+        parts: [{ text: "Entendido, Fernando. Estoy listo. ¿De qué charlamos?" }]
+      }
+    ];
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    function stopAssistantSpeech() {
+      if (currentAudio) {
+        try { currentAudio.pause(); currentAudio = null; } catch {}
+      }
+      if ('speechSynthesis' in window) speechSynthesis.cancel();
+      orbIntensity = 0;
+    }
+
+    document.getElementById('interrupt-btn').onclick = () => {
+      stopAssistantSpeech();
+      if (isLive) startListening();
+    };
+
+    function startListening() {
+      stopAssistantSpeech();
+      if (!isLive) return;
+      if (!SpeechRecognition) {
+        alert("Tu navegador no soporta SpeechRecognition. Por favor usá Google Chrome.");
+        toggleLive();
+        return;
+      }
+
+      cleanupRecognition();
+      recognition = new SpeechRecognition();
+      recognition.lang = 'es-AR';
+      recognition.continuous = true;
+      recognition.interimResults = true;
+
+      recognition.onstart = () => {
+        setStatus('listening', 'Te escucho…');
+      };
+
+      let pendingText = '';
+      recognition.onresult = (e) => {
+        if (silenceTimer) clearTimeout(silenceTimer);
+        let interim = '';
+        let final = '';
+        for (let i = e.resultIndex; i < e.results.length; ++i) {
+          const t = e.results[i][0].transcript;
+          if (e.results[i].isFinal) final += t;
+          else interim += t;
+        }
+        pendingText = (final || interim).trim();
+        if (pendingText) {
+          orbIntensity = 0.5;
+          statusText.textContent = pendingText;
+          silenceTimer = setTimeout(() => {
+            processUserUtterance(pendingText);
+          }, silenceDelay);
+        }
+      };
+
+      recognition.onerror = (e) => {
+        if (e.error !== 'no-speech' && e.error !== 'aborted') {
+          console.warn('SpeechRecognition err:', e.error);
+        }
+      };
+
+      recognition.onend = () => {
+        if (isLive && orbState === 'listening') {
+          if (pendingText) {
+            processUserUtterance(pendingText);
+          } else {
+            try { recognition.start(); } catch {}
+          }
+        }
+      };
+
+      try { recognition.start(); } catch {}
+    }
+
+    function cleanupRecognition() {
+      if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+      if (recognition) {
+        const r = recognition;
+        recognition = null;
+        try { r.abort(); } catch {}
+      }
+    }
+
+    async function processUserUtterance(text) {
+      cleanupRecognition();
+      if (!text || !text.trim()) {
+        if (isLive) startListening();
+        return;
+      }
+
+      addTranscript('user', text);
+      conversationHistory.push({ role: "user", parts: [{ text }] });
+      setStatus('thinking', 'Pensando…');
+
+      try {
+        // 1. Preguntar a Gemini 2.5 Flash
+        const genUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+        const genRes = await fetch(genUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: conversationHistory })
+        });
+        if (!genRes.ok) throw new Error((await genRes.json()).error?.message || 'Error Gemini');
+        const genData = await genRes.json();
+        const replyText = genData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || 'No pude responder.';
+        conversationHistory.push({ role: "model", parts: [{ text: replyText }] });
+        addTranscript('bot', replyText);
+
+        if (!isLive) return;
+
+        // 2. Sintetizar con Gemini TTS (Audio nativo)
+        setStatus('speaking', 'Hablando…');
+        const ttsUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`;
+        const ttsBody = {
+          contents: [{ parts: [{ text: replyText }] }],
+          generationConfig: {
+            responseModalities: ["AUDIO"],
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: selectedVoice } } }
+          }
+        };
+
+        const ttsRes = await fetch(ttsUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(ttsBody)
+        });
+
+        if (ttsRes.ok) {
+          const ttsData = await ttsRes.json();
+          const pcmBase64 = ttsData.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+          if (pcmBase64) {
+            playRawPCM(pcmBase64, () => {
+              if (isLive) startListening();
+            });
+            return;
+          }
+        }
+
+        // Fallback a Web Speech Synthesis si Gemini TTS falla
+        fallbackBrowserTTS(replyText, () => {
+          if (isLive) startListening();
+        });
+
+      } catch (err) {
+        console.error('Error en turno de voz:', err);
+        setStatus('idle', 'Error: ' + err.message);
+        if (isLive) setTimeout(startListening, 3000);
+      }
+    }
+
+    // Reproducción de PCM 24kHz devuelto por Gemini TTS
+    let audioCtx = null;
+    function playRawPCM(base64Data, onEnded) {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const binary = atob(base64Data);
+      const len = binary.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+      
+      const pcm16 = new Int16Array(bytes.buffer);
+      const float32 = new Float32Array(pcm16.length);
+      for (let i = 0; i < pcm16.length; i++) {
+        float32[i] = pcm16[i] / 32768.0;
+      }
+
+      const buffer = audioCtx.createBuffer(1, float32.length, 24000);
+      buffer.copyToChannel(float32, 0);
+
+      const source = audioCtx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(audioCtx.destination);
+      source.onended = () => {
+        orbIntensity = 0;
+        if (onEnded) onEnded();
+      };
+      orbIntensity = 0.8;
+      source.start();
+      currentAudio = { pause: () => source.stop() };
+    }
+
+    function fallbackBrowserTTS(text, onEnded) {
+      if (!('speechSynthesis' in window)) { if (onEnded) onEnded(); return; }
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'es-AR';
+      u.onend = u.onerror = () => {
+        orbIntensity = 0;
+        if (onEnded) onEnded();
+      };
+      orbIntensity = 0.7;
+      speechSynthesis.speak(u);
+    }
+
+    function toggleLive() {
+      if (isLive) {
+        isLive = false;
+        cleanupRecognition();
+        stopAssistantSpeech();
+        setStatus('idle', 'Llamada finalizada');
+      } else {
+        isLive = true;
+        startListening();
+      }
+    }
+
+    micBtn.onclick = toggleLive;
+  </script>
+</body>
+</html>

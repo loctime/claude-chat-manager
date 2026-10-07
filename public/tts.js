@@ -15,25 +15,71 @@ let ttsUtterance = null;
 // eran dos ajustes separados (voiceAssistant/voiceUser), simplificado a
 // pedido de Diego. `kind` se deja en la firma por si el día de mañana hace
 // falta distinguir de nuevo, pero hoy no afecta qué voz se usa.
+function splitIntoSentences(text) {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  const raw = clean.match(/[^.!?\n]+[.!?\n]+/g) || [clean];
+  const list = [];
+  for (const s of raw) {
+    const trimmed = s.trim();
+    if (trimmed.length > 180) {
+      const parts = trimmed.match(/.{1,160}(\s|$)/g) || [trimmed];
+      list.push(...parts.map(p => p.trim()).filter(Boolean));
+    } else if (trimmed) {
+      list.push(trimmed);
+    }
+  }
+  return list.length ? list : [clean];
+}
+
 function speak(text, btn, kind = 'assistant') {
   if (!('speechSynthesis' in window)) return;
   if (ttsUtterance) {
-    speechSynthesis.cancel();
+    try { speechSynthesis.cancel(); } catch {}
     document.querySelectorAll('.msg-tts.playing').forEach(b => b.classList.remove('playing'));
-    if (ttsUtterance._btn === btn) { ttsUtterance = null; return; }
+    if (btn && ttsUtterance._btn === btn) { ttsUtterance = null; return; }
   }
-  const u = new SpeechSynthesisUtterance(text);
-  const voice = settings.voice ? speechSynthesis.getVoices().find(v => v.name === settings.voice) : null;
-  if (voice) { u.voice = voice; u.lang = voice.lang; }
-  else u.lang = 'es-AR';
-  u._btn = btn;
-  ttsUtterance = u;
-  btn.classList.add('playing');
-  u.onend = u.onerror = () => {
-    btn.classList.remove('playing');
-    if (ttsUtterance === u) ttsUtterance = null;
-  };
-  speechSynthesis.speak(u);
+  try { if (speechSynthesis.resume) speechSynthesis.resume(); } catch {}
+  const clean = typeof cleanForTTS === 'function' ? cleanForTTS(text) : text;
+  if (!clean || !clean.trim()) return;
+
+  const allVoices = speechSynthesis.getVoices();
+  const voice = settings.voice ? allVoices.find(v => v.name === settings.voice) : null;
+  const arVoice = !voice ? allVoices.find(v => v.lang === 'es-AR' || v.lang.startsWith('es-AR') || (v.name && v.name.toLowerCase().includes('argentina'))) : null;
+  const esVoice = !voice && !arVoice ? allVoices.find(v => v.lang && v.lang.startsWith('es-')) : null;
+  const targetVoice = voice || arVoice || esVoice || null;
+
+  const sentences = splitIntoSentences(clean);
+  if (btn) btn.classList.add('playing');
+
+  let idx = 0;
+  function speakNext() {
+    if (idx >= sentences.length) {
+      if (btn) btn.classList.remove('playing');
+      ttsUtterance = null;
+      return;
+    }
+    const currentText = sentences[idx++];
+    const u = new SpeechSynthesisUtterance(currentText);
+    if (targetVoice) { u.voice = targetVoice; u.lang = targetVoice.lang; }
+    else u.lang = 'es-AR';
+    u._btn = btn || null;
+    ttsUtterance = u;
+    u.onend = () => speakNext();
+    u.onerror = (err) => {
+      console.warn('TTS utterance error:', err);
+      if (btn) btn.classList.remove('playing');
+      ttsUtterance = null;
+    };
+    try {
+      if (speechSynthesis.resume) speechSynthesis.resume();
+      speechSynthesis.speak(u);
+    } catch (e) {
+      console.warn('TTS speak error:', e);
+      if (btn) btn.classList.remove('playing');
+      ttsUtterance = null;
+    }
+  }
+  speakNext();
 }
 
 // Muestra de audio para el selector de voz de Configuración — mismo
