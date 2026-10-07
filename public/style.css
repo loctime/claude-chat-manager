@@ -2642,3 +2642,17 @@ body.collab .admin-only { display: none !important; }
 #update-banner button:hover { background: var(--border); }
 #update-banner button.primary { background: var(--accent); border-color: var(--accent); color: #0b141a; font-weight: 600; }
 #update-banner button.primary:hover { filter: brightness(1.1); }
+
+#codex-live-btn, #codex-live-end {
+  flex: none; align-self: center; padding: 8px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--input-bg); color: var(--text); cursor: pointer;
+  font-size: 12px;
+}
+#codex-live-btn[aria-pressed="true"] { border-color: #8a6aff; }
+#codex-live-end { color: #ff8585; }
+#codex-live-status { align-self: center; font-size: 11px; color: var(--text2); max-width: 120px; }
+#codex-live-btn[hidden], #codex-live-end[hidden], #codex-live-status[hidden] { display: none; }
+@media (max-width: 600px) {
+  #codex-live-status { position: absolute; bottom: 100%; right: 8px; padding: 4px 8px; background: var(--input-bg); max-width: none; }
+  #codex-live-btn, #codex-live-end { padding: 6px; font-size: 11px; }
+}

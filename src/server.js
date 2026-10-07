@@ -1894,6 +1894,7 @@ const codexRouter = createCodexRouter({
     return hiddenProjectNames(data);
   },
 });
+app.use('/api/codex-live', require('./routes/codex-live').createCodexLiveRouter({ codexMetaFile: CODEX_META_FILE, broadcast: codexBroadcast }));
 app.use('/api/codex', codexRouter);
 codexRouter.prewarm();
 

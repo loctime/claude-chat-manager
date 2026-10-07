@@ -98,7 +98,9 @@ class CodexRunner extends EventEmitter {
     const sessionId = job.sessionId || job.resolveSessionId?.();
     const sub = ['exec'];
     if (sessionId) sub.push('resume', sessionId);
-    const args = [...sub, '--json', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox'];
+    const args = [...sub, '--json', '--skip-git-repo-check'];
+    if (job.readOnly) args.push('-c', 'sandbox_mode="read-only"', '-c', 'approval_policy="never"');
+    else args.push('--dangerously-bypass-approvals-and-sandbox');
     // `codex exec` accepts -C, but `codex exec resume <session>` does not.
     // spawn() already uses job.cwd, so resumed turns keep the same directory
     // without passing an unsupported CLI flag.

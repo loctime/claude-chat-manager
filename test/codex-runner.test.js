@@ -31,6 +31,15 @@ function makeRunner(spawned, opts = {}) {
   });
 }
 
+test('voice readOnly jobs enforce the sandbox without unrestricted bypass', () => {
+  const spawned = [];
+  const runner = makeRunner(spawned);
+  runner.send({ convId: 'voice', cwd: '/tmp', text: 'Consultar', readOnly: true });
+  assert.ok(!spawned[0].args.includes('--dangerously-bypass-approvals-and-sandbox'));
+  assert.ok(spawned[0].args.includes('sandbox_mode="read-only"'));
+  assert.ok(spawned[0].args.includes('approval_policy="never"'));
+});
+
 test('mensaje nuevo: "exec" sin "resume", con -C y prompt separado por --', () => {
   const spawned = [];
   const r = makeRunner(spawned);

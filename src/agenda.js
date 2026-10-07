@@ -115,12 +115,35 @@ const LEGACY_SEED_CATALOG = [
     // como periódico MENSUAL desde que activaron el modelo nuevo de
     // requisitos — sin tarjeta fija se iba a volver a perder de vista el mes
     // que viene. ControlDoc reqId 1m1vySKiWagyVXJWyRs6.
-    id: 'ferzep_deposito_bancario', title: 'Constancia de depósito bancario (BNA+)', group: 'Clientes FERZEP', day: 15, kind: 'insumo-propio',
-    insumoNota: 'BNA+ está bloqueado para browser headless (Biocatch lo detecta) — hay que bajarlo desde el Chrome/BNA+ de Fernando a mano, avisar cuando el banco ya lo tenga disponible (no sale el mismo día del pago).',
+    // ✅ Resuelto 07/10/2026 — SÍ se puede automatizar de punta a punta, pero
+    // NO con el agent-browser headless (ese es el que Biocatch bloqueó
+    // históricamente). Hay que conectarse al Chrome REAL de Fernando vía CDP
+    // (ver reference_chrome_cdp_tunnel_cloudflare) y manejarlo con un script
+    // standalone de playwright-core ejecutado con PowerShell desde Windows
+    // (NO con los tools mcp__playwright__* del agent-browser, que abren su
+    // propio Chromium headless). Es de solo lectura (no mueve plata ni pide
+    // token), bajo riesgo.
+    id: 'ferzep_deposito_bancario', title: 'Constancia de depósito bancario (BNA+)', group: 'Clientes FERZEP', day: 15, kind: 'auto',
+    insumoNota: 'Automatizado 07/10/2026 vía Chrome real + CDP. Si el flujo cambia de nuevo, volver al plan B: Fernando lo baja a mano y lo pasa.',
     checklist: [
       'Constancia de Acreditación Bancaria del mes — comprobante BNA+ de la transferencia de haberes/retiro de socio',
     ],
-    autoPrompt: `Fijate si ya está disponible en BNA+ la Constancia de Acreditación Bancaria del mes (comprobante de la transferencia de haberes de Fernando). Este trámite NO se puede hacer con el agent-browser headless — Biocatch lo bloquea, tiene que ser con el Chrome/sesión real de Fernando (Claude in Chrome) o Fernando lo baja él mismo y te lo manda. Una vez que lo tengas, subilo a ControlDoc con reqId 1m1vySKiWagyVXJWyRs6, entidadTipo empleado, periodo=YYYY-MM del mes que cubre, fechaEmision = fecha del comprobante (ver reference_ferzep_controldoc_acceso para el método de login+upload por API). Guardalo también en "actualizacion de ferzep/" por si hace falta después.\n\nRecién cuando confirmes que quedó subido, marcá la tarea como hecha:\n${MARK_DONE_CMD('ferzep_deposito_bancario')}`,
+    autoPrompt: `Bajá la Constancia de depósito bancario de sueldo de Fernando Vidal del mes en curso desde BNA+ y subila a ControlDoc (reqId 1m1vySKiWagyVXJWyRs6, entidadTipo empleado, entidadId V6wYiM77pWvevDphNua1, periodo=YYYY-MM, fechaEmision = fecha del comprobante).
+
+Método (aprendido 07/10/2026, ver reference_cinqn... no, ver memoria del 07/10/2026 sobre BNA+):
+1. Abrir Chrome de depuración + túnel (si no están corriendo):
+   powershell.exe -Command "Start-Process -FilePath 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe' -ArgumentList '--remote-debugging-port=9222','--remote-debugging-address=127.0.0.1','--user-data-dir=C:\\Users\\Fernando\\AppData\\Local\\Google\\ChromeDebug','--no-first-run','--no-default-browser-check'"
+2. Credenciales BNA+ en credentials.md.gpg sección BNA+ (DNI 25925181, usuario ferzepsas, contraseña — login en 2 pasos).
+3. Ejecutar scripts de playwright-core VÍA POWERSHELL EN WINDOWS (no con los tools mcp__playwright__*, esos abren un Chromium propio headless que SÍ está prohibido para BNA+):
+   powershell.exe -Command "cd 'C:\\Users\\Fernando\\Desktop\\claude\\linkedin-setup'; node <script>.js 2>&1"
+   Scripts de referencia ya probados: bna-constancia-v2.js (login + Historial + Ver registros + click en icono de descarga de la fila de Vidal — el click SIEMPRE necesita scrollIntoView() justo antes de leer getBoundingClientRect(), si no las coordenadas quedan desfasadas y el click cae en otro lado) y bna-extraer-pdf.js (abre la notificación de la campana con fecha de hoy + "Descarga de listado", click en el ícono de clip de ESA fila puntual filtrando por fecha/hora exacta porque hay varias notificaciones iguales acumuladas, y descarga con page.waitForEvent('download') + download.saveAs()).
+4. IMPORTANTE: no usar browser.close() al final de los scripts que tocan el Chrome real — en una corrida se usó y el navegador de Fernando siguió vivo igual, pero no vale la pena arriesgarse; dejar el browser abierto y listo.
+5. Confirmar el PDF descargado tiene SOLO la fila de Vidal (CUIT/CUIL destinatario 00025925181, Referencia VIDALFERNANDO) antes de subir — si por error se bajó el ticket de otro empleado o el del lote completo, no subir y rehacer.
+6. Guardalo también en "actualizacion de ferzep/" (nombre sugerido: Constancia_Deposito_Sueldo_Vidal_<MES> <AÑO>.pdf) por si hace falta después.
+
+Plan B si el flujo de BNA+ cambia y este método deja de andar: pedirle a Fernando que lo baje a mano (Historial → Pago de haberes del mes → Ver registros → tildar su fila → descargar → campana → Atención al cliente → Descarga de listado → modal → descargar Ticket-rendición.pdf) y te lo pase.
+
+Recién cuando confirmes que quedó subido, marcá la tarea como hecha:\n${MARK_DONE_CMD('ferzep_deposito_bancario')}`,
   },
   {
     // Checklist agregado 12/09/2026 — hasta acá la tarjeta era genérica sin

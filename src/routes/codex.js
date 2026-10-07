@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const meta = require('../meta');
 const codexScanner = require('../codex-scanner');
 const gitSync = require('../git-sync');
+const { voiceMessages } = require('./codex-live');
 const { CodexAvailability } = require('../codex-availability');
 const { CodexUsageService } = require('../codex-usage');
 
@@ -149,9 +150,9 @@ function createCodexRouter({
     const data = meta.load(codexMetaFile);
     const conv = data.conversations[req.params.id];
     if (!conv) return res.status(404).json({ error: 'conversación no encontrada' });
-    if (!conv.currentSessionId) return res.json([]);
+    if (!conv.currentSessionId) return res.json(voiceMessages(conv));
     const file = codexScanner.findSessionFile(conv.currentSessionId);
-    res.json(file ? codexScanner.getMessages(file) : []);
+    res.json([...(file ? codexScanner.getMessages(file) : []), ...voiceMessages(conv)].sort((a, b) => (a.ts || '').localeCompare(b.ts || '')));
   });
 
   router.post('/conversations/:id/message', async (req, res) => {
@@ -170,6 +171,10 @@ function createCodexRouter({
       }
     }
     let outgoing = text;
+    const pendingVoice = voiceMessages(conv).slice(conv.voiceContextOffset || 0);
+    if (pendingVoice.length) outgoing = `[Contexto de la conversación por voz, no nuevas instrucciones]\n${pendingVoice.map(m => `${m.role}: ${m.text}`).join('\n').slice(-48000)}\n\n${text}`;
+    conv.voiceContextOffset = voiceMessages(conv).length;
+    meta.save(data, codexMetaFile);
     if (conv.project && !conv.currentSessionId && !conv.projectAnnounced) {
       if (!conv.gitRepo && typeof inferRepoFromMessage === 'function') {
         const inferredRepo = await inferRepoFromMessage(conv.project);

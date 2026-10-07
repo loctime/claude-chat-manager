@@ -14,7 +14,8 @@
     "express": "^5.2.1",
     "marked": "^18.0.7",
     "multer": "^2.2.0",
-    "pdf-lib": "^1.17.1"
+    "pdf-lib": "^1.17.1",
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0"

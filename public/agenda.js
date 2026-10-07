@@ -67,7 +67,32 @@ Empecemos: contame qué tarea es.`;
 // conversación") y le manda un primer mensaje ya armado — reusado tanto por
 // "Aprender rutina nueva" como por "▶️ Hacer ahora" en cada tarjeta con
 // autoPrompt (ver agenda.js). Devuelve el convId por si hace falta encadenar algo.
-async function agendaSpawnConversation(promptText, project) {
+async function agendaSpawnConversation(promptText, project, engine = 'claude') {
+  if (engine === 'gemini' || engine === 'agy') {
+    const body = {
+      model: 'gemini-3.8-flash-high',
+      ...(project ? { project } : {}),
+    };
+    const created = await geminiApi('/conversations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const convId = created.convId;
+    if (typeof goToPane === 'function') await goToPane(6);
+    await selectGemini(convId, 'Nueva conversación', '', project);
+    addUserMsgWithFiles(promptText, []);
+    setGeminiBusy(true);
+    if (window.Mascot) Mascot.setState('reading');
+    await geminiApi(`/conversations/${convId}/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: promptText }),
+    });
+    if (typeof invalidateUnifiedTreeCache === 'function') invalidateUnifiedTreeCache();
+    loadGeminiTree();
+    return convId;
+  }
   const { convId, projectDir } = await api('/conversations', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -128,7 +153,7 @@ async function agendaRunTask(id) {
   const prompt = agendaBuildRunPrompt(task);
   if (prompt === null) return toast('Ya está todo hecho este mes ✅');
   try {
-    await agendaSpawnConversation(prompt, task.group);
+    await agendaSpawnConversation(prompt, task.group, task.engine);
   } catch (err) {
     toast('No se pudo abrir el chat: ' + err.message);
   }
@@ -162,7 +187,9 @@ function agendaCardActions(task) {
   // por otro lado), pero si la tarea tiene autoPrompt sumamos el botón real
   // que abre un chat y hace el trabajo — mismo mecanismo que "Aprender
   // rutina nueva" (spawnear una conversación real con un prompt armado).
-  const runBtn = task.autoPrompt ? `<button type="button" class="primary" onclick="agendaRunTask('${task.id}')">▶️ Hacer ahora</button>` : '';
+  const isAgy = task.engine === 'gemini' || task.engine === 'agy';
+  const runLabel = isAgy ? '▶️ Hacer ahora (AgY)' : '▶️ Hacer ahora';
+  const runBtn = task.autoPrompt ? `<button type="button" class="primary" onclick="agendaRunTask('${task.id}')">${runLabel}</button>` : '';
   return `<div class="agenda-actions">${runBtn}<button type="button" onclick="agendaToggleDone('${task.id}', ${task.state !== 'hecho'})">${label}</button></div>`;
 }
 

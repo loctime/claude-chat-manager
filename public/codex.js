@@ -530,6 +530,11 @@ function openCodexSharedStream(convId) {
   stream.onmessage = e => {
     if (!currentCodexConv || currentCodexConv.id !== convId) return;
     const payload = JSON.parse(e.data);
+    if (payload.kind === 'voice-message') {
+      addMsg(payload.role, payload.text);
+      scrollToBottom();
+      return;
+    }
     if (payload.kind === 'status') {
       setCodexMainBusy(payload.status !== 'idle');
       if (payload.status === 'idle') {
@@ -563,6 +568,7 @@ function openCodexSharedStream(convId) {
 }
 
 async function selectCodexShared(convId, name, projectDir = '', project = undefined) {
+  window.CodexLive?.stop();
   saveCurrentDraft();
   if (window.Mascot) Mascot.setState('idle'); // ver mismo comentario en selectConv (app.js)
   $('panel-chat').classList.add('codex-chat-theme');
@@ -605,6 +611,7 @@ async function selectCodexShared(convId, name, projectDir = '', project = undefi
 }
 
 async function createCodexSharedConversation() {
+  window.CodexLive?.stop();
   await loadCodexAvailability();
   if (!codexAvailable) {
     await loadCodexSharedTree();
