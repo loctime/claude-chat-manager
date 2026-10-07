@@ -437,6 +437,16 @@ for (const [inputId, setting] of Object.entries(PANE_TOGGLE_SETTINGS)) {
     applySettings(); saveSettings();
   };
 }
+const resetTabsBtn = $('cfg-reset-tabs-order-btn');
+if (resetTabsBtn) {
+  resetTabsBtn.onclick = () => {
+    localStorage.removeItem('ccm-pane-order');
+    if (typeof applyCustomPaneOrder === 'function') {
+      applyCustomPaneOrder(false);
+    }
+    toast('Orden de pestañas restablecido');
+  };
+}
 // Una sola voz para mensajes propios y del agente. Elegirla reproduce sola
 // una muestra corta (previewVoice, tts.js) — no hace falta un botón aparte.
 $('cfg-voice').onchange = e => {

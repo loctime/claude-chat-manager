@@ -924,6 +924,9 @@ async function goToPane(index) {
   // Notas, Agenda y Sala son modelos de datos distintos, sin esta etiqueta.
   $('project-bar').hidden = ![0, 1, 2, 6].includes(index);
   $('tree-viewport-inner').dataset.pane = String(index);
+  if (typeof PANE_POSITION !== 'undefined') {
+    $('tree-viewport-inner').style.setProperty('--active-pane-pos', String(PANE_POSITION[index] ?? 0));
+  }
   document.querySelectorAll('.pane-tab').forEach(t => {
     t.classList.toggle('active', t.dataset.pane === String(index));
   });
@@ -938,7 +941,13 @@ function resetArchivedPane() {
 }
 
 document.querySelectorAll('.pane-tab').forEach(btn => {
-  btn.onclick = () => goToPane(Number(btn.dataset.pane));
+  btn.onclick = (e) => {
+    if (Date.now() - paneTabDragEndedAt < 350) {
+      if (e) { e.preventDefault(); e.stopPropagation(); }
+      return;
+    }
+    goToPane(Number(btn.dataset.pane));
+  };
 });
 
 // Atajos de proveedor: funcionan aunque el foco esté en el composer, pero no
@@ -4717,10 +4726,12 @@ const PANE_SWIPE_THRESHOLD = 60;
 const PANE_DOM_ORDER = [0, 6, 3, 4, 5, 7, 2, 1];
 const PANE_ELEMENT_IDS = { 0: 'tree', 1: 'tree-archived', 2: 'codex-pane', 3: 'tree-notes', 4: 'tree-agenda', 5: 'tree-sala', 6: 'gemini-pane', 7: 'tree-equipo' };
 const PANE_SWIPE_ORDER = [0, 6, 3, 4, 5, 7, 2];
-const PANE_POSITION = Object.fromEntries(PANE_DOM_ORDER.map((pane, position) => [pane, position]));
+let PANE_POSITION = Object.fromEntries(PANE_DOM_ORDER.map((pane, position) => [pane, position]));
+let currentPaneOrder = [...PANE_SWIPE_ORDER];
 const paneInnerForOrder = $('tree-viewport-inner');
 PANE_DOM_ORDER.forEach(pane => paneInnerForOrder.appendChild($(PANE_ELEMENT_IDS[pane])));
 let paneStartX = 0, paneStartY = 0, paneAxisLocked = null, paneDragging = false, paneCurrentTranslate = 0, paneNavigating = false;
+let paneTabDragEndedAt = 0;
 
 function paneViewportWidth() {
   return $('tree-viewport').getBoundingClientRect().width;
@@ -4729,7 +4740,7 @@ function paneViewportWidth() {
 function paneSwipeStart(clientX, clientY) {
   if (paneNavigating) return false; // no arrancar un gesto nuevo con una navegación en curso
   // Archivado no participa del recorrido normal de tabs.
-  if (!PANE_SWIPE_ORDER.includes(activePane)) return false;
+  if (!currentPaneOrder.includes(activePane)) return false;
   paneStartX = clientX; paneStartY = clientY;
   paneAxisLocked = null;
   paneDragging = true;
@@ -4738,7 +4749,7 @@ function paneSwipeStart(clientX, clientY) {
 }
 
 function visiblePaneSwipeOrder() {
-  return PANE_SWIPE_ORDER.filter(isPaneVisible);
+  return currentPaneOrder.filter(isPaneVisible);
 }
 
 function paneTranslateFor(pane) {
@@ -4813,6 +4824,249 @@ function initPaneSwipe() {
   viewport.addEventListener('touchcancel', paneSwipeEnd);
 }
 initPaneSwipe();
+
+// ── Personalización de pestañas: orden guardado y reordenar arrastrando con mouse o dedo ──
+function loadSavedPaneOrder() {
+  try {
+    const raw = localStorage.getItem('ccm-pane-order');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length < 3) return null;
+    const known = [0, 1, 2, 3, 4, 5, 6, 7];
+    const filtered = parsed.filter(p => typeof p === 'number' && known.includes(p));
+    for (const p of [0, 1, 6, 3, 4, 5, 7, 2]) {
+      if (!filtered.includes(p)) filtered.push(p);
+    }
+    return filtered;
+  } catch {
+    return null;
+  }
+}
+
+function applyCustomPaneOrder(orderToApply = null, saveToStorage = false) {
+  const paneTabsNav = $('pane-tabs');
+  if (!paneTabsNav) return;
+
+  let order = orderToApply;
+  if (!order) {
+    order = loadSavedPaneOrder();
+  }
+  if (!order) {
+    order = Array.from(paneTabsNav.children)
+      .map(b => Number(b.dataset?.pane))
+      .filter(n => !isNaN(n));
+  }
+  if (!order || order.length === 0) order = [0, 1, 6, 3, 4, 5, 7, 2];
+
+  const tabMap = {};
+  Array.from(paneTabsNav.children).forEach(b => {
+    if (b.dataset?.pane !== undefined) tabMap[Number(b.dataset.pane)] = b;
+  });
+
+  order.forEach(paneId => {
+    const tabEl = tabMap[paneId];
+    if (tabEl) paneTabsNav.appendChild(tabEl);
+  });
+
+  currentPaneOrder = order.filter(p => p !== 1);
+
+  const fullDomOrder = [...currentPaneOrder, 1];
+  const inner = $('tree-viewport-inner');
+  if (inner) {
+    fullDomOrder.forEach(p => {
+      const el = $(PANE_ELEMENT_IDS[p]);
+      if (el) inner.appendChild(el);
+    });
+    PANE_POSITION = Object.fromEntries(fullDomOrder.map((pane, pos) => [pane, pos]));
+    inner.style.setProperty('--active-pane-pos', String(PANE_POSITION[activePane] ?? 0));
+  }
+
+  if (saveToStorage) {
+    try {
+      localStorage.setItem('ccm-pane-order', JSON.stringify(order));
+    } catch {}
+  }
+}
+
+function initPaneTabsDrag() {
+  const nav = $('pane-tabs');
+  if (!nav) return;
+
+  let draggedTab = null;
+  let ghostEl = null;
+  let startX = 0;
+  let startY = 0;
+  let isDragging = false;
+  let touchId = null;
+
+  function createGhost(tab, x, y) {
+    const ghost = document.createElement('div');
+    ghost.className = 'pane-tab-ghost';
+    ghost.innerHTML = tab.innerHTML;
+    ghost.style.left = `${x}px`;
+    ghost.style.top = `${y}px`;
+    document.body.appendChild(ghost);
+    return ghost;
+  }
+
+  function updateGhost(x, y) {
+    if (!ghostEl) return;
+    ghostEl.style.left = `${x}px`;
+    ghostEl.style.top = `${y}px`;
+  }
+
+  function removeGhost() {
+    if (ghostEl) {
+      ghostEl.remove();
+      ghostEl = null;
+    }
+  }
+
+  function handleMove(clientX, clientY) {
+    if (!draggedTab) return;
+
+    const dx = clientX - startX;
+    const dy = clientY - startY;
+
+    if (!isDragging) {
+      // Umbral de movimiento libre en cualquier dirección (horizontal, vertical o diagonal)
+      if (Math.hypot(dx, dy) > 8) {
+        isDragging = true;
+        draggedTab.classList.add('tab-is-placeholder');
+        ghostEl = createGhost(draggedTab, clientX, clientY);
+      } else {
+        return;
+      }
+    }
+
+    updateGhost(clientX, clientY);
+
+    // Auto-scroll de la barra de pestañas si nos acercamos a los bordes
+    const navRect = nav.getBoundingClientRect();
+    if (clientX < navRect.left + 35) {
+      nav.scrollLeft -= 6;
+    } else if (clientX > navRect.right - 35) {
+      nav.scrollLeft += 6;
+    }
+
+    // Ubicación de destino comparando con el punto medio de cada pestaña visible
+    const visibleTabs = Array.from(nav.children).filter(t => !t.hidden && t !== draggedTab && t.classList.contains('pane-tab'));
+    for (let i = 0; i < visibleTabs.length; i++) {
+      const tab = visibleTabs[i];
+      const r = tab.getBoundingClientRect();
+      const midX = r.left + r.width / 2;
+
+      if (clientX < midX) {
+        if (draggedTab.nextSibling !== tab) {
+          nav.insertBefore(draggedTab, tab);
+        }
+        return;
+      }
+    }
+
+    // Si pasó todos los puntos medios, colocar al final de las visibles
+    if (visibleTabs.length > 0) {
+      const lastTab = visibleTabs[visibleTabs.length - 1];
+      if (lastTab.nextSibling !== draggedTab) {
+        nav.insertBefore(draggedTab, lastTab.nextSibling);
+      }
+    }
+  }
+
+  function handleEnd() {
+    if (!draggedTab) return;
+
+    if (isDragging) {
+      paneTabDragEndedAt = Date.now();
+      draggedTab.classList.remove('tab-is-placeholder');
+      draggedTab.classList.add('tab-drop-settle');
+      setTimeout(() => draggedTab?.classList.remove('tab-drop-settle'), 300);
+      removeGhost();
+      const currentDomOrder = Array.from(nav.children)
+        .map(b => Number(b.dataset?.pane))
+        .filter(n => !isNaN(n));
+      applyCustomPaneOrder(currentDomOrder, true);
+      toast('Orden de pestañas guardado');
+    }
+
+    draggedTab = null;
+    isDragging = false;
+    touchId = null;
+  }
+
+  // Soporte Mouse
+  nav.addEventListener('mousedown', e => {
+    const tab = e.target.closest('.pane-tab');
+    if (!tab || e.button !== 0) return;
+    draggedTab = tab;
+    startX = e.clientX;
+    startY = e.clientY;
+    isDragging = false;
+
+    function onMouseMove(moveEvent) {
+      handleMove(moveEvent.clientX, moveEvent.clientY);
+    }
+
+    function onMouseUp() {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      handleEnd();
+    }
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  });
+
+  // Soporte Táctil (arrastre diagonal y libre)
+  nav.addEventListener('touchstart', e => {
+    const tab = e.target.closest('.pane-tab');
+    if (!tab || e.touches.length !== 1) return;
+    draggedTab = tab;
+    touchId = e.touches[0].identifier;
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    isDragging = false;
+
+    function onTouchMove(moveEvent) {
+      if (!draggedTab) return;
+      const touch = Array.from(moveEvent.touches).find(t => t.identifier === touchId);
+      if (!touch) return;
+
+      const dx = touch.clientX - startX;
+      const dy = touch.clientY - startY;
+
+      if (isDragging || Math.hypot(dx, dy) > 8) {
+        if (moveEvent.cancelable) moveEvent.preventDefault();
+      }
+
+      handleMove(touch.clientX, touch.clientY);
+    }
+
+    function onTouchEnd() {
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', onTouchEnd);
+      window.removeEventListener('touchcancel', onTouchCancel);
+      handleEnd();
+    }
+
+    function onTouchCancel() {
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', onTouchEnd);
+      window.removeEventListener('touchcancel', onTouchCancel);
+      if (isDragging) removeGhost();
+      if (draggedTab) draggedTab.classList.remove('tab-is-placeholder');
+      draggedTab = null;
+      isDragging = false;
+    }
+
+    window.addEventListener('touchmove', onTouchMove, { passive: false });
+    window.addEventListener('touchend', onTouchEnd, { passive: false });
+    window.addEventListener('touchcancel', onTouchCancel, { passive: false });
+  }, { passive: true });
+}
+
+applyCustomPaneOrder();
+initPaneTabsDrag();
 
 async function safeLoadTree() {
   try { await loadTree(); }

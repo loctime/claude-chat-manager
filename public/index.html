@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="style.css?v=91">
+  <link rel="stylesheet" href="style.css?v=92">
   <!-- Color de identidad server-side (Configuración → Color de identidad). Va
        después de style.css para pisar el --accent default de ahí; el ajuste
        personal por-dispositivo ("Acento" en Colores, más abajo) sigue
@@ -451,6 +451,9 @@
               <span>Equipo</span>
               <input type="checkbox" id="cfg-show-equipo-pane">
             </label>
+            <div style="grid-column: 1 / -1; margin-top: 6px;">
+              <button type="button" class="btn btn-secondary" id="cfg-reset-tabs-order-btn" style="width: 100%; font-size: 12px; padding: 6px 10px;">Restablecer orden de pestañas</button>
+            </div>
           </div>
         </details>
 
@@ -616,7 +619,7 @@
 
   <script src="vendor/marked.min.js"></script>
   <script src="vendor/purify.min.js"></script>
-  <script src="app.js?v=117"></script>
+  <script src="app.js?v=119"></script>
   <!-- Split de app.js por dominio (sesión 2026-08-20) — scripts clásicos, no
        ES modules: siguen compartiendo el mismo scope global que app.js, por
        eso cargan DESPUÉS (usan $()/settings/selectConv/etc. definidos ahí).
