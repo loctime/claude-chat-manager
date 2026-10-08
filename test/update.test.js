@@ -60,6 +60,8 @@ async function start(opts = {}) {
     restart: () => restarts.push(1),
     resumeFile: path.join(dir, 'sub', 'resume.json'),
     git: opts.git || fakeGit(),
+    canPull: opts.canPull,
+    pull: opts.pull,
     now: opts.now || Date.now,
     graceMs: 5,
   });
@@ -206,5 +208,76 @@ test('dos pedidos seguidos de update-now reinician una sola vez', async () => {
     await post(t.base + '/update-now');
     await wait(500);
     assert.equal(t.restarts.length, 1);
+  } finally { t.stop(); }
+});
+
+// git falso con un remoto adelantado: HEAD..@{upstream} = 2 commits que tocan src/
+function fakeGitBehind({ changed = 'src/server.js' } = {}) {
+  const calls = [];
+  const fn = async args => {
+    calls.push(args.join(' '));
+    if (args[0] === 'rev-parse') return 'aaa';
+    if (args[0] === 'rev-list') return '2';
+    if (args[0] === 'diff') return args.includes('HEAD') ? changed : '';
+    return ''; // fetch
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+test('canPull: si GitHub tiene código nuevo que todavía no está en el disco, avisa', async () => {
+  const git = fakeGitBehind();
+  const t = await start({ canPull: true, git });
+  try {
+    const v = await json(t.base + '/version');
+    assert.equal(v.body.updateAvailable, true);
+    assert.equal(v.body.pullAvailable, true);
+    assert.ok(git.calls.some(c => c.startsWith('fetch')));
+  } finally { t.stop(); }
+});
+
+test('canPull: si lo nuevo es solo docs no molesta con el aviso', async () => {
+  const t = await start({ canPull: true, git: fakeGitBehind({ changed: '' }) });
+  try {
+    assert.equal((await json(t.base + '/version')).body.updateAvailable, false);
+  } finally { t.stop(); }
+});
+
+test('sin canPull no consulta GitHub', async () => {
+  const git = fakeGitBehind();
+  const t = await start({ git });
+  try {
+    const v = await json(t.base + '/version');
+    assert.equal(v.body.pullAvailable, false);
+    assert.ok(!git.calls.some(c => c.startsWith('fetch')));
+  } finally { t.stop(); }
+});
+
+test('update-now con canPull baja el código y recién después reinicia', async () => {
+  let pulled = 0;
+  const t = await start({ canPull: true, git: fakeGitBehind(), pull: async () => { pulled++; return { ok: true }; } });
+  try {
+    const r = await post(t.base + '/update-now');
+    assert.equal(r.status, 200);
+    assert.equal(pulled, 1);
+    await wait(400);
+    assert.equal(t.restarts.length, 1);
+  } finally { t.stop(); }
+});
+
+test('update-now: si el pull falla responde 500, no reinicia y no corta el trabajo', async () => {
+  const claude = fakeRunner({ running: ['c1'] });
+  const t = await start({
+    canPull: true, git: fakeGitBehind(),
+    engines: { claude, codex: fakeRunner(), agy: fakeRunner() },
+    pull: async () => ({ ok: false, error: 'divergent branches' }),
+  });
+  try {
+    const r = await post(t.base + '/update-now', { force: true });
+    assert.equal(r.status, 500);
+    assert.match(r.body.error, /divergent branches/);
+    await wait(100);
+    assert.equal(t.restarts.length, 0);
+    assert.deepEqual(claude.cancelled, []);
   } finally { t.stop(); }
 });
