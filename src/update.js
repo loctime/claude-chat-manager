@@ -15,6 +15,7 @@ const path = require('path');
 // cuentan (mismo criterio que scripts/ccm-update-instances.sh).
 const WATCHED = ['src', 'public', 'package.json', 'package-lock.json'];
 const CHECK_TTL_MS = 15000;
+const FETCH_TTL_MS = 60000;            // cada cuánto se consulta GitHub (solo con canPull)
 const RESUME_TTL_MS = 15 * 60 * 1000; // más viejo que esto, "continuar" ya no tiene sentido
 const CANCEL_GRACE_MS = 1500;          // margen para que los motores terminen de escribir su sesión
 
@@ -25,10 +26,19 @@ function gitArgs(repoRoot, args) {
   return ['-c', `safe.directory=${repoRoot}`, ...args];
 }
 
-function runGit(repoRoot, args) {
+function runGit(repoRoot, args, timeout = 5000) {
   return new Promise(resolve => {
-    execFile('git', gitArgs(repoRoot, args), { cwd: repoRoot, windowsHide: true, timeout: 5000 }, (err, stdout) => {
+    execFile('git', gitArgs(repoRoot, args), { cwd: repoRoot, windowsHide: true, timeout }, (err, stdout) => {
       resolve(err ? null : stdout.trim());
+    });
+  });
+}
+
+// pull --ff-only: nunca crea merges ni pisa cambios locales; si no puede, devuelve por qué.
+function runPull(repoRoot) {
+  return new Promise(resolve => {
+    execFile('git', gitArgs(repoRoot, ['pull', '--ff-only', '-q']), { cwd: repoRoot, windowsHide: true, timeout: 60000 }, (err, stdout, stderr) => {
+      resolve(err ? { ok: false, error: (stderr || err.message).trim().split(/\r?\n/)[0] } : { ok: true });
     });
   });
 }
@@ -38,9 +48,11 @@ function createUpdateRouter({
   repoRoot,
   engines,
   canSelfRestart,
+  canPull = false,   // instancia dueña de su checkout: puede traer lo nuevo de GitHub ella misma
   restart,
   resumeFile,
-  git = args => runGit(repoRoot, args),
+  git = (args, timeout) => runGit(repoRoot, args, timeout),
+  pull = () => runPull(repoRoot),
   now = Date.now,
   graceMs = CANCEL_GRACE_MS,
 }) {
@@ -49,6 +61,21 @@ function createUpdateRouter({
   const runningHead = git(['rev-parse', 'HEAD']);
   let cache = { at: 0, value: null };
   let restarting = false;
+  let lastFetch = 0;
+  let applying = false; // pull en curso: un segundo pedido no debe duplicarlo
+
+  // Hay commits en GitHub que todavía no están en el disco y tocan código que corre.
+  async function pullPending() {
+    if (!canPull) return false;
+    if (now() - lastFetch > FETCH_TTL_MS) {
+      lastFetch = now();
+      await git(['fetch', '-q', 'origin'], 30000);
+    }
+    const behind = await git(['rev-list', '--count', 'HEAD..@{upstream}']);
+    if (!behind || behind === '0') return false;
+    const changed = await git(['diff', '--name-only', 'HEAD', '@{upstream}', '--', ...WATCHED]);
+    return changed === null ? true : changed.length > 0;
+  }
 
   async function check() {
     if (cache.value && now() - cache.at < CHECK_TTL_MS) return cache.value;
@@ -60,7 +87,9 @@ function createUpdateRouter({
       // Si no se puede comparar (commit viejo que ya no existe), mejor avisar que quedarse callado.
       updateAvailable = changed === null ? true : changed.length > 0;
     }
-    cache = { at: now(), value: { running, available, updateAvailable } };
+    const pullAvailable = await pullPending();
+    if (pullAvailable) updateAvailable = true;
+    cache = { at: now(), value: { running, available, updateAvailable, pullAvailable } };
     return cache.value;
   }
 
@@ -80,12 +109,23 @@ function createUpdateRouter({
     res.json({ ...v, canUpdate: !!canSelfRestart, busy: busyList() });
   });
 
-  router.post('/update-now', (req, res) => {
+  router.post('/update-now', async (req, res) => {
     if (!canSelfRestart) return res.status(400).json({ error: 'esta instancia no se puede reiniciar sola' });
-    if (restarting) return res.json({ ok: true, restarting: true, interrupted: 0 });
+    if (restarting || applying) return res.json({ ok: true, restarting: true, interrupted: 0 });
     const busy = busyList();
     const force = !!(req.body && req.body.force === true);
     if (busy.length && !force) return res.status(409).json({ error: 'hay trabajo en curso', busy });
+
+    // Primero bajar el código: si falla, no se corta nada de lo que esté trabajando.
+    if (canPull && (await check()).pullAvailable) {
+      applying = true;
+      const r = await pull().finally(() => { applying = false; });
+      cache = { at: 0, value: null };
+      if (!r.ok) {
+        console.error('[update] git pull falló:', r.error);
+        return res.status(500).json({ error: `No se pudo bajar la actualización: ${r.error}` });
+      }
+    }
 
     if (busy.length) {
       try {
