@@ -42,6 +42,18 @@ if [ "$local_head" != "$remote_head" ]; then
 fi
 head=$(as $OWNER git -C $REPO rev-parse HEAD)
 
+# 1b) dependencias: si un pull trajo un paquete nuevo y no se instala, las instancias
+#     reinician en loop con "Cannot find module". Se instala si package.json o
+#     package-lock.json son más nuevos que el sello del último install (o si falta node_modules).
+dep_stamp="$STATE/npm-install"
+if [ ! -d "$REPO/node_modules" ] || [ "$REPO/package.json" -nt "$dep_stamp" ] || [ "$REPO/package-lock.json" -nt "$dep_stamp" ]; then
+  if out=$(cd "$REPO" && as $OWNER npm install --omit=dev --no-audit --no-fund 2>&1); then
+    touch "$dep_stamp"; log "npm install ok"
+  else
+    log "npm install FALLÓ, no se reinicia nadie: $(echo "$out" | tail -3 | tr '\n' ' ')"; exit 1
+  fi
+fi
+
 # 2) catálogo de Diego: docs/CATALOGO.md del repo -> ~/.claude/CATALOGO-DIEGO.md de cada
 #    colaborador. Los agentes lo leen por instrucción de su CLAUDE.md. Va como root:root 644
 #    (solo lectura para ellos) y no necesita reinicio: se lee al momento. Corre en cada
