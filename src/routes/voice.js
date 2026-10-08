@@ -132,6 +132,18 @@ function createVoiceRouter({ homeDir = os.homedir() } = {}) {
   const router = express.Router();
   const flagFiles = getVoiceFlagFiles(homeDir);
 
+  router.get('/gemini-key', (req, res) => {
+    let key = process.env.GEMINI_API_KEY || '';
+    if (!key) {
+      try {
+        const config = require('../config');
+        const cfg = config.load();
+        key = cfg.geminiApiKey || '';
+      } catch {}
+    }
+    res.json({ key });
+  });
+
   router.get('/', (req, res) => {
     const out = {};
     for (const v of Object.keys(flagFiles)) {

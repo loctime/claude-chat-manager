@@ -283,8 +283,25 @@
   </main>
 
   <script>
-    const DEFAULT_KEY = "AIzaSyDEWlS6eJKoV9UsDf0qrZUS-lwnud--vxU";
-    let apiKey = localStorage.getItem('gemini_api_key') || DEFAULT_KEY;
+    const DEFAULT_KEY = "";
+    let storedKey = localStorage.getItem('gemini_api_key');
+    if (storedKey && (storedKey.includes('AIzaSyDEWlS6e') || storedKey.length < 20)) {
+      localStorage.removeItem('gemini_api_key');
+      storedKey = null;
+    }
+    let apiKey = storedKey || DEFAULT_KEY;
+    if (!apiKey) {
+      fetch('/api/voice/gemini-key')
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (data && data.key) {
+            apiKey = data.key;
+            localStorage.setItem('gemini_api_key', apiKey);
+            if (apiKeyInput) apiKeyInput.value = apiKey;
+          }
+        })
+        .catch(() => {});
+    }
     let selectedVoice = localStorage.getItem('gemini_voice') || 'Puck';
     let silenceDelay = parseInt(localStorage.getItem('gemini_silence') || '1600', 10);
 
@@ -506,8 +523,8 @@
       setStatus('thinking', 'Pensando…');
 
       try {
-        // 1. Preguntar a Gemini 2.5 Flash
-        const genUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+        // 1. Preguntar a Gemini Flash
+        const genUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`;
         const genRes = await fetch(genUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
