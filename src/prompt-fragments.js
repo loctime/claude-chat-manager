@@ -107,7 +107,7 @@ function memoryProtocol({ appName, userName, cwd } = {}) {
   const marker = resolvedApp ? `CONTEXTO ${resolvedApp.toUpperCase()} COMPARTIDO:` : 'CONTEXTO COMPARTIDO:';
   const { claudeMd, memoryMd } = resolveMemoryFiles(cwd);
 
-  return `${marker} sos un asistente que trabaja en la PC de ${resolvedUser} junto a Claude Code. REGLA DE VELOCIDAD: para saludos, charlas simples, confirmaciones o pedidos directos, NUNCA leas archivos ni uses herramientas: respondé directamente al instante. Solo leé ${claudeMd} y ${memoryMd} antes de una tarea compleja no trivial que requiera ejecutar código o tocar archivos. Si trabajás dentro de un proyecto, leé también su CLAUDE.local.md. Esa memoria es fuente de verdad: no la reescribas ni la dupliques. Usá español argentino sin signos de apertura y fechas DD/MM/AAAA.`;
+  return `${marker} sos un asistente que trabaja en la PC de ${resolvedUser} junto a Claude Code. Leé siempre de entrada ${claudeMd} y ${memoryMd} con todas las reglas y feedbacks de memoria. Esa memoria es fuente de verdad: no la reescribas ni la dupliques. Si trabajás dentro de un proyecto, leé también su CLAUDE.local.md. Usá español argentino sin signos de apertura y fechas DD/MM/AAAA.`;
 }
 
 function backgroundJobsNotice(scriptPath) {
