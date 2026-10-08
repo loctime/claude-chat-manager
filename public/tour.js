@@ -139,16 +139,16 @@ async function tourStep(opts) {
   return _tour && !_tour.cancelled ? out : 'cancel';
 }
 
-async function runCompactTour() {
+// Arranque común de todos los recorridos: cierra la ayuda, arma la capa y el
+// espía de fetch (para saber si se disparó compactar de verdad).
+function tourBegin() {
   if (_tour) tourStop(false);
   const dlg = $('help-dialog');
   if (dlg && dlg.open) dlg.close();
-
-  const t = _tour = { cancelled: false, layer: tourBuildLayer(), findTarget: null, practiceId: null };
+  const t = _tour = { cancelled: false, layer: tourBuildLayer(), findTarget: null, practiceId: null, projectName: null };
   t.onResize = () => tourPositionLoop();
   window.addEventListener('resize', t.onResize);
   t.posTimer = setInterval(tourPositionLoop, 250);
-  // Para saber si de verdad se disparó la compactación (el menú puede cerrarse sin compactar).
   t.compactStarted = false;
   t.origFetch = window.fetch;
   window.fetch = function (input, init) {
@@ -158,6 +158,95 @@ async function runCompactTour() {
     } catch { /* ignorar */ }
     return t.origFetch.apply(this, arguments);
   };
+  return t;
+}
+
+// Paso "crear conversación nueva" + renombrarla como práctica. Devuelve convId o null si cancelaron.
+async function tourCreatePractice(t, name, text, title) {
+  const startConv = currentConv;
+  const r = await tourStep({
+    title: title || 'Paso 1 · Conversación nueva',
+    text: text || 'Tocá este botón para crear una conversación nueva.',
+    target: () => $('new-conv'),
+    auto: () => $('new-conv').click(),
+    wait: () => currentConv && currentConv !== startConv,
+  });
+  if (r === 'cancel') return null;
+  const convId = currentConv;
+  t.practiceId = convId;
+  api(`/conversations/${convId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(withAccountBody({ name })),
+  }).then(() => { if (typeof invalidateUnifiedTreeCache === 'function') invalidateUnifiedTreeCache(); refreshVisibleTrees(); }).catch(() => {});
+  await tourSleep(400);
+  return convId;
+}
+
+// Deja un mensaje escrito, espera que lo envíen y que Claude termine de contestar.
+// Devuelve 'ok' | 'cancel' | 'timeout'.
+async function tourSendPractice(t, { title, html, message, waitTitle }) {
+  const input = $('input');
+  input.value = message;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  let sent = false;
+  const onSubmit = () => { sent = true; };
+  $('composer').addEventListener('submit', onSubmit, true);
+  let r = await tourStep({
+    title, text: html,
+    target: () => $('send'),
+    auto: () => $('composer').requestSubmit(),
+    wait: () => sent,
+  });
+  $('composer').removeEventListener('submit', onSubmit, true);
+  if (r === 'cancel') return 'cancel';
+  await tourSleep(800);
+  r = await tourStep({
+    title: waitTitle || 'Esperamos la respuesta',
+    text: 'Claude está contestando…',
+    target: () => $('messages'),
+    waitLabel: 'Esperando la respuesta',
+    wait: () => !busy,
+    timeoutMs: 180000,
+  });
+  if (r === 'cancel') return 'cancel';
+  if (r === 'timeout') {
+    toast('La respuesta tardó demasiado. Probá de nuevo más tarde.', 'info', 5000);
+    tourStop(false);
+    return 'timeout';
+  }
+  await tourSleep(600);
+  return 'ok';
+}
+
+// En celular, volver a la lista cuando el siguiente paso sale de ahí.
+async function tourBackToList(text) {
+  if (!(tourIsMobile() && $('panel-chat').classList.contains('open'))) return 'ok';
+  return tourStep({
+    title: 'Volvemos a la lista',
+    text: text || 'Tocá la flecha para volver a la lista de conversaciones.',
+    target: () => $('back-btn'),
+    auto: () => $('back-btn').click(),
+    wait: () => !$('panel-chat').classList.contains('open'),
+  });
+}
+
+// Fin común: ofrece limpiar lo creado para la práctica.
+async function tourFinish(t, { dato, archiveLabel, onArchive }) {
+  const r = await tourStep({
+    title: '💡 Datos de interés',
+    text: dato,
+    buttons: [{ label: archiveLabel, value: 'archive', primary: true }, { label: 'Dejarla', value: 'keep' }],
+  });
+  if (r === 'cancel') return;
+  if (r === 'archive') {
+    try { await onArchive(); } catch (err) { toast('No se pudo limpiar: ' + err.message); }
+  }
+  t.practiceId = null;
+  tourStop(false);
+}
+
+async function runCompactTour() {
+  const t = tourBegin();
 
   try {
     if (activePane !== 0) await goToPane(0);
@@ -350,5 +439,241 @@ async function runCompactTour() {
   }
 }
 
-const TOURS = { compact: runCompactTour };
+
+async function runRewindTour() {
+  const t = tourBegin();
+  try {
+    if (activePane !== 0) await goToPane(0);
+    let r = await tourStep({
+      title: '⏪ Rebobinar, paso a paso',
+      text: 'Vamos a practicar: charlamos con Claude, "nos equivocamos" en un mensaje, rebobinamos y comprobamos que Claude lo olvidó.<br><br>Son tres mensajes cortos (usa un poquito de tu cupo). Si te trabás, tocá <em>Hacelo por mí</em>.',
+      buttons: [{ label: 'Empezar', value: 'go', primary: true }, { label: 'Cancelar', value: 'cancel' }],
+    });
+    if (r !== 'go') return tourStop(false);
+
+    const convId = await tourCreatePractice(t, 'Práctica de rebobinar');
+    if (!convId) return;
+
+    r = await tourSendPractice(t, {
+      title: 'Paso 2 · Un dato para recordar',
+      html: 'Te dejé un mensaje escrito: le pasamos una palabra secreta. Tocá <strong>Enviar</strong>.',
+      message: 'Recordá esto: mi palabra secreta es MANZANA. Respondé solo con «Anotado».',
+    });
+    if (r !== 'ok') return;
+
+    r = await tourSendPractice(t, {
+      title: 'Paso 3 · Un mensaje "equivocado"',
+      html: 'Ahora mandamos un mensaje que <strong>queremos deshacer después</strong> (imaginá que fue un error o que Claude se fue por mal camino). Tocá <strong>Enviar</strong>.',
+      message: 'Perdón, me equivoqué: mi palabra secreta en realidad es PERA. Respondé solo con «Anotado».',
+      waitTitle: 'Esperamos otra vez',
+    });
+    if (r !== 'ok') return;
+
+    await loadMessages(convId); // para que las burbujas tengan su id y el menú ofrezca rebobinar
+    const userBubble = () => [...document.querySelectorAll('#messages .msg.user')][1] || null;
+    const userCount = () => document.querySelectorAll('#messages .msg.user').length;
+    const showMenuOn = () => {
+      const el = userBubble(); if (!el) throw new Error('no encuentro el mensaje');
+      const b = el.getBoundingClientRect();
+      showMsgMenu(b.left + Math.min(60, b.width / 2), b.top + b.height / 2, msgCtxByEl.get(el));
+    };
+
+    for (;;) {
+      r = await tourStep({
+        title: 'Paso 4 · Abrí el menú del mensaje',
+        text: tourIsMobile()
+          ? '<strong>Mantené apretado</strong> el <strong>segundo</strong> mensaje tuyo (el de PERA) hasta que aparezca el menú.'
+          : '<strong>Click derecho</strong> sobre el <strong>segundo</strong> mensaje tuyo (el de PERA).',
+        target: userBubble,
+        auto: showMenuOn,
+        wait: () => document.querySelector('.ctx-menu'),
+      });
+      if (r === 'cancel') return;
+
+      const rewindBtn = () => document.querySelector('.ctx-menu [data-action="rewind"]');
+      r = await tourStep({
+        title: 'Paso 5 · Rebobinar',
+        text: 'Presioná <strong>Rebobinar hasta acá</strong>. La app te pide confirmación: aceptala. Solo aparece en <em>tus</em> mensajes.',
+        target: rewindBtn,
+        // Tocar la tarjeta de la guía cierra el menú (cuenta como "click afuera"): si pasó, se reabre.
+        auto: () => { if (!rewindBtn()) showMenuOn(); rewindBtn().click(); },
+        wait: () => userCount() < 2 || (!document.querySelector('.ctx-menu') && 'back'),
+      });
+      if (r === 'cancel') return;
+      if (r === 'back' && userCount() >= 2) continue;
+      break;
+    }
+
+    await tourSleep(500);
+    r = await tourStep({
+      title: '✅ Rebobinado',
+      text: 'Ese mensaje <strong>y todo lo que vino después</strong> desaparecieron, y Claude los olvidó de verdad. La charla sigue desde la respuesta anterior.<br><br>Comprobémoslo: le preguntamos la palabra secreta.',
+      target: () => $('messages'),
+      buttons: [{ label: 'Siguiente', value: 'next', primary: true }],
+    });
+    if (r === 'cancel') return;
+
+    r = await tourSendPractice(t, {
+      title: 'Paso 6 · Comprobación',
+      html: 'Tocá <strong>Enviar</strong>: si de verdad olvidó la corrección, va a decir MANZANA.',
+      message: '¿Cuál es mi palabra secreta? Respondé solo con la palabra.',
+    });
+    if (r !== 'ok') return;
+
+    const answers = [...document.querySelectorAll('#messages .msg.assistant')];
+    const lastEl = answers.length ? answers[answers.length - 1] : null;
+    const last = lastEl ? (lastEl.textContent || '') : '';
+    const verdict = /manzana/i.test(last)
+      ? 'Respondió <strong>MANZANA</strong>: olvidó por completo el mensaje de PERA. 🎯'
+      : /pera/i.test(last)
+        ? 'Respondió PERA. Eso no debería pasar; avisale a quien administra la app.'
+        : 'Mirá su respuesta en el chat: la palabra correcta es MANZANA.';
+    r = await tourStep({
+      title: '🎯 Resultado',
+      text: verdict,
+      target: () => (lastEl && lastEl.querySelector('.msg-text')) || lastEl,
+      buttons: [{ label: 'Siguiente', value: 'next', primary: true }],
+    });
+    if (r === 'cancel') return;
+
+    await tourFinish(t, {
+      dato: '<ul><li><strong>Rebobinar no deshace lo que se hizo en la computadora</strong>: si en ese tramo se editaron archivos, se corrieron comandos o se hicieron commits, siguen aplicados. La app te avisa el detalle antes de confirmar.</li><li>Es mejor que seguir corrigiendo cuando Claude <strong>entendió mal</strong>: volvés al punto limpio y preguntás de nuevo.</li><li>Se guarda un backup del archivo de la sesión por las dudas.</li></ul>',
+      archiveLabel: 'Archivar la práctica',
+      onArchive: async () => {
+        await api(`/conversations/${convId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(withAccountBody({ archived: true })) });
+        if (typeof invalidateUnifiedTreeCache === 'function') invalidateUnifiedTreeCache();
+        refreshVisibleTrees();
+        toast('Conversación de práctica archivada', 'info', 3000);
+      },
+    });
+  } catch (err) {
+    toast('La guía se interrumpió: ' + err.message);
+    tourStop(false);
+  }
+}
+
+async function runProjectTour() {
+  const t = tourBegin();
+  try {
+    if (activePane !== 0) await goToPane(0);
+    let r = await tourStep({
+      title: '📁 Proyectos, paso a paso',
+      text: 'Vamos a crear un <strong>proyecto de práctica</strong>, ver cómo filtra la lista y cómo una conversación nueva nace adentro. Al final podés borrarlo.<br><br>No gasta cupo: no hace falta hablar con Claude.',
+      buttons: [{ label: 'Empezar', value: 'go', primary: true }, { label: 'Cancelar', value: 'cancel' }],
+    });
+    if (r !== 'go') return tourStop(false);
+
+    const startFilter = activeProjectFilter;
+    const bar = () => $('project-bar-btn');
+    const dropdown = () => document.querySelector('.project-bar-dropdown');
+    const folderMenu = () => document.querySelector('.folder-menu');
+    const newBtn = () => document.querySelector('.project-bar-dropdown [data-action="new-project"]');
+    const otherBtn = () => document.querySelector('.folder-menu [data-action="other"]');
+    const created = () => activeProjectFilter && activeProjectFilter !== startFilter && activeProjectFilter !== '__none__';
+
+    for (;;) {
+      r = await tourStep({
+        title: 'Paso 1 · La barra de proyectos',
+        text: 'Esta barra muestra en qué proyecto estás parado. Tocala para abrir la lista.',
+        target: bar,
+        auto: () => { if (!dropdown()) bar().click(); },
+        wait: () => dropdown(),
+      });
+      if (r === 'cancel') return;
+
+      r = await tourStep({
+        title: 'Paso 2 · Proyecto nuevo',
+        text: 'Elegí <strong>+ Nuevo proyecto…</strong> al final de la lista.',
+        target: newBtn,
+        auto: () => { if (!newBtn()) bar().click(); if (newBtn()) newBtn().click(); },
+        wait: () => folderMenu() || (!dropdown() && 'back'),
+      });
+      if (r === 'cancel') return;
+      if (r === 'back') continue;
+
+      r = await tourStep({
+        title: 'Paso 3 · Con nombre libre',
+        text: 'Podés elegir una carpeta real de la computadora, o <strong>Otro (nombre libre)…</strong> para un tema cualquiera. Elegí esa para practicar y escribí un nombre (por ejemplo «Práctica»).',
+        target: otherBtn,
+        // Tocar la tarjeta cierra el menú de carpetas (click "afuera"): se reabre toda la cadena si hace falta.
+        auto: async () => {
+          if (!otherBtn()) {
+            if (!newBtn()) bar().click();
+            if (newBtn()) newBtn().click();
+            for (let i = 0; i < 30 && !otherBtn(); i++) await tourSleep(100);
+          }
+          if (otherBtn()) otherBtn().click();
+        },
+        wait: () => created() || (!folderMenu() && 'back'),
+      });
+      if (r === 'cancel') return;
+      if (r === 'back') {
+        // Cerraron el menú o cancelaron el nombre: no pasa nada, se reintenta.
+        await tourSleep(400);
+        if (created()) break;
+        const again = await tourStep({
+          title: 'No se creó el proyecto',
+          text: 'Si cerraste el menú o cancelaste el nombre, no pasa nada. ¿Probamos de nuevo?',
+          buttons: [{ label: 'Probar de nuevo', value: 'retry', primary: true }, { label: 'Salir', value: 'cancel' }],
+        });
+        if (again !== 'retry') return tourStop(false);
+        continue;
+      }
+      break;
+    }
+    t.projectName = activeProjectFilter;
+    const esc = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+
+    r = await tourStep({
+      title: '✅ Proyecto creado',
+      text: `La barra ahora dice <strong>${esc(t.projectName)}</strong>: la lista muestra <strong>solo</strong> las conversaciones de este proyecto (por ahora, ninguna).`,
+      target: bar,
+      buttons: [{ label: 'Siguiente', value: 'next', primary: true }],
+    });
+    if (r === 'cancel') return;
+
+    const convId = await tourCreatePractice(t, 'Práctica de proyectos',
+      'Con un proyecto elegido, la conversación nueva <strong>nace adentro de él</strong>. Tocá el botón de nueva conversación.', 'Paso 4 · Conversación nueva');
+    if (!convId) return;
+
+    r = await tourBackToList('Volvemos a la lista para ver dónde quedó.');
+    if (r === 'cancel') return;
+    await tourSleep(500);
+    r = await tourStep({
+      title: 'Ahí está',
+      text: 'La conversación quedó dentro del proyecto. Para pasar una conversación a otro proyecto: <strong>mantené apretada</strong> (o click derecho) → <em>Asignar / Cambiar proyecto…</em>',
+      target: () => tourConvRow(convId),
+      buttons: [{ label: 'Siguiente', value: 'next', primary: true }],
+    });
+    if (r === 'cancel') return;
+
+    r = await tourStep({
+      title: 'Volver a ver todo',
+      text: 'Para salir del filtro: <strong>doble toque</strong> sobre la barra, o elegí «Todos los proyectos» en la lista.',
+      target: bar,
+      auto: () => setActiveProject(''),
+      wait: () => activeProjectFilter === '' || activeProjectFilter === startFilter,
+    });
+    if (r === 'cancel') return;
+
+    const projectName = t.projectName;
+    await tourFinish(t, {
+      dato: '<ul><li>El proyecto es una <strong>etiqueta de organización</strong>: no cambia por sí solo en qué carpeta trabaja el agente. Para eso, nombrá el proyecto en tu primer mensaje.</li><li>Conviene <strong>un proyecto por cliente, app o tema grande</strong>, y adentro varias conversaciones cortas (una por tarea).</li><li><strong>Eliminar un proyecto no borra</strong> sus conversaciones: solo quedan sin proyecto.</li></ul>',
+      archiveLabel: 'Borrar la práctica',
+      onArchive: async () => {
+        await api(`/conversations/${convId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(withAccountBody({ archived: true })) });
+        const resp = await api('/projects/' + encodeURIComponent(projectName), { method: 'DELETE' });
+        knownProjects = resp.projects || knownProjects;
+        if (typeof invalidateUnifiedTreeCache === 'function') invalidateUnifiedTreeCache();
+        refreshVisibleTrees();
+        toast('Proyecto y conversación de práctica borrados', 'info', 3000);
+      },
+    });
+  } catch (err) {
+    toast('La guía se interrumpió: ' + err.message);
+    tourStop(false);
+  }
+}
+
+const TOURS = { compact: runCompactTour, rewind: runRewindTour, project: runProjectTour };
 function startTour(name) { const fn = TOURS[name]; if (fn) fn(); }

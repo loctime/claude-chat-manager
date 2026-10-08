@@ -39,6 +39,7 @@ const HELP_SECTIONS = [
   },
   {
     title: '📁 Proyectos: qué son y para qué sirven',
+    tour: 'project',
     html: `
       <p>Un <strong>proyecto</strong> es una etiqueta para agrupar conversaciones del mismo tema (por ejemplo "Maximia", "Tienda web", "Facturas"). Si trabajás en varias cosas a la vez, te dice de un vistazo <em>en qué estás parado</em>.</p>
       <p><strong>Cómo se usa:</strong></p>
@@ -81,6 +82,7 @@ const HELP_SECTIONS = [
   },
   {
     title: '⏪ Rebobinar: volver atrás en la charla',
+    tour: 'rewind',
     html: `
       <p><strong>Qué es:</strong> borra <strong>uno de tus mensajes y todo lo que vino después</strong>, y el agente lo olvida de verdad, como si nunca hubiera pasado. La conversación sigue desde la respuesta anterior.</p>
       <p><strong>Para qué sirve:</strong></p>
