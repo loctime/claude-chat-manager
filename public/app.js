@@ -4898,6 +4898,17 @@ function initPaneTabsDrag() {
   let startY = 0;
   let isDragging = false;
   let touchId = null;
+  // En táctil el arrastre exige mantener apretado PANE_TAB_HOLD_MS sin moverse:
+  // así deslizar la página con el dedo sobre la barra no reordena por error.
+  const PANE_TAB_HOLD_MS = 1000;
+  let holdTimer = null;
+  let holdArmed = false;
+  let touchMode = false;
+
+  function clearHold() {
+    clearTimeout(holdTimer);
+    holdTimer = null;
+  }
 
   function createGhost(tab, x, y) {
     const ghost = document.createElement('div');
@@ -4930,7 +4941,8 @@ function initPaneTabsDrag() {
 
     if (!isDragging) {
       // Umbral de movimiento libre en cualquier dirección (horizontal, vertical o diagonal)
-      if (Math.hypot(dx, dy) > 8) {
+      if (touchMode && !holdArmed) return;
+      if (touchMode || Math.hypot(dx, dy) > 8) {
         isDragging = true;
         draggedTab.classList.add('tab-is-placeholder');
         ghostEl = createGhost(draggedTab, clientX, clientY);
@@ -4974,11 +4986,16 @@ function initPaneTabsDrag() {
   }
 
   function handleEnd() {
+    clearHold();
     if (!draggedTab) return;
+    if (holdArmed) {
+      draggedTab.classList.remove('tab-hold-armed');
+      paneTabDragEndedAt = Date.now(); // soltar tras el hold no debe cambiar de pestaña
+    }
 
     if (isDragging) {
       paneTabDragEndedAt = Date.now();
-      draggedTab.classList.remove('tab-is-placeholder');
+      draggedTab.classList.remove('tab-is-placeholder', 'tab-hold-armed');
       draggedTab.classList.add('tab-drop-settle');
       setTimeout(() => draggedTab?.classList.remove('tab-drop-settle'), 300);
       removeGhost();
@@ -4991,6 +5008,8 @@ function initPaneTabsDrag() {
 
     draggedTab = null;
     isDragging = false;
+    holdArmed = false;
+    touchMode = false;
     touchId = null;
   }
 
@@ -4999,6 +5018,8 @@ function initPaneTabsDrag() {
     const tab = e.target.closest('.pane-tab');
     if (!tab || e.button !== 0) return;
     draggedTab = tab;
+    touchMode = false;
+    holdArmed = false;
     startX = e.clientX;
     startY = e.clientY;
     isDragging = false;
@@ -5026,6 +5047,16 @@ function initPaneTabsDrag() {
     startX = e.touches[0].clientX;
     startY = e.touches[0].clientY;
     isDragging = false;
+    touchMode = true;
+    holdArmed = false;
+    clearHold();
+    holdTimer = setTimeout(() => {
+      holdTimer = null;
+      if (!draggedTab) return;
+      holdArmed = true;
+      draggedTab.classList.add('tab-hold-armed');
+      if (navigator.vibrate) navigator.vibrate(30);
+    }, PANE_TAB_HOLD_MS);
 
     function onTouchMove(moveEvent) {
       if (!draggedTab) return;
@@ -5035,9 +5066,12 @@ function initPaneTabsDrag() {
       const dx = touch.clientX - startX;
       const dy = touch.clientY - startY;
 
-      if (isDragging || Math.hypot(dx, dy) > 8) {
-        if (moveEvent.cancelable) moveEvent.preventDefault();
+      if (!holdArmed) {
+        // Se movió antes del segundo: es un scroll, no un reordenamiento.
+        if (Math.hypot(dx, dy) > 10) clearHold();
+        return;
       }
+      if (moveEvent.cancelable) moveEvent.preventDefault();
 
       handleMove(touch.clientX, touch.clientY);
     }
@@ -5053,10 +5087,13 @@ function initPaneTabsDrag() {
       window.removeEventListener('touchmove', onTouchMove);
       window.removeEventListener('touchend', onTouchEnd);
       window.removeEventListener('touchcancel', onTouchCancel);
+      clearHold();
       if (isDragging) removeGhost();
-      if (draggedTab) draggedTab.classList.remove('tab-is-placeholder');
+      if (draggedTab) draggedTab.classList.remove('tab-is-placeholder', 'tab-hold-armed');
       draggedTab = null;
       isDragging = false;
+      holdArmed = false;
+      touchMode = false;
     }
 
     window.addEventListener('touchmove', onTouchMove, { passive: false });
@@ -5103,7 +5140,16 @@ let treePollTimer = setInterval(pollTrees, 15000);
 // navegador solo lo throttlea eventualmente, sin garantía. Lo frenamos a
 // mano al ocultarse y, al volver, un poll inmediato pone la lista al día
 // antes de retomar el intervalo normal.
+// Respaldo para navegadores sin `overflow: clip`: si por foco/selección la app
+// se desplaza en horizontal (queda "en medio de dos pantallas"), la devuelve.
+function resetAppScroll() {
+  for (const el of [$('app'), document.documentElement, document.body]) {
+    if (el && el.scrollLeft) el.scrollLeft = 0;
+  }
+}
+for (const el of [$('app'), document]) el.addEventListener('scroll', resetAppScroll, { passive: true });
 document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) resetAppScroll();
   if (document.hidden) {
     clearInterval(treePollTimer);
   } else {

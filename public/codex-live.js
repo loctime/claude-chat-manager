@@ -111,7 +111,10 @@
   // Observe panel changes too: covers mobile navigation and notes/team views.
   function sync() {
     const panel = document.getElementById('panel-chat');
-    const visible = !!selected() && panel.classList.contains('codex-chat-theme') && panel.classList.contains('open')
+    // El botón "En vivo" del encabezado ya cubre la voz: este del composer queda
+    // oculto a propósito (se conserva el código por si se reactiva).
+    const SHOW_COMPOSER_BUTTON = false;
+    const visible = SHOW_COMPOSER_BUTTON && !!selected() && panel.classList.contains('codex-chat-theme') && panel.classList.contains('open')
       && document.getElementById('notebook-view').hidden && document.getElementById('sala-view').hidden && document.getElementById('equipo-view')?.hidden !== false;
     if (button.hidden !== !visible) button.hidden = !visible;
     if (active && (!visible || active.convId !== selected())) stop();

@@ -32,7 +32,7 @@
   --sidebar-width: 360px;
 }
 
-html, body { height: 100%; overflow: hidden; }
+html, body { height: 100%; overflow: hidden; overflow: clip; }
 body { background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, sans-serif; font-size: 15px; }
 /* La lista cambia con la pestaña seleccionada; el chat se colorea por el
    proveedor de la conversación abierta y no depende de esa pestaña. */
@@ -46,7 +46,11 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
 #panel-chat.antigravity-chat-theme #chat-header { background: var(--antigravity-accent); }
 
 /* ── App shell ── */
-#app { display: flex; height: 100dvh; position: relative; overflow: hidden; }
+/* overflow:clip y no solo hidden: hidden sigue siendo desplazable por código
+   (focus(), scrollIntoView, selección de texto) y el chat, que espera fuera de
+   pantalla con translateX(100%) en mobile, dejaba la app trabada a medio
+   camino entre lista y chat. clip no crea contenedor de scroll. */
+#app { display: flex; height: 100dvh; position: relative; overflow: hidden; overflow: clip; }
 
 /* ── Panel lista ── */
 #panel-list {
@@ -252,6 +256,7 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
   white-space: nowrap;
   user-select: none;
   -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 .pane-tab:active { cursor: grabbing; }
 .pane-tab:hover { color: var(--text); }
@@ -261,6 +266,11 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
 .pane-tab.tab-is-placeholder {
   opacity: 0.35;
   border-bottom: 2px dashed var(--accent);
+}
+.pane-tab.tab-hold-armed {
+  background: var(--card, rgba(255,255,255,.08));
+  transform: scale(1.06);
+  transition: transform .12s ease-out;
 }
 .pane-tab.tab-drop-settle {
   animation: tab-settle-pop 0.25s ease-out;
