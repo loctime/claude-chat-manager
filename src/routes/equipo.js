@@ -43,8 +43,9 @@ function defaultCreateWorktree({ projectDir, roomId, name }) {
   const branch = `equipo/${slugify(name)}-${id8}`;
   const dir = path.join(os.homedir(), '.ccm-equipo-worktrees', `${path.basename(projectDir)}-${id8}`);
   fs.mkdirSync(path.dirname(dir), { recursive: true });
+  const base = execFileSync('git', ['-C', projectDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   execFileSync('git', ['-C', projectDir, 'worktree', 'add', '-b', branch, dir], { stdio: 'ignore' });
-  return { path: dir, branch };
+  return { path: dir, branch, base };
 }
 
 function createEquipoRouter({
@@ -169,8 +170,26 @@ function createEquipoRouter({
   }
 
   function execPrompt(agentKey, planText, contextBlock, worktree) {
+    const VERIFY = {
+      claude: 'ANTES de cerrar tu parte, verificá que anda: corré los tests y el build del proyecto (si no hay node_modules en el worktree, instalá lo mínimo necesario) y reportá el resultado tal cual, sin maquillar fallas.',
+      codex: 'ANTES de cerrar tu parte, corré los tests y el build, y si optimizaste algo, medí antes y después y reportá los números. Si algo de lo que dejó Claude no anda, avisalo en vez de taparlo.',
+      gemini: 'ANTES de cerrar tu parte, mirá el resultado: si se puede levantar la app (dev server) sacá capturas con Playwright de las pantallas que tocaste y revisalas con ojo crítico (legibilidad, espaciado, que se vea bien en celular); además corré el build y los tests. No des el diseño por terminado sin haberlo visto.',
+    };
     const user = getUserName();
-    return `[EQUIPO — EJECUCIÓN DEL PLAN APROBADO]\n${equipo.roleBlock(agentKey)}\n${user} aprobó el plan. Ahora te toca a vos, solo tu parte. Trabajás en un git worktree aislado: carpeta ${worktree.path}, rama ${worktree.branch} (sale del último commit del proyecto: lo que ${user} tenga sin commitear en el repo original no está acá, y node_modules tampoco). Reglas: trabajá SOLO ahí; NO toques el repo original, NO hagas merge ni push; commiteá tu trabajo en esta rama con mensajes claros; no repitas lo que ya hizo otro agente. Cuando termines, cerrá con un resumen corto: archivos tocados, qué hiciste, qué queda para el siguiente, y las líneas "FUERA DE ROL:" si corresponde.\n\nPLAN APROBADO:\n${planText}\n\n${contextBlock}`;
+    return `[EQUIPO — EJECUCIÓN DEL PLAN APROBADO]\n${equipo.roleBlock(agentKey)}\n${user} aprobó el plan. Ahora te toca a vos, solo tu parte. Trabajás en un git worktree aislado: carpeta ${worktree.path}, rama ${worktree.branch} (sale del último commit del proyecto: lo que ${user} tenga sin commitear en el repo original no está acá, y node_modules tampoco). Reglas: trabajá SOLO ahí; NO toques el repo original, NO hagas merge ni push; commiteá tu trabajo en esta rama con mensajes claros; no repitas lo que ya hizo otro agente. ${VERIFY[agentKey]} Cuando termines, cerrá con un resumen corto (incluí qué verificaste y el resultado): archivos tocados, qué hiciste, qué queda para el siguiente, y las líneas "FUERA DE ROL:" si corresponde.\n\nPLAN APROBADO:\n${planText}\n\n${contextBlock}`;
+  }
+
+  function reviewPrompt(planText, contextBlock, worktree) {
+    const user = getUserName();
+    const diffCmd = worktree.base ? `git -C "${worktree.path}" diff ${worktree.base}..HEAD` : `git -C "${worktree.path}" log -p`;
+    return `[EQUIPO — REVISIÓN FINAL]
+${equipo.roleBlock('claude')}
+Los tres terminaron su parte. Antes de que ${user} decida el merge, revisá el trabajo completo de la rama ${worktree.branch}: corré ${diffCmd} y leelo entero; corré los tests y el build; y compará contra el plan aprobado (¿se hizo lo prometido?, ¿algo roto, de más o fuera de alcance?, ¿los "FUERA DE ROL" tienen sentido?). NO modifiques nada: solo revisás. Respondé corto, para que ${user} decida: qué se hizo, qué te preocupa, y cerrá con UNA línea que empiece con "VEREDICTO:" y diga SANO PARA MERGEAR o NO MERGEAR todavía (con el motivo).
+
+PLAN APROBADO:
+${planText}
+
+${contextBlock}`;
   }
 
   // Corre fn() marcando la sala ocupada y cerrando bien aunque falle o se cancele.
@@ -242,6 +261,15 @@ function createEquipoRouter({
         }
         equipo.appendMessage(room.id, { from: SHORT_NAME[key], kind: 'agent', text: reply });
       }
+      // Revisión final: Claude lee el diff completo antes de que el humano decida.
+      const fresh = equipo.getRoom(room.id);
+      const reviewConv = ensureAgentConv(fresh, 'claude', { exec: true, cwd: worktree.path });
+      const review = await runClaudeTurn(reviewConv, reviewPrompt(plan.text, equipo.buildContextBlock(fresh.messages), worktree), worktree.path);
+      if (cancelledRooms.has(room.id)) {
+        equipo.patchRoom(room.id, { plan: { text: plan.text, status: 'proposed' } });
+        return;
+      }
+      equipo.appendMessage(room.id, { from: 'Claude', kind: 'agent', text: review });
       equipo.patchRoom(room.id, { plan: { text: plan.text, status: 'done' } });
       equipo.appendMessage(room.id, {
         from: 'sistema', kind: 'system',

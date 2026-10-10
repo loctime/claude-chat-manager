@@ -287,17 +287,24 @@ test('plan → aprobar → ejecución en orden Claude, Codex, AgY dentro del wor
     assert.equal(state.plan.status, 'done');
     assert.ok(state.worktree.branch.startsWith('equipo/test-'));
     // orden fijo y cada uno trabajó en el worktree, no en el repo original
-    assert.equal(runner.calls.length, claudeCallsBeforeExec + 1);
+    assert.equal(runner.calls.length, claudeCallsBeforeExec + 2, 'Claude ejecuta y después revisa el diff completo');
     assert.equal(codexRunner.calls.length, 1);
     assert.equal(geminiRunner.calls.length, 1);
-    for (const call of [runner.calls.at(-1), codexRunner.calls[0], geminiRunner.calls[0]]) {
+    for (const call of [runner.calls.at(-2), codexRunner.calls[0], geminiRunner.calls[0]]) {
       assert.equal(call.cwd, state.worktree.path);
       assert.match(call.text, /EJECUCIÓN DEL PLAN APROBADO/);
       assert.match(call.text, /NO hagas merge ni push/);
+      assert.match(call.text, /ANTES de cerrar tu parte/);
     }
-    const last3 = state.messages.slice(-4);
-    assert.deepEqual(last3.map(m => m.from), ['Claude', 'Codex', 'AgY', 'sistema']);
-    assert.match(last3[3].text, /Nadie hizo merge/);
+    assert.match(geminiRunner.calls[0].text, /sacá capturas con Playwright/);
+    const review = runner.calls.at(-1);
+    assert.match(review.text, /REVISIÓN FINAL/);
+    assert.match(review.text, /VEREDICTO:/);
+    assert.match(review.text, /NO modifiques nada/);
+    assert.equal(review.cwd, state.worktree.path);
+    const last = state.messages.slice(-5);
+    assert.deepEqual(last.map(m => m.from), ['Claude', 'Codex', 'AgY', 'Claude', 'sistema']);
+    assert.match(last[4].text, /Nadie hizo merge/);
 
     // ya ejecutado: no se puede volver a aprobar el mismo plan
     assert.equal((await postJson(base, `/rooms/${room.id}/execute`)).status, 409);
