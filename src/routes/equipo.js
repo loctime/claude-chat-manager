@@ -1,27 +1,52 @@
 const express = require('express');
 const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { execFileSync } = require('child_process');
 const meta = require('../meta');
 const equipo = require('../equipo');
 
-// ── Equipo FerStark (Fernando + Claude + Codex + AgY, todos en esta PC) ──
+// ── Equipo (vos + Claude + Codex + AgY, todos en esta PC) ──
 // A diferencia de Sala (sala.js — necesita el VPS porque coordina con la PC
-// de Diego), acá los tres agentes corren local, así que no hace falta red:
-// cada uno tiene su propia conversación "de verdad" (oculta, no aparece en
-// Chats/Codex/AgY) en el meta file nativo de su propio runner, y la
-// orquestación vive acá. Reusar el meta file nativo de cada agente (en vez
-// de uno aparte) es a propósito: los listeners globales de server.js que ya
+// de otra persona), acá los tres agentes corren local, así que no hace falta
+// red: cada uno tiene su propia conversación "de verdad" (oculta, no aparece
+// en Chats/Codex/AgY) en el meta file nativo de su propio runner, y la
+// orquestación vive acá. Reusar el meta file nativo de cada agente (en vez de
+// uno aparte) es a propósito: los listeners globales de server.js que ya
 // capturan sessionId (Claude/Codex) y el texto de respuesta (AgY) siguen
-// funcionando solos, sin tocar ese código — ver runner.on('event'/'status')
-// en server.js para Claude/Codex, y geminiRunner.on('status') para AgY.
+// funcionando solos, sin tocar ese código.
 //
-// Dinámica pedida por Fernando (02-04/10/2026, charla en el chat de Claude):
-// el primer mensaje de una sala nueva lo responde SOLO Claude, planteando
-// las reglas/restricciones que ya sabe que aplican y preguntándole a
-// Fernando si están bien (room.phase 'rules'). Desde el mensaje siguiente en
-// esa misma sala, responden los tres en cadena — Claude, después Codex,
-// después AgY, cada uno viendo lo que dijo el anterior — sin que haga falta
-// arrobar a nadie (room.phase 'open'). Para otro tema, Fernando abre otra
-// sala y vuelve a arrancar en 'rules'.
+// Tres modos, siempre con el humano en el medio:
+//  1. Charla (room.phase 'rules' → 'open'): el primer mensaje lo responde solo
+//     Claude (plantea reglas y pregunta si están bien); desde el siguiente
+//     responden los tres en cadena. Solo discusión: no se modifica nada.
+//  2. Plan (POST /rooms/:id/plan): Claude arma un plan con tareas por agente.
+//     room.plan.status 'proposed'. Espera la aprobación del humano.
+//  3. Ejecución (POST /rooms/:id/execute, el botón de aprobar): en orden fijo
+//     Claude → Codex → AgY, de a uno, dentro de un git worktree propio de la
+//     sala (rama equipo/...). Nadie hace merge: lo decide el humano al final.
+// Los roles y el orden los pone el código en el prompt de cada turno
+// (equipo.roleBlock), no los dice un agente en la charla.
+const EXEC_ORDER = ['claude', 'codex', 'gemini'];
+const SHORT_NAME = { claude: 'Claude', codex: 'Codex', gemini: 'AgY' };
+
+function slugify(s) {
+  return String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || 'sala';
+}
+
+// Worktree aislado para la ejecución. Sale de HEAD del repo del proyecto: lo
+// que esté sin commitear ahí no entra (el prompt lo avisa).
+function defaultCreateWorktree({ projectDir, roomId, name }) {
+  execFileSync('git', ['-C', projectDir, 'rev-parse', '--is-inside-work-tree'], { stdio: 'ignore' });
+  const id8 = roomId.slice(0, 8);
+  const branch = `equipo/${slugify(name)}-${id8}`;
+  const dir = path.join(os.homedir(), '.ccm-equipo-worktrees', `${path.basename(projectDir)}-${id8}`);
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
+  execFileSync('git', ['-C', projectDir, 'worktree', 'add', '-b', branch, dir], { stdio: 'ignore' });
+  return { path: dir, branch };
+}
+
 function createEquipoRouter({
   runner, codexRunner, geminiRunner,
   scanner, codexScanner,
@@ -29,6 +54,7 @@ function createEquipoRouter({
   accountProjectsDir, accountHomeDir,
   getActiveAccount,
   getUserName,
+  createWorktree = defaultCreateWorktree,
 }) {
   const router = express.Router();
   // Guarda de concurrencia en memoria (no en disco): evita que dos POST
@@ -36,7 +62,7 @@ function createEquipoRouter({
   // solo con un reinicio del server — una ronda a medio terminar en ese
   // momento ya se cortó con el proceso de todos modos.
   const busyRooms = new Set();
-  // Salas a las que Fernando les tocó la cruz: la ronda en curso corta en el
+  // Salas a las que les tocaron la cruz: la ronda en curso corta en el
   // próximo punto de control en vez de seguir con el agente que sigue.
   const cancelledRooms = new Set();
 
@@ -51,35 +77,45 @@ function createEquipoRouter({
     });
   }
 
-  function ensureAgentConv(room, agentKey) {
-    const field = `${agentKey}ConvId`;
+  // Carpeta donde corren los agentes en la charla: el proyecto de la sala (así
+  // leen su CLAUDE.local.md) o, sin proyecto, el home. Tiene que ser siempre
+  // la misma para una conversación: --resume solo encuentra la sesión si el
+  // cwd es el mismo con el que se creó (ver CLAUDE.local.md, 27/07/2026). Por
+  // eso la ejecución, que corre en el worktree, usa conversaciones aparte.
+  function roomCwd(room) {
+    return room.projectDir || accountHomeDir(getActiveAccount());
+  }
+
+  function ensureAgentConv(room, agentKey, { exec = false, cwd } = {}) {
+    const field = `${agentKey}${exec ? 'Exec' : ''}ConvId`;
     if (room[field]) return room[field];
     const convId = crypto.randomUUID();
     const acc = getActiveAccount();
-    const cwd = accountHomeDir(acc);
+    const dir = cwd || roomCwd(room);
     if (agentKey === 'claude') {
       const data = meta.load(accountMetaFile(acc));
-      data.conversations[convId] = { currentSessionId: null, projectDir: cwd, hidden: true, project: 'Equipo FerStark' };
+      data.conversations[convId] = { currentSessionId: null, projectDir: dir, hidden: true, project: 'Equipo' };
       meta.save(data, accountMetaFile(acc));
     } else if (agentKey === 'codex') {
       const data = meta.load(codexMetaFile);
-      data.conversations[convId] = { currentSessionId: null, projectDir: cwd, hidden: true, project: 'Equipo FerStark' };
+      data.conversations[convId] = { currentSessionId: null, projectDir: dir, hidden: true, project: 'Equipo' };
       meta.save(data, codexMetaFile);
     } else if (agentKey === 'gemini') {
       const data = meta.load(geminiMetaFile);
-      data.conversations[convId] = { currentSessionId: null, projectDir: cwd, model: 'gemini-3.8-flash-high', messages: [], lastActivity: null, hidden: true, project: 'Equipo FerStark' };
+      data.conversations[convId] = { currentSessionId: null, projectDir: dir, model: 'gemini-3.8-flash-high', messages: [], lastActivity: null, hidden: true, project: 'Equipo' };
       meta.save(data, geminiMetaFile);
     }
-    equipo.setAgentConv(room.id, agentKey, convId);
+    equipo.patchRoom(room.id, { [field]: convId });
+    room[field] = convId;
     return convId;
   }
 
-  async function runClaudeTurn(convId, text) {
+  async function runClaudeTurn(convId, text, cwd) {
     const acc = getActiveAccount();
     const metaFile = accountMetaFile(acc);
     const before = meta.load(metaFile).conversations[convId];
     const idle = waitForIdle(runner, convId);
-    runner.send({ convId, sessionId: before?.currentSessionId || null, cwd: accountHomeDir(acc), text, account: acc });
+    runner.send({ convId, sessionId: before?.currentSessionId || null, cwd, text, account: acc });
     const status = await idle;
     if (status.cancelled || status.code !== 0) return `(no pude responder: ${status.stderr || 'turno cancelado'})`;
     const after = meta.load(metaFile).conversations[convId];
@@ -89,11 +125,10 @@ function createEquipoRouter({
     return msgs[msgs.length - 1]?.text || '(sin respuesta)';
   }
 
-  async function runCodexTurn(convId, text) {
-    const acc = getActiveAccount();
+  async function runCodexTurn(convId, text, cwd) {
     const before = meta.load(codexMetaFile).conversations[convId];
     const idle = waitForIdle(codexRunner, convId);
-    codexRunner.send({ convId, sessionId: before?.currentSessionId || null, cwd: accountHomeDir(acc), text });
+    codexRunner.send({ convId, sessionId: before?.currentSessionId || null, cwd, text });
     const status = await idle;
     if (status.cancelled || status.code !== 0) return `(no pude responder: ${status.stderr || 'turno cancelado'})`;
     const after = meta.load(codexMetaFile).conversations[convId];
@@ -103,62 +138,48 @@ function createEquipoRouter({
     return msgs[msgs.length - 1]?.text || '(sin respuesta)';
   }
 
-  async function runGeminiTurn(convId, text) {
-    const acc = getActiveAccount();
+  async function runGeminiTurn(convId, text, cwd) {
     const before = meta.load(geminiMetaFile).conversations[convId];
     const idle = waitForIdle(geminiRunner, convId);
-    geminiRunner.send({ convId, sessionId: before?.currentSessionId || null, cwd: accountHomeDir(acc), text, model: before?.model || 'gemini-3.8-flash-high' });
+    geminiRunner.send({ convId, sessionId: before?.currentSessionId || null, cwd, text, model: before?.model || 'gemini-3.8-flash-high' });
     const status = await idle;
     if (status.cancelled || status.incomplete) return `(no pude responder: ${status.stderr || 'turno cancelado'})`;
     return status.response || '(sin respuesta)';
   }
 
+  const TURN = { claude: runClaudeTurn, codex: runCodexTurn, gemini: runGeminiTurn };
+
   function rulesPrompt(contextBlock, humanText) {
+    const user = getUserName();
     const ctx = contextBlock ? `${contextBlock}\n\n` : '';
-    return `[MODO EQUIPO FERSTARK — primera vuelta de este tema]\nEstás en "Equipo FerStark", la sala de trabajo local entre Fernando, vos (Claude), Codex y AgY (Gemini) — los tres corren en esta misma PC, mismo filesystem, sin necesidad de coordinar nada por red. Fernando acaba de plantear un tema nuevo acá. Tu rol en esta primera vuelta: poné las reglas y restricciones que ya sabés que aplican (por tu conocimiento de Fernando, sus proyectos, templates que no se pueden modificar, formatos exigidos, etc.) y preguntale explícitamente si están bien. Todavía NO le pidas nada a Codex ni a AgY — eso arranca recién cuando Fernando conteste.\n\n${ctx}Mensaje de Fernando:\n${humanText}`;
+    return `[MODO EQUIPO — primera vuelta de este tema]\n${equipo.roleBlock('claude')}\nEstás en la sala "Equipo", la sala de trabajo local entre ${user}, vos (Claude), Codex y AgY (Gemini) — los tres corren en esta misma PC, mismo filesystem, sin necesidad de coordinar nada por red. La persona que escribe se llama ${user} (no es ninguna otra persona) y acaba de plantear un tema nuevo acá. Tu rol en esta primera vuelta: poné las reglas y restricciones que ya sabés que aplican (por tu conocimiento de ${user}, sus proyectos, templates que no se pueden modificar, formatos exigidos, etc.) y preguntale explícitamente si están bien. Todavía NO le pidas nada a Codex ni a AgY — eso arranca recién cuando ${user} conteste. Por ahora es solo discusión: podés leer archivos, pero no modifiques nada.\n\n${ctx}Mensaje de ${user}:\n${humanText}`;
   }
 
-  function openPrompt(agentLabel, otherAgents, contextBlock, humanText) {
+  function openPrompt(agentKey, contextBlock, humanText) {
+    const user = getUserName();
+    const label = equipo.ROLES[agentKey].label;
+    const others = EXEC_ORDER.filter(k => k !== agentKey).map(k => equipo.ROLES[k].label).join(' y ');
     const ctx = contextBlock ? `${contextBlock}\n\n` : '';
-    return `[EQUIPO FERSTARK — charla libre]\nSeguís en la sala de trabajo local con Fernando y ${otherAgents} — los tres en esta misma PC. Las reglas de este tema ya quedaron definidas más arriba. Fernando mandó un mensaje nuevo (o siguen discutiendo el mismo tema) — das tu aporte/opinión como ${agentLabel}, charla normal de equipo: de acuerdo, en desacuerdo, o algo que se les esté pasando por alto. No hace falta que te arroben para participar.\n\n${ctx}Mensaje de Fernando:\n${humanText}`;
+    return `[EQUIPO — charla libre]\n${equipo.roleBlock(agentKey)}\nSeguís en la sala de trabajo local con ${user} (la persona que escribe; no es ninguna otra) y ${others} — los tres en esta misma PC. Las reglas de este tema ya quedaron definidas más arriba. ${user} mandó un mensaje nuevo (o siguen discutiendo el mismo tema) — das tu aporte/opinión como ${label} desde tu rol: de acuerdo, en desacuerdo, o algo que se les esté pasando por alto. Es solo discusión: podés leer archivos para opinar con datos, pero NO modifiques nada hasta que ${user} apruebe un plan. No hace falta que te arroben para participar.\n\n${ctx}Mensaje de ${user}:\n${humanText}`;
   }
 
-  async function runEquipoRound(room, humanText) {
+  function planPrompt(contextBlock) {
+    const user = getUserName();
+    return `[EQUIPO — ARMAR EL PLAN]\n${equipo.roleBlock('claude')}\nCon todo lo discutido, armá el plan de ejecución para que ${user} lo apruebe. Formato: tres secciones, "## Claude — ...", "## Codex — ..." y "## AgY — ...", en ese orden (es el orden real de trabajo: cada uno parte de lo que dejó el anterior). Cada sección con tareas concretas y verificables, ajustadas al rol de cada uno. Aclarale a ${user} qué se va a tocar y qué no. Terminá preguntando si lo aprueba. NO ejecutes nada ni modifiques archivos: esto es solo el plan.\n\n${contextBlock}`;
+  }
+
+  function execPrompt(agentKey, planText, contextBlock, worktree) {
+    const user = getUserName();
+    return `[EQUIPO — EJECUCIÓN DEL PLAN APROBADO]\n${equipo.roleBlock(agentKey)}\n${user} aprobó el plan. Ahora te toca a vos, solo tu parte. Trabajás en un git worktree aislado: carpeta ${worktree.path}, rama ${worktree.branch} (sale del último commit del proyecto: lo que ${user} tenga sin commitear en el repo original no está acá, y node_modules tampoco). Reglas: trabajá SOLO ahí; NO toques el repo original, NO hagas merge ni push; commiteá tu trabajo en esta rama con mensajes claros; no repitas lo que ya hizo otro agente. Cuando termines, cerrá con un resumen corto: archivos tocados, qué hiciste, qué queda para el siguiente, y las líneas "FUERA DE ROL:" si corresponde.\n\nPLAN APROBADO:\n${planText}\n\n${contextBlock}`;
+  }
+
+  // Corre fn() marcando la sala ocupada y cerrando bien aunque falle o se cancele.
+  async function withBusy(room, fn) {
     busyRooms.add(room.id);
     cancelledRooms.delete(room.id);
     equipo.setBusy(room.id, true);
     try {
-      if (room.phase === 'rules') {
-        const convId = ensureAgentConv(room, 'claude');
-        const reply = await runClaudeTurn(convId, rulesPrompt('', humanText));
-        if (cancelledRooms.has(room.id)) return;
-        equipo.appendMessage(room.id, { from: 'Claude', kind: 'agent', text: reply });
-        equipo.setPhase(room.id, 'open');
-        return;
-      }
-
-      // Fase abierta: Claude → Codex → AgY en cadena, cada uno viendo lo que
-      // dijeron los anteriores en ESTA ronda (más el historial completo de
-      // la sala, por buildContextBlock).
-      const history = equipo.getRoom(room.id).messages;
-      const ctx = equipo.buildContextBlock(history);
-
-      const claudeConvId = ensureAgentConv(room, 'claude');
-      const claudeReply = await runClaudeTurn(claudeConvId, openPrompt('Claude', 'Codex y AgY (Gemini)', ctx, humanText));
-      if (cancelledRooms.has(room.id)) return;
-      equipo.appendMessage(room.id, { from: 'Claude', kind: 'agent', text: claudeReply });
-
-      const ctx2 = equipo.buildContextBlock(equipo.getRoom(room.id).messages);
-      const codexConvId = ensureAgentConv(room, 'codex');
-      const codexReply = await runCodexTurn(codexConvId, openPrompt('Codex', 'Claude y AgY (Gemini)', ctx2, humanText));
-      if (cancelledRooms.has(room.id)) return;
-      equipo.appendMessage(room.id, { from: 'Codex', kind: 'agent', text: codexReply });
-
-      const ctx3 = equipo.buildContextBlock(equipo.getRoom(room.id).messages);
-      const geminiConvId = ensureAgentConv(room, 'gemini');
-      const geminiReply = await runGeminiTurn(geminiConvId, openPrompt('AgY (Gemini)', 'Claude y Codex', ctx3, humanText));
-      if (cancelledRooms.has(room.id)) return;
-      equipo.appendMessage(room.id, { from: 'AgY', kind: 'agent', text: geminiReply });
+      await fn();
     } catch (err) {
       equipo.appendMessage(room.id, { from: 'sistema', kind: 'system', text: `Error en la ronda: ${err.message}` });
     } finally {
@@ -170,9 +191,68 @@ function createEquipoRouter({
     }
   }
 
+  async function runEquipoRound(room, humanText) {
+    await withBusy(room, async () => {
+      const cwd = roomCwd(room);
+      if (room.phase === 'rules') {
+        const convId = ensureAgentConv(room, 'claude');
+        const reply = await runClaudeTurn(convId, rulesPrompt('', humanText), cwd);
+        if (cancelledRooms.has(room.id)) return;
+        equipo.appendMessage(room.id, { from: 'Claude', kind: 'agent', text: reply });
+        equipo.setPhase(room.id, 'open');
+        return;
+      }
+
+      // Fase abierta: Claude → Codex → AgY en cadena, cada uno viendo lo que
+      // dijeron los anteriores en ESTA ronda (más el historial completo de
+      // la sala, por buildContextBlock).
+      for (const key of EXEC_ORDER) {
+        const ctx = equipo.buildContextBlock(equipo.getRoom(room.id).messages);
+        const convId = ensureAgentConv(room, key);
+        const reply = await TURN[key](convId, openPrompt(key, ctx, humanText), cwd);
+        if (cancelledRooms.has(room.id)) return;
+        equipo.appendMessage(room.id, { from: SHORT_NAME[key], kind: 'agent', text: reply });
+      }
+    });
+  }
+
+  async function runPlanRound(room) {
+    await withBusy(room, async () => {
+      const ctx = equipo.buildContextBlock(equipo.getRoom(room.id).messages);
+      const convId = ensureAgentConv(room, 'claude');
+      const reply = await runClaudeTurn(convId, planPrompt(ctx), roomCwd(room));
+      if (cancelledRooms.has(room.id)) return;
+      equipo.appendMessage(room.id, { from: 'Claude', kind: 'agent', text: reply });
+      equipo.patchRoom(room.id, { plan: { text: reply, status: 'proposed' } });
+    });
+  }
+
+  async function runExecRound(room) {
+    await withBusy(room, async () => {
+      const { worktree, plan } = equipo.getRoom(room.id);
+      for (const key of EXEC_ORDER) {
+        const fresh = equipo.getRoom(room.id);
+        const ctx = equipo.buildContextBlock(fresh.messages);
+        const convId = ensureAgentConv(fresh, key, { exec: true, cwd: worktree.path });
+        const reply = await TURN[key](convId, execPrompt(key, plan.text, ctx, worktree), worktree.path);
+        if (cancelledRooms.has(room.id)) {
+          // Se puede volver a aprobar: el worktree y lo ya commiteado quedan.
+          equipo.patchRoom(room.id, { plan: { text: plan.text, status: 'proposed' } });
+          return;
+        }
+        equipo.appendMessage(room.id, { from: SHORT_NAME[key], kind: 'agent', text: reply });
+      }
+      equipo.patchRoom(room.id, { plan: { text: plan.text, status: 'done' } });
+      equipo.appendMessage(room.id, {
+        from: 'sistema', kind: 'system',
+        text: `Ejecución terminada. Nadie hizo merge: el trabajo está en la rama ${worktree.branch} (carpeta ${worktree.path}). Revisá el diff y, si te cierra, mergealo con: git -C "${room.projectDir}" merge ${worktree.branch}`,
+      });
+    });
+  }
+
   router.get('/rooms', (req, res) => {
     const rooms = equipo.listRooms().map(r => ({
-      id: r.id, name: r.name, phase: r.phase, lastActivity: r.lastActivity, busy: busyRooms.has(r.id),
+      id: r.id, name: r.name, phase: r.phase, lastActivity: r.lastActivity, busy: busyRooms.has(r.id), projectDir: r.projectDir || null,
     }));
     res.json({ rooms });
   });
@@ -180,14 +260,23 @@ function createEquipoRouter({
   router.post('/rooms', (req, res) => {
     const name = (req.body.name || '').trim();
     if (!name) return res.status(400).json({ error: 'nombre vacío' });
-    const room = equipo.createRoom(name);
-    res.status(201).json({ id: room.id, name: room.name, phase: room.phase, lastActivity: room.lastActivity });
+    const projectDir = (req.body.projectDir || '').trim();
+    if (projectDir) {
+      let ok = false;
+      try { ok = fs.statSync(projectDir).isDirectory(); } catch {}
+      if (!ok) return res.status(400).json({ error: 'la carpeta del proyecto no existe' });
+    }
+    const room = equipo.createRoom(name, undefined, { projectDir: projectDir || undefined });
+    res.status(201).json({ id: room.id, name: room.name, phase: room.phase, lastActivity: room.lastActivity, projectDir: room.projectDir || null });
   });
 
   router.get('/rooms/:id/messages', (req, res) => {
     const room = equipo.getRoom(req.params.id);
     if (!room) return res.status(404).json({ error: 'sala no encontrada' });
-    res.json({ messages: room.messages, phase: room.phase, busy: busyRooms.has(room.id) });
+    res.json({
+      messages: room.messages, phase: room.phase, busy: busyRooms.has(room.id),
+      projectDir: room.projectDir || null, plan: room.plan || null, worktree: room.worktree || null,
+    });
   });
 
   router.post('/rooms/:id/message', (req, res) => {
@@ -203,24 +292,51 @@ function createEquipoRouter({
     // La ronda corre en segundo plano — ya respondimos 202, el cliente se
     // entera de las respuestas nuevas por polling (GET .../messages), mismo
     // criterio que Sala.
-    runEquipoRound(room, text).catch(err => {
-      equipo.appendMessage(room.id, { from: 'sistema', kind: 'system', text: `Error: ${err.message}` });
-      busyRooms.delete(room.id);
-      equipo.setBusy(room.id, false);
-    });
+    runEquipoRound(room, text);
+  });
+
+  // Pide el plan: Claude lo arma con todo lo discutido. No ejecuta nada.
+  router.post('/rooms/:id/plan', (req, res) => {
+    const room = equipo.getRoom(req.params.id);
+    if (!room) return res.status(404).json({ error: 'sala no encontrada' });
+    if (busyRooms.has(room.id)) return res.status(409).json({ error: 'el equipo ya está respondiendo' });
+    if (room.phase !== 'open') return res.status(409).json({ error: 'primero hay que discutir el tema (mandá un mensaje y contestá las reglas)' });
+    if (room.plan?.status === 'running') return res.status(409).json({ error: 'hay una ejecución en curso' });
+    equipo.appendMessage(room.id, { from: getUserName(), kind: 'human', text: '📋 Armen el plan con lo que discutimos.' });
+    res.status(202).json({ queued: true });
+    runPlanRound(room);
+  });
+
+  // El botón de aprobar: crea el worktree (una vez por sala) y ejecuta en orden.
+  router.post('/rooms/:id/execute', (req, res) => {
+    const room = equipo.getRoom(req.params.id);
+    if (!room) return res.status(404).json({ error: 'sala no encontrada' });
+    if (busyRooms.has(room.id)) return res.status(409).json({ error: 'el equipo ya está respondiendo' });
+    if (room.plan?.status !== 'proposed') return res.status(409).json({ error: 'no hay un plan pendiente de aprobar' });
+    if (!room.projectDir) return res.status(400).json({ error: 'la sala no tiene carpeta de proyecto: sin ella no hay dónde ejecutar' });
+
+    let worktree = room.worktree;
+    if (!worktree) {
+      try { worktree = createWorktree({ projectDir: room.projectDir, roomId: room.id, name: room.name }); }
+      catch (err) { return res.status(500).json({ error: `no se pudo crear el worktree (¿la carpeta es un repo git?): ${err.message}` }); }
+    }
+    equipo.patchRoom(room.id, { worktree, plan: { text: room.plan.text, status: 'running' } });
+    equipo.appendMessage(room.id, { from: getUserName(), kind: 'human', text: `✅ Plan aprobado. Ejecuten en orden (Claude → Codex → AgY) en la rama ${worktree.branch}.` });
+    res.status(202).json({ queued: true, worktree });
+    runExecRound(room);
   });
 
   // La cruz: corta el turno del agente que esté hablando y descarta el resto
   // de la ronda. cancel() devuelve false si ese agente no está corriendo, así
-  // que se puede llamar a los tres sin mirar cuál es.
+  // que se puede llamar a todos sin mirar cuál es.
   router.delete('/rooms/:id/message', (req, res) => {
     const room = equipo.getRoom(req.params.id);
     if (!room) return res.status(404).json({ error: 'sala no encontrada' });
     if (!busyRooms.has(room.id)) return res.json({ cancelled: false });
     cancelledRooms.add(room.id);
-    if (room.claudeConvId) runner.cancel(room.claudeConvId);
-    if (room.codexConvId) codexRunner.cancel(room.codexConvId);
-    if (room.geminiConvId) geminiRunner.cancel(room.geminiConvId);
+    for (const id of [room.claudeConvId, room.claudeExecConvId]) if (id) runner.cancel(id);
+    for (const id of [room.codexConvId, room.codexExecConvId]) if (id) codexRunner.cancel(id);
+    for (const id of [room.geminiConvId, room.geminiExecConvId]) if (id) geminiRunner.cancel(id);
     res.json({ cancelled: true });
   });
 

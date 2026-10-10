@@ -8,7 +8,8 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 
-const STORE_FILE = path.join(os.homedir(), '.claude', 'session-manager', 'equipo-rooms.json');
+// CCM_EQUIPO_STORE existe para que los tests no escriban en el archivo real.
+const STORE_FILE = process.env.CCM_EQUIPO_STORE || path.join(os.homedir(), '.claude', 'session-manager', 'equipo-rooms.json');
 
 const EMPTY = () => ({ rooms: {} });
 
@@ -49,11 +50,12 @@ function getRoom(id, file = STORE_FILE) {
 // phase 'open': ya están definidas — responden los tres en cadena, charla
 // libre, sin necesidad de arrobar a nadie (ver POST /rooms/:id/message en
 // routes/equipo.js). Una sala nueva siempre arranca en 'rules'.
-function createRoom(name, file = STORE_FILE) {
+function createRoom(name, file = STORE_FILE, { projectDir } = {}) {
   const data = load(file);
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   data.rooms[id] = { id, name, phase: 'rules', createdAt: now, lastActivity: now, messages: [] };
+  if (projectDir) data.rooms[id].projectDir = projectDir;
   save(data, file);
   return data.rooms[id];
 }
@@ -97,4 +99,28 @@ function buildContextBlock(messages) {
   }).join('\n\n');
 }
 
-module.exports = { STORE_FILE, listRooms, getRoom, createRoom, appendMessage, setPhase, setAgentConv, setBusy, buildContextBlock };
+// Campos sueltos de la sala (plan, worktree, ids de conversaciones de ejecución).
+function patchRoom(roomId, patch, file = STORE_FILE) {
+  const data = load(file);
+  if (!data.rooms[roomId]) return null;
+  Object.assign(data.rooms[roomId], patch);
+  save(data, file);
+  return data.rooms[roomId];
+}
+
+// Roles fijos y orden de trabajo. Van en el prompt de CADA turno (no los dice
+// un agente en la charla): cada turno es un proceso nuevo y una instrucción
+// suelta en el historial se pierde; una regla mecánica puesta por el código
+// en cada turno sí se respeta (ver CLAUDE.local.md, "Modos de respuesta").
+const ROLES = {
+  claude: { label: 'Claude', rol: 'plan, lógica y código base (estructura, API, datos: el código gordo)', orden: 'PRIMERO — tu trabajo es la base de la que dependen los otros dos' },
+  codex: { label: 'Codex', rol: 'optimización y mejoras (performance, refactor, robustez, tests) sobre lo que dejó Claude', orden: 'SEGUNDO — después de Claude y antes de AgY; antes de empezar, leé lo que hizo Claude' },
+  gemini: { label: 'AgY (Gemini)', rol: 'diseño y UX (interfaz, estilos, usabilidad) sobre lo que dejaron Claude y Codex', orden: 'TERCERO y último — después de Claude y Codex; antes de empezar, leé lo que hicieron' },
+};
+
+function roleBlock(agentKey) {
+  const r = ROLES[agentKey];
+  return `TU ROL EN EL EQUIPO: sos ${r.label}. Tu especialidad: ${r.rol}. Orden de trabajo: ${r.orden}. El equipo completo es Claude (plan, lógica y código base) → Codex (optimización y mejoras) → AgY (diseño y UX). Si necesitás hacer algo fuera de tu rol podés hacerlo, pero avisalo en tu respuesta con una línea que empiece con "FUERA DE ROL:" diciendo qué tocaste y por qué.`;
+}
+
+module.exports = { STORE_FILE, ROLES, roleBlock, listRooms, getRoom, createRoom, appendMessage, setPhase, setAgentConv, setBusy, patchRoom, buildContextBlock };

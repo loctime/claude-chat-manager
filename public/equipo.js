@@ -1,9 +1,10 @@
-// ── Equipo FerStark (Fernando + Claude + Codex + AgY, todos en esta PC) ──
+// ── Equipo (vos + Claude + Codex + AgY, todos en esta PC) ──
 // Mismo patrón de panel/overlay que sala.js (ver ahí para el caso Jarvis↔
 // FerStark, que sí necesita el VPS), pero más simple en dos puntos a
 // propósito:
 //  - Sin @menciones: acá responden los tres agentes solos, en cadena, según
-//    la fase de la sala (rules/open) — ver routes/equipo.js.
+//    la fase de la sala (rules/open) — ver routes/equipo.js. Además, la barra
+//    #equipo-actions pide el plan y lo aprueba (ejecutan en orden, en un worktree).
 //  - Sin streaming SSE en vivo: las tres respuestas de una ronda se arman en
 //    el server una atrás de la otra: se muestran por polling cuando cada una
 //    termina, no hay texto token-por-token que mostrar mientras tanto.
@@ -14,6 +15,7 @@ let equipoRooms = [];
 let currentEquipoRoom = null; // {id, name} de la sala abierta, o null si estamos en la lista
 let equipoMessages = [];
 let equipoBusy = false;
+let equipoState = { phase: null, plan: null, projectDir: null, worktree: null }; // lo último que informó el server de la sala abierta
 
 const EQUIPO_AUTHOR_COLORS = { Claude: '#f2b134', Codex: '#10a37f', AgY: '#7c5cff' };
 
@@ -71,6 +73,29 @@ function showEquipoView(show) {
 
 function updateEquipoComposerLock() {
   $('equipo-send').disabled = equipoBusy;
+  renderEquipoActions();
+}
+
+// Barra de plan/aprobación: "Armar plan" aparece una vez que la charla pasó la
+// primera vuelta (phase 'open'); "Aprobar y ejecutar" solo con un plan
+// propuesto. El humano es el único que dispara la ejecución.
+function renderEquipoActions() {
+  const { phase, plan, projectDir, worktree } = equipoState;
+  const bar = $('equipo-actions');
+  const planBtn = $('equipo-plan-btn'), execBtn = $('equipo-exec-btn'), info = $('equipo-actions-info');
+  const status = plan?.status;
+  const canPlan = phase === 'open' && status !== 'running';
+  const canExec = status === 'proposed';
+  planBtn.hidden = !canPlan;
+  execBtn.hidden = !canExec;
+  planBtn.disabled = execBtn.disabled = equipoBusy;
+  planBtn.textContent = status === 'proposed' || status === 'done' ? '📋 Rehacer plan' : '📋 Armar plan';
+  if (!projectDir) info.textContent = 'Sala sin carpeta de proyecto: se puede charlar, pero no ejecutar.';
+  else if (status === 'running') info.textContent = 'Ejecutando en orden: Claude → Codex → AgY.';
+  else if (status === 'proposed') info.textContent = 'Plan listo. Revisalo y aprobalo para que ejecuten en orden.';
+  else if (status === 'done') info.textContent = 'Ejecutado. Rama: ' + (worktree?.branch || '?') + ' — pendiente tu revisión y merge.';
+  else info.textContent = 'Proyecto: ' + projectDir;
+  bar.hidden = !(canPlan || canExec || info.textContent);
 }
 
 function setEquipoBusy(busy) {
@@ -106,8 +131,9 @@ function renderEquipoMessages() {
 }
 
 async function loadEquipoMessages() {
-  const { messages, busy } = await api(`/equipo/rooms/${currentEquipoRoom.id}/messages`);
+  const { messages, busy, phase, plan, projectDir, worktree } = await api(`/equipo/rooms/${currentEquipoRoom.id}/messages`);
   equipoMessages = messages;
+  equipoState = { phase, plan, projectDir, worktree };
   renderEquipoMessages();
   setEquipoBusy(busy);
 }
@@ -123,6 +149,7 @@ async function openEquipoRoom(id, name) {
   $('equipo-title').textContent = name;
   equipoMessages = [];
   renderEquipoMessages();
+  equipoState = { phase: null, plan: null, projectDir: null, worktree: null };
   setEquipoBusy(false);
   clearEquipoAttachments();
   if (typeof showNotebookView === 'function') showNotebookView(false);
@@ -136,11 +163,15 @@ async function openEquipoRoom(id, name) {
 async function createEquipoRoom() {
   const name = (prompt('Nombre de la sala de Equipo (un tema nuevo):') || '').trim();
   if (!name) return;
-  const room = await api('/equipo/rooms', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
-  });
+  const projectDir = (prompt('Carpeta del proyecto (ruta absoluta; que sea un repo git). Con ella leen su CLAUDE.local.md y pueden ejecutar. Dejala vacía para solo charlar:') || '').trim();
+  let room;
+  try {
+    room = await api('/equipo/rooms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, projectDir }),
+    });
+  } catch (err) { toast('No se pudo crear la sala: ' + err.message); return; }
   equipoRooms.unshift(room);
   renderEquipoRoomList();
   await openEquipoRoom(room.id, room.name);
@@ -247,6 +278,23 @@ $('equipo-file-input').onchange = async () => {
   for (const f of files) await uploadEquipoFile(f);
 };
 
+$('equipo-plan-btn').onclick = async () => {
+  if (!currentEquipoRoom || equipoBusy) return;
+  try {
+    await api(`/equipo/rooms/${currentEquipoRoom.id}/plan`, { method: 'POST' });
+    await loadEquipoMessages();
+  } catch (err) { toast('No se pudo pedir el plan: ' + err.message); }
+};
+
+$('equipo-exec-btn').onclick = async () => {
+  if (!currentEquipoRoom || equipoBusy) return;
+  if (!confirm('¿Aprobar el plan? Claude, Codex y AgY van a trabajar en orden, en una rama aparte del proyecto. No se hace merge sin tu OK.')) return;
+  try {
+    await api(`/equipo/rooms/${currentEquipoRoom.id}/execute`, { method: 'POST' });
+    await loadEquipoMessages();
+  } catch (err) { toast('No se pudo ejecutar: ' + err.message); }
+};
+
 $('equipo-cancel-btn').onclick = async () => {
   if (!currentEquipoRoom) return;
   try { await api(`/equipo/rooms/${currentEquipoRoom.id}/message`, { method: 'DELETE' }); }
@@ -299,7 +347,7 @@ $('equipo-composer').addEventListener('submit', e => {
 
 // Poll más seguido que Sala (3s vs 5s): una ronda acá son hasta 3 turnos de
 // agente encadenados, conviene que la UI se actualice apenas termina cada
-// uno en vez de que Fernando vea "está pensando" durante toda la ronda.
+// uno en vez de que se vea "está pensando" durante toda la ronda.
 function pollEquipoPane() {
   if (activePane !== 7) return;
   safeLoadEquipoRoomList();
