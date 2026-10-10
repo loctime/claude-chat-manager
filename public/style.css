@@ -160,13 +160,14 @@ body.antigravity-list-theme #panel-list { --accent: var(--antigravity-accent); }
   line-height: 1.4;
 }
 #account-switch:hover { filter: brightness(1.1); }
-#search-btn, #new-conv, #refresh-btn, #settings-btn {
+#search-btn, #new-conv, #refresh-btn, #cli-update-btn, #settings-btn {
   background: none; border: none; color: var(--text2); cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   width: 36px; height: 36px; border-radius: 50%; transition: background .15s;
   touch-action: manipulation; -webkit-tap-highlight-color: transparent;
 }
-#search-btn:hover, #new-conv:hover, #refresh-btn:hover, #settings-btn:hover { background: var(--border); color: var(--text); }
+#search-btn:hover, #new-conv:hover, #refresh-btn:hover, #cli-update-btn:hover, #settings-btn:hover { background: var(--border); color: var(--text); }
+#cli-update-btn.busy { animation: spin 1s linear infinite; pointer-events: none; opacity: .6; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 #ptr-indicator {
@@ -2524,7 +2525,7 @@ body.hide-tools details.tool { display: none !important; }
   pointer-events: auto;
   animation: toast-in .18s ease-out;
 }
-.toast span { flex: 1; }
+.toast span { flex: 1; white-space: pre-line; }
 .toast-action {
   flex-shrink: 0;
   background: none;

@@ -26,6 +26,7 @@ const { createGeminiRouter, createAntigravityRouter, resolveContextTokens } = re
 const { createSalaRouter } = require('./routes/sala');
 const { createEquipoRouter } = require('./routes/equipo');
 const { createUpdateRouter } = require('./update');
+const { createCliUpdateRouter } = require('./routes/cli-update');
 const { createConversationsRouter, resolveConversationGitRepo } = require('./routes/conversations');
 const {
   projectEntry,
@@ -2051,6 +2052,7 @@ app.use('/api/gemini', createGeminiRouter({
 // supervisor no hay forma segura de relanzarse: solo Windows (doRestart se relanza a sí
 // mismo), RESTART_CMD, o instancias de colaborador (corren bajo pm2, que levanta de nuevo
 // el proceso al salir).
+app.use('/api', createCliUpdateRouter());
 app.use('/api', createUpdateRouter({
   repoRoot: REPO_ROOT,
   engines: { claude: runner, codex: codexRunner, agy: geminiRunner },
