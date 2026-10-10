@@ -34,7 +34,7 @@ function cleanUserText(text) {
     const idx = t.indexOf(marker);
     if (idx !== -1) t = t.slice(0, idx);
   }
-  const dynamicContextIdx = t.search(/CONTEXTO\s+[A-Za-z0-9_-]+\s+COMPARTIDO:/i);
+  const dynamicContextIdx = t.search(/CONTEXTO\s+[^\n:]+?\s+COMPARTIDO:/i);
   if (dynamicContextIdx !== -1) t = t.slice(0, dynamicContextIdx);
   return t.trim();
 }
